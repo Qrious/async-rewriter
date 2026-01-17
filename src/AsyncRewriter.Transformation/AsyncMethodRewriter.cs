@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Linq;
 using AsyncRewriter.Core.Models;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -99,7 +101,7 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
 
     public override SyntaxNode? VisitLocalFunctionStatement(LocalFunctionStatementSyntax node)
     {
-        var methodSymbol = _semanticModel.GetDeclaredSymbol(node);
+        var methodSymbol = _semanticModel.GetDeclaredSymbol(node) as IMethodSymbol;
         if (methodSymbol == null)
             return base.VisitLocalFunctionStatement(node);
 

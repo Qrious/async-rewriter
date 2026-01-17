@@ -1,3 +1,5 @@
+using System;
+
 namespace AsyncRewriter.Core.Models;
 
 /// <summary>

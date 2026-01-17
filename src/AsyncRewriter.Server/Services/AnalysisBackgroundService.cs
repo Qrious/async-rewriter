@@ -1,6 +1,13 @@
+using System;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Server.DTOs;
 using AsyncRewriter.Server.Models;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
 namespace AsyncRewriter.Server.Services;
 
@@ -95,8 +102,7 @@ public class AnalysisBackgroundService : BackgroundService
 
             await Task.Delay(100, combinedToken);
 
-            var callGraph = await Task.Run(() =>
-                callGraphAnalyzer.AnalyzeProject(job.ProjectPath), combinedToken);
+            var callGraph = await callGraphAnalyzer.AnalyzeProjectAsync(job.ProjectPath, combinedToken);
 
             combinedToken.ThrowIfCancellationRequested();
 
@@ -114,7 +120,7 @@ public class AnalysisBackgroundService : BackgroundService
                 j.ProgressPercentage = 80;
             });
 
-            await callGraphRepository.SaveCallGraphAsync(callGraph);
+            await callGraphRepository.StoreCallGraphAsync(callGraph, combinedToken);
 
             combinedToken.ThrowIfCancellationRequested();
 

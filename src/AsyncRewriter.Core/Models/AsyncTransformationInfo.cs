@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 namespace AsyncRewriter.Core.Models;
 
 /// <summary>

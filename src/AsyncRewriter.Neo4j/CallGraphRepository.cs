@@ -1,3 +1,7 @@
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
 using AsyncRewriter.Neo4j.Configuration;
@@ -131,8 +135,8 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable
                 "MATCH (cg:CallGraph {id: $id}) RETURN cg",
                 new { id });
 
-            var cgRecord = await cgResult.SingleOrDefaultAsync();
-            if (cgRecord == null) return null;
+            if (!await cgResult.FetchAsync()) return null;
+            var cgRecord = cgResult.Current;
 
             var cgNode = cgRecord["cg"].As<INode>();
             var callGraph = new CallGraph
@@ -213,8 +217,8 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable
                 "MATCH (cg:CallGraph {projectName: $projectName}) RETURN cg.id as id ORDER BY cg.createdAt DESC LIMIT 1",
                 new { projectName });
 
-            var record = await cgResult.SingleOrDefaultAsync();
-            return record?["id"].As<string>();
+            if (!await cgResult.FetchAsync()) return null;
+            return cgResult.Current["id"].As<string>();
         });
 
         if (result == null) return null;

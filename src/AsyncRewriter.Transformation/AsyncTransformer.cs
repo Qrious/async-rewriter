@@ -1,7 +1,14 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.MSBuild;
 
 namespace AsyncRewriter.Transformation;
