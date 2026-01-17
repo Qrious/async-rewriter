@@ -52,7 +52,31 @@ public class CallGraph
             .Select(c => c.CallerId)
             .Distinct();
 
-        return callerIds.Select(id => Methods[id]).Where(m => m != null);
+        return callerIds
+            .Where(id => Methods.ContainsKey(id))
+            .Select(id => Methods[id])
+            .Where(m => m != null);
+    }
+
+    /// <summary>
+    /// Get all methods that call the specified method, including calls through interface methods
+    /// </summary>
+    public IEnumerable<MethodNode> GetCallersIncludingInterfaceCalls(string methodId)
+    {
+        // Start with direct callers
+        var directCallers = GetCallers(methodId);
+
+        // If this method implements interface methods, also get callers of those interface methods
+        if (Methods.TryGetValue(methodId, out var method))
+        {
+            foreach (var interfaceMethodId in method.ImplementsInterfaceMethods)
+            {
+                var interfaceCallers = GetCallers(interfaceMethodId);
+                directCallers = directCallers.Concat(interfaceCallers);
+            }
+        }
+
+        return directCallers.DistinctBy(m => m.Id);
     }
 
     /// <summary>

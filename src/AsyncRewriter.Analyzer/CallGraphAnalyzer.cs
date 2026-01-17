@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -61,8 +62,21 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
     public async Task<CallGraph> AnalyzeSourceAsync(string sourceCode, string fileName = "source.cs", CancellationToken cancellationToken = default)
     {
         var syntaxTree = CSharpSyntaxTree.ParseText(sourceCode, path: fileName, cancellationToken: cancellationToken);
+
+        // Get references from runtime directory to resolve BCL types
+        var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
+        var references = new[]
+        {
+            MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(Console).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(Task).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(Enumerable).Assembly.Location), // System.Linq
+            MetadataReference.CreateFromFile(Path.Combine(runtimeDir, "System.Runtime.dll")),
+            MetadataReference.CreateFromFile(Path.Combine(runtimeDir, "System.Collections.dll")),
+        };
+
         var compilation = CSharpCompilation.Create("TempAssembly")
-            .AddReferences(MetadataReference.CreateFromFile(typeof(object).Assembly.Location))
+            .AddReferences(references)
             .AddSyntaxTrees(syntaxTree);
 
         var semanticModel = compilation.GetSemanticModel(syntaxTree);
@@ -148,20 +162,47 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
     {
         var lineSpan = methodDecl.GetLocation().GetLineSpan();
 
+        // Find interface methods that this method implements
+        var implementedInterfaces = new List<string>();
+
+        // Add explicit interface implementations
+        foreach (var explicitImpl in methodSymbol.ExplicitInterfaceImplementations)
+        {
+            implementedInterfaces.Add(GetMethodId(explicitImpl));
+        }
+
+        // Check for implicit interface implementations
+        var containingType = methodSymbol.ContainingType;
+        if (containingType != null)
+        {
+            foreach (var iface in containingType.AllInterfaces)
+            {
+                foreach (var interfaceMember in iface.GetMembers().OfType<IMethodSymbol>())
+                {
+                    var implementation = containingType.FindImplementationForInterfaceMember(interfaceMember);
+                    if (SymbolEqualityComparer.Default.Equals(implementation, methodSymbol))
+                    {
+                        implementedInterfaces.Add(GetMethodId(interfaceMember));
+                    }
+                }
+            }
+        }
+
         return new MethodNode
         {
             Id = GetMethodId(methodSymbol),
             Name = methodSymbol.Name,
             ContainingType = methodSymbol.ContainingType?.ToDisplayString() ?? "",
             ContainingNamespace = methodSymbol.ContainingNamespace?.ToDisplayString() ?? "",
-            ReturnType = methodSymbol.ReturnType.ToDisplayString(),
-            Parameters = methodSymbol.Parameters.Select(p => $"{p.Type.ToDisplayString()} {p.Name}").ToList(),
+            ReturnType = methodSymbol.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+            Parameters = methodSymbol.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
             FilePath = filePath,
             StartLine = lineSpan.StartLinePosition.Line + 1,
             EndLine = lineSpan.EndLinePosition.Line + 1,
             IsAsync = methodSymbol.IsAsync,
             Signature = GetMethodSignature(methodSymbol),
-            SourceCode = methodDecl.ToFullString()
+            SourceCode = methodDecl.ToFullString(),
+            ImplementsInterfaceMethods = implementedInterfaces
         };
     }
 
@@ -173,8 +214,8 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
             Name = methodSymbol.Name,
             ContainingType = methodSymbol.ContainingType?.ToDisplayString() ?? "",
             ContainingNamespace = methodSymbol.ContainingNamespace?.ToDisplayString() ?? "",
-            ReturnType = methodSymbol.ReturnType.ToDisplayString(),
-            Parameters = methodSymbol.Parameters.Select(p => $"{p.Type.ToDisplayString()} {p.Name}").ToList(),
+            ReturnType = methodSymbol.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+            Parameters = methodSymbol.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
             FilePath = filePath,
             IsAsync = methodSymbol.IsAsync,
             Signature = GetMethodSignature(methodSymbol)
@@ -183,13 +224,192 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
 
     private string GetMethodId(IMethodSymbol methodSymbol)
     {
-        // Create a unique ID based on the fully qualified method signature
-        return $"{methodSymbol.ContainingType?.ToDisplayString()}.{GetMethodSignature(methodSymbol)}";
+        // Use OriginalDefinition to get the uninstantiated generic method
+        // This ensures Query<User> and Query<T> have the same ID
+        var originalMethod = methodSymbol.OriginalDefinition;
+        return $"{originalMethod.ContainingType?.ToDisplayString()}.{GetMethodSignature(originalMethod)}";
     }
 
     private string GetMethodSignature(IMethodSymbol methodSymbol)
     {
-        var parameters = string.Join(", ", methodSymbol.Parameters.Select(p => p.Type.ToDisplayString()));
-        return $"{methodSymbol.Name}({parameters})";
+        // Use OriginalDefinition to get uninstantiated parameter types
+        var originalMethod = methodSymbol.OriginalDefinition;
+        var parameters = string.Join(", ", originalMethod.Parameters.Select(p => p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)));
+        return $"{originalMethod.Name}({parameters})";
+    }
+
+    public async Task<List<SyncWrapperMethod>> FindSyncWrapperMethodsAsync(string projectPath, CancellationToken cancellationToken = default)
+    {
+        var results = new List<SyncWrapperMethod>();
+
+        var workspace = MSBuildWorkspace.Create();
+        var project = await workspace.OpenProjectAsync(projectPath, cancellationToken: cancellationToken);
+
+        var compilation = await project.GetCompilationAsync(cancellationToken);
+        if (compilation == null)
+        {
+            throw new InvalidOperationException("Failed to get compilation");
+        }
+
+        foreach (var syntaxTree in compilation.SyntaxTrees)
+        {
+            var semanticModel = compilation.GetSemanticModel(syntaxTree);
+            var root = await syntaxTree.GetRootAsync(cancellationToken);
+
+            var syncWrappers = FindSyncWrappersInSyntaxTree(root, semanticModel, syntaxTree.FilePath);
+            results.AddRange(syncWrappers);
+        }
+
+        return results;
+    }
+
+    public async Task<List<SyncWrapperMethod>> FindSyncWrapperMethodsInSourceAsync(string sourceCode, string fileName = "source.cs", CancellationToken cancellationToken = default)
+    {
+        var syntaxTree = CSharpSyntaxTree.ParseText(sourceCode, path: fileName, cancellationToken: cancellationToken);
+
+        var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
+        var references = new[]
+        {
+            MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(Task).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(Func<>).Assembly.Location),
+            MetadataReference.CreateFromFile(Path.Combine(runtimeDir, "System.Runtime.dll")),
+        };
+
+        var compilation = CSharpCompilation.Create("TempAssembly")
+            .AddReferences(references)
+            .AddSyntaxTrees(syntaxTree);
+
+        var semanticModel = compilation.GetSemanticModel(syntaxTree);
+        var root = await syntaxTree.GetRootAsync(cancellationToken);
+
+        return FindSyncWrappersInSyntaxTree(root, semanticModel, fileName);
+    }
+
+    private List<SyncWrapperMethod> FindSyncWrappersInSyntaxTree(SyntaxNode root, SemanticModel semanticModel, string filePath)
+    {
+        var results = new List<SyncWrapperMethod>();
+
+        var methodDeclarations = root.DescendantNodes()
+            .OfType<MethodDeclarationSyntax>()
+            .ToList();
+
+        foreach (var methodDecl in methodDeclarations)
+        {
+            var methodSymbol = semanticModel.GetDeclaredSymbol(methodDecl);
+            if (methodSymbol == null) continue;
+
+            var syncWrapperInfo = AnalyzeForSyncWrapperPattern(methodSymbol);
+            if (syncWrapperInfo != null)
+            {
+                var lineSpan = methodDecl.GetLocation().GetLineSpan();
+                results.Add(new SyncWrapperMethod
+                {
+                    MethodId = GetMethodId(methodSymbol),
+                    Name = methodSymbol.Name,
+                    ContainingType = methodSymbol.ContainingType?.ToDisplayString() ?? "",
+                    FilePath = filePath,
+                    StartLine = lineSpan.StartLinePosition.Line + 1,
+                    ReturnType = methodSymbol.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+                    Signature = GetMethodSignature(methodSymbol),
+                    PatternDescription = syncWrapperInfo
+                });
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Analyzes a method to determine if it follows a sync-over-async wrapper pattern.
+    /// Returns a description of the pattern if found, null otherwise.
+    /// </summary>
+    private string? AnalyzeForSyncWrapperPattern(IMethodSymbol methodSymbol)
+    {
+        // Look for parameters that are Func<Task> or Func<Task<TResult>>
+        foreach (var parameter in methodSymbol.Parameters)
+        {
+            var paramType = parameter.Type;
+
+            // Check if parameter is a Func type
+            if (paramType is not INamedTypeSymbol namedType)
+                continue;
+
+            if (!namedType.Name.StartsWith("Func") || !namedType.IsGenericType)
+                continue;
+
+            var typeArgs = namedType.TypeArguments;
+            if (typeArgs.Length == 0)
+                continue;
+
+            // Get the last type argument (return type of the Func)
+            var funcReturnType = typeArgs[typeArgs.Length - 1];
+
+            // Check if the Func returns Task or Task<T>
+            if (!IsTaskType(funcReturnType, out var taskResultType))
+                continue;
+
+            // Now check if the method's return type matches the pattern
+            var methodReturnType = methodSymbol.ReturnType;
+
+            // Pattern 1: Func<Task> parameter with void return
+            if (taskResultType == null && methodReturnType.SpecialType == SpecialType.System_Void)
+            {
+                return $"Method has Func<Task> parameter '{parameter.Name}' and returns void - sync wrapper pattern";
+            }
+
+            // Pattern 2: Func<Task<TResult>> parameter with TResult return
+            if (taskResultType != null)
+            {
+                // Check if the return type matches the Task's result type
+                if (SymbolEqualityComparer.Default.Equals(methodReturnType, taskResultType))
+                {
+                    return $"Method has Func<Task<{taskResultType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)}>> parameter '{parameter.Name}' and returns {methodReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} - sync wrapper pattern";
+                }
+
+                // Also check for type parameter match (generic methods like Execute<TResult>(Func<Task<TResult>>))
+                if (methodReturnType is ITypeParameterSymbol returnTypeParam &&
+                    taskResultType is ITypeParameterSymbol taskTypeParam &&
+                    returnTypeParam.Name == taskTypeParam.Name)
+                {
+                    return $"Method has Func<Task<{taskResultType.Name}>> parameter '{parameter.Name}' and returns {methodReturnType.Name} - generic sync wrapper pattern";
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Checks if a type is Task or Task&lt;T&gt; and extracts the result type if applicable
+    /// </summary>
+    private bool IsTaskType(ITypeSymbol type, out ITypeSymbol? resultType)
+    {
+        resultType = null;
+
+        if (type is not INamedTypeSymbol namedType)
+            return false;
+
+        var fullName = namedType.ToDisplayString();
+
+        // Check for Task<T>
+        if (fullName.StartsWith("System.Threading.Tasks.Task<") ||
+            (namedType.Name == "Task" && namedType.TypeArguments.Length == 1))
+        {
+            if (namedType.TypeArguments.Length == 1)
+            {
+                resultType = namedType.TypeArguments[0];
+                return true;
+            }
+        }
+
+        // Check for Task (non-generic)
+        if (fullName == "System.Threading.Tasks.Task" ||
+            (namedType.Name == "Task" && namedType.TypeArguments.Length == 0))
+        {
+            return true;
+        }
+
+        return false;
     }
 }

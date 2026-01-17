@@ -41,4 +41,9 @@ public class MethodNode
     /// Source code of the method
     /// </summary>
     public string? SourceCode { get; set; }
+
+    /// <summary>
+    /// IDs of interface methods that this method implements
+    /// </summary>
+    public List<string> ImplementsInterfaceMethods { get; set; } = new();
 }

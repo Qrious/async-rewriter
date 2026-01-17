@@ -12,6 +12,11 @@ public class AsyncTransformationInfo
     public string NewReturnType { get; set; } = string.Empty;
     public bool NeedsAsyncKeyword { get; set; }
     public List<CallSiteTransformation> CallSitesToTransform { get; set; } = new();
+
+    /// <summary>
+    /// Interface method IDs that this method implements (for adding await to interface calls)
+    /// </summary>
+    public List<string> ImplementsInterfaceMethods { get; set; } = new();
 }
 
 /// <summary>

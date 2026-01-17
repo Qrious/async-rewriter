@@ -4,6 +4,10 @@ using AsyncRewriter.Neo4j;
 using AsyncRewriter.Neo4j.Configuration;
 using AsyncRewriter.Server.Services;
 using AsyncRewriter.Transformation;
+using Microsoft.Build.Locator;
+
+// Register MSBuild - must be done before any MSBuildWorkspace is created
+MSBuildLocator.RegisterDefaults();
 
 var builder = WebApplication.CreateBuilder(args);
 

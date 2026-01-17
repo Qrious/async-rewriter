@@ -1,3 +1,4 @@
+using AsyncRewriter.Server.DTOs;
 using AsyncRewriter.Server.Models;
 using AsyncRewriter.Server.Services;
 using FluentAssertions;

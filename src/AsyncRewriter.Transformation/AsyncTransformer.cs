@@ -137,8 +137,15 @@ public class AsyncTransformer : IAsyncTransformer
         // Get all method IDs that need transformation
         var methodsToTransform = transformations.Select(t => t.MethodId).ToHashSet();
 
-        // Get all method IDs that are or will be async
+        // Get all method IDs that are or will be async (including interface methods they implement)
         var asyncMethodIds = new HashSet<string>(methodsToTransform);
+        foreach (var transformation in transformations)
+        {
+            foreach (var interfaceMethodId in transformation.ImplementsInterfaceMethods)
+            {
+                asyncMethodIds.Add(interfaceMethodId);
+            }
+        }
 
         // Create rewriter
         var rewriter = new AsyncMethodRewriter(semanticModel, methodsToTransform, asyncMethodIds);
@@ -156,7 +163,8 @@ public class AsyncTransformer : IAsyncTransformer
             if (!hasTaskUsing)
             {
                 var taskUsing = SyntaxFactory.UsingDirective(
-                    SyntaxFactory.ParseName("System.Threading.Tasks"));
+                    SyntaxFactory.ParseName("System.Threading.Tasks")
+                        .WithLeadingTrivia(SyntaxFactory.Space));
 
                 compilationUnit = compilationUnit.AddUsings(taskUsing);
                 newRoot = compilationUnit;

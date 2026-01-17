@@ -82,10 +82,14 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
                     return base.VisitInvocationExpression(node);
                 }
 
-                // Add await
-                var awaitExpression = SyntaxFactory.AwaitExpression(node)
+                // Add await - preserve leading trivia from the invocation
+                var leadingTrivia = node.GetLeadingTrivia();
+                var nodeWithoutLeadingTrivia = node.WithoutLeadingTrivia();
+
+                var awaitExpression = SyntaxFactory.AwaitExpression(nodeWithoutLeadingTrivia)
                     .WithAwaitKeyword(
                         SyntaxFactory.Token(SyntaxKind.AwaitKeyword)
+                            .WithLeadingTrivia(leadingTrivia)
                             .WithTrailingTrivia(SyntaxFactory.Space));
 
                 // Track line number
@@ -157,8 +161,10 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
 
     private string GetMethodId(IMethodSymbol methodSymbol)
     {
-        var parameters = string.Join(", ", methodSymbol.Parameters.Select(p => p.Type.ToDisplayString()));
-        var signature = $"{methodSymbol.Name}({parameters})";
-        return $"{methodSymbol.ContainingType?.ToDisplayString()}.{signature}";
+        // Use OriginalDefinition and MinimallyQualifiedFormat to match the analyzer's format
+        var originalMethod = methodSymbol.OriginalDefinition;
+        var parameters = string.Join(", ", originalMethod.Parameters.Select(p => p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)));
+        var signature = $"{originalMethod.Name}({parameters})";
+        return $"{originalMethod.ContainingType?.ToDisplayString()}.{signature}";
     }
 }

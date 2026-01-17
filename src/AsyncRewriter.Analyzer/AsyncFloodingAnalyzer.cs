@@ -47,8 +47,8 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                 currentMethod.AsyncReturnType = DetermineAsyncReturnType(currentMethod.ReturnType);
             }
 
-            // Find all callers and add them to the queue
-            var callers = callGraph.GetCallers(currentMethodId);
+            // Find all callers (including through interface calls) and add them to the queue
+            var callers = callGraph.GetCallersIncludingInterfaceCalls(currentMethodId);
             foreach (var caller in callers)
             {
                 queue.Enqueue(caller.Id);
@@ -86,7 +86,8 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                 MethodId = methodId,
                 OriginalReturnType = method.ReturnType,
                 NewReturnType = method.AsyncReturnType ?? DetermineAsyncReturnType(method.ReturnType),
-                NeedsAsyncKeyword = true
+                NeedsAsyncKeyword = true,
+                ImplementsInterfaceMethods = new List<string>(method.ImplementsInterfaceMethods)
             };
 
             // Find all call sites in this method that need await

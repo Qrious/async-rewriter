@@ -402,4 +402,133 @@ public class AsyncTransformationController : ControllerBase
             return StatusCode(500, new { error = ex.Message });
         }
     }
+
+    /// <summary>
+    /// Finds sync wrapper methods in a project - methods with Func&lt;Task&gt; or Func&lt;Task&lt;TResult&gt;&gt;
+    /// parameters that return void or TResult. These are candidates for async transformation.
+    /// </summary>
+    [HttpPost("find-sync-wrappers/project")]
+    public async Task<ActionResult<List<SyncWrapperMethod>>> FindSyncWrappers(
+        [FromBody] AnalyzeProjectRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            _logger.LogInformation("Finding sync wrapper methods in project: {ProjectPath}", request.ProjectPath);
+
+            var syncWrappers = await _callGraphAnalyzer.FindSyncWrapperMethodsAsync(
+                request.ProjectPath,
+                cancellationToken);
+
+            _logger.LogInformation("Found {Count} sync wrapper methods", syncWrappers.Count);
+
+            return Ok(syncWrappers);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to find sync wrapper methods");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Finds sync wrapper methods in source code
+    /// </summary>
+    [HttpPost("find-sync-wrappers/source")]
+    public async Task<ActionResult<List<SyncWrapperMethod>>> FindSyncWrappersInSource(
+        [FromBody] AnalyzeSourceRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            _logger.LogInformation("Finding sync wrapper methods in source code");
+
+            var syncWrappers = await _callGraphAnalyzer.FindSyncWrapperMethodsInSourceAsync(
+                request.SourceCode,
+                request.FileName,
+                cancellationToken);
+
+            _logger.LogInformation("Found {Count} sync wrapper methods", syncWrappers.Count);
+
+            return Ok(syncWrappers);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to find sync wrapper methods");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Finds sync wrapper methods and automatically runs async flooding analysis from them
+    /// </summary>
+    [HttpPost("analyze/from-sync-wrappers")]
+    public async Task<ActionResult<SyncWrapperAnalysisResult>> AnalyzeFromSyncWrappers(
+        [FromBody] AnalyzeProjectRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            _logger.LogInformation("Analyzing project from sync wrappers: {ProjectPath}", request.ProjectPath);
+
+            // Step 1: Find sync wrapper methods
+            var syncWrappers = await _callGraphAnalyzer.FindSyncWrapperMethodsAsync(
+                request.ProjectPath,
+                cancellationToken);
+
+            if (syncWrappers.Count == 0)
+            {
+                return Ok(new SyncWrapperAnalysisResult
+                {
+                    SyncWrappers = syncWrappers,
+                    CallGraph = null,
+                    Message = "No sync wrapper methods found in the project"
+                });
+            }
+
+            // Step 2: Build call graph
+            var callGraph = await _callGraphAnalyzer.AnalyzeProjectAsync(
+                request.ProjectPath,
+                cancellationToken);
+
+            // Step 3: Use sync wrapper method IDs as root methods for flooding
+            var rootMethodIds = new HashSet<string>(syncWrappers.Select(sw => sw.MethodId));
+
+            // Step 4: Analyze flooding
+            var updatedCallGraph = await _floodingAnalyzer.AnalyzeFloodingAsync(
+                callGraph,
+                rootMethodIds,
+                cancellationToken);
+
+            // Store in Neo4j
+            await _callGraphRepository.StoreCallGraphAsync(updatedCallGraph, cancellationToken);
+
+            _logger.LogInformation(
+                "Analysis complete. Found {WrapperCount} sync wrappers, {FloodedCount} methods need async transformation",
+                syncWrappers.Count,
+                updatedCallGraph.FloodedMethods.Count);
+
+            return Ok(new SyncWrapperAnalysisResult
+            {
+                SyncWrappers = syncWrappers,
+                CallGraph = updatedCallGraph,
+                Message = $"Found {syncWrappers.Count} sync wrapper(s), {updatedCallGraph.FloodedMethods.Count} method(s) need async transformation"
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to analyze from sync wrappers");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+}
+
+/// <summary>
+/// Result of analyzing a project starting from sync wrapper methods
+/// </summary>
+public class SyncWrapperAnalysisResult
+{
+    public List<SyncWrapperMethod> SyncWrappers { get; set; } = new();
+    public CallGraph? CallGraph { get; set; }
+    public string Message { get; set; } = string.Empty;
 }
