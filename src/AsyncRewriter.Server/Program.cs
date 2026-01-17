@@ -1,0 +1,56 @@
+using AsyncRewriter.Analyzer;
+using AsyncRewriter.Core.Interfaces;
+using AsyncRewriter.Neo4j;
+using AsyncRewriter.Neo4j.Configuration;
+using AsyncRewriter.Transformation;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Add services to the container.
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(c =>
+{
+    c.SwaggerDoc("v1", new()
+    {
+        Title = "Async Rewriter API",
+        Version = "v1",
+        Description = "C# Roslyn-based API for transforming synchronous code to async with call graph analysis"
+    });
+});
+
+// Configure Neo4j
+builder.Services.Configure<Neo4jOptions>(
+    builder.Configuration.GetSection(Neo4jOptions.SectionName));
+
+// Register services
+builder.Services.AddSingleton<ICallGraphAnalyzer, CallGraphAnalyzer>();
+builder.Services.AddSingleton<ICallGraphRepository, CallGraphRepository>();
+builder.Services.AddSingleton<IAsyncFloodingAnalyzer, AsyncFloodingAnalyzer>();
+builder.Services.AddScoped<IAsyncTransformer, AsyncTransformer>();
+
+// Add CORS
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+    {
+        policy.AllowAnyOrigin()
+              .AllowAnyMethod()
+              .AllowAnyHeader();
+    });
+});
+
+var app = builder.Build();
+
+// Configure the HTTP request pipeline.
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
+app.UseCors();
+app.UseAuthorization();
+app.MapControllers();
+
+app.Run();

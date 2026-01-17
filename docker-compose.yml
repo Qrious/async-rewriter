@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  neo4j:
+    image: neo4j:5.15.0
+    container_name: async-rewriter-neo4j
+    ports:
+      - "7474:7474"  # HTTP
+      - "7687:7687"  # Bolt
+    environment:
+      - NEO4J_AUTH=neo4j/password
+      - NEO4J_PLUGINS=["apoc"]
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    networks:
+      - async-rewriter-network
+
+  async-rewriter-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: async-rewriter-api
+    ports:
+      - "5000:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - Neo4j__Uri=bolt://neo4j:7687
+      - Neo4j__Username=neo4j
+      - Neo4j__Password=password
+    depends_on:
+      - neo4j
+    networks:
+      - async-rewriter-network
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
+
+networks:
+  async-rewriter-network:
+    driver: bridge

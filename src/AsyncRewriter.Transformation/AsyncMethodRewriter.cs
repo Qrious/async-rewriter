@@ -1,0 +1,162 @@
+using AsyncRewriter.Core.Models;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+
+namespace AsyncRewriter.Transformation;
+
+/// <summary>
+/// Roslyn syntax rewriter that transforms synchronous methods to async
+/// </summary>
+public class AsyncMethodRewriter : CSharpSyntaxRewriter
+{
+    private readonly SemanticModel _semanticModel;
+    private readonly HashSet<string> _methodsToTransform;
+    private readonly HashSet<string> _asyncMethodIds;
+    private readonly List<int> _awaitAddedLines = new();
+
+    public IReadOnlyList<int> AwaitAddedLines => _awaitAddedLines;
+
+    public AsyncMethodRewriter(
+        SemanticModel semanticModel,
+        HashSet<string> methodsToTransform,
+        HashSet<string> asyncMethodIds)
+    {
+        _semanticModel = semanticModel;
+        _methodsToTransform = methodsToTransform;
+        _asyncMethodIds = asyncMethodIds;
+    }
+
+    public override SyntaxNode? VisitMethodDeclaration(MethodDeclarationSyntax node)
+    {
+        var methodSymbol = _semanticModel.GetDeclaredSymbol(node);
+        if (methodSymbol == null)
+            return base.VisitMethodDeclaration(node);
+
+        var methodId = GetMethodId(methodSymbol);
+
+        // If this method needs to be transformed to async
+        if (_methodsToTransform.Contains(methodId) && !methodSymbol.IsAsync)
+        {
+            // Add async modifier
+            var asyncModifier = SyntaxFactory.Token(SyntaxKind.AsyncKeyword)
+                .WithTrailingTrivia(SyntaxFactory.Space);
+
+            var newModifiers = node.Modifiers.Add(asyncModifier);
+
+            // Transform return type
+            var newReturnType = TransformReturnType(node.ReturnType, methodSymbol.ReturnType);
+
+            // Visit method body to add await keywords
+            var newBody = (BlockSyntax?)Visit(node.Body);
+            var newExpressionBody = (ArrowExpressionClauseSyntax?)Visit(node.ExpressionBody);
+
+            return node
+                .WithModifiers(newModifiers)
+                .WithReturnType(newReturnType)
+                .WithBody(newBody)
+                .WithExpressionBody(newExpressionBody);
+        }
+
+        return base.VisitMethodDeclaration(node);
+    }
+
+    public override SyntaxNode? VisitInvocationExpression(InvocationExpressionSyntax node)
+    {
+        var symbolInfo = _semanticModel.GetSymbolInfo(node);
+        var methodSymbol = symbolInfo.Symbol as IMethodSymbol;
+
+        if (methodSymbol != null)
+        {
+            var methodId = GetMethodId(methodSymbol);
+
+            // If this invocation calls an async method or a method that will be async
+            if (methodSymbol.IsAsync || _asyncMethodIds.Contains(methodId))
+            {
+                // Check if already awaited
+                var parent = node.Parent;
+                if (parent is AwaitExpressionSyntax)
+                {
+                    return base.VisitInvocationExpression(node);
+                }
+
+                // Add await
+                var awaitExpression = SyntaxFactory.AwaitExpression(node)
+                    .WithAwaitKeyword(
+                        SyntaxFactory.Token(SyntaxKind.AwaitKeyword)
+                            .WithTrailingTrivia(SyntaxFactory.Space));
+
+                // Track line number
+                var lineSpan = node.GetLocation().GetLineSpan();
+                _awaitAddedLines.Add(lineSpan.StartLinePosition.Line + 1);
+
+                return awaitExpression;
+            }
+        }
+
+        return base.VisitInvocationExpression(node);
+    }
+
+    public override SyntaxNode? VisitLocalFunctionStatement(LocalFunctionStatementSyntax node)
+    {
+        var methodSymbol = _semanticModel.GetDeclaredSymbol(node);
+        if (methodSymbol == null)
+            return base.VisitLocalFunctionStatement(node);
+
+        var methodId = GetMethodId(methodSymbol);
+
+        // If this local function needs to be transformed to async
+        if (_methodsToTransform.Contains(methodId) && !methodSymbol.IsAsync)
+        {
+            var asyncModifier = SyntaxFactory.Token(SyntaxKind.AsyncKeyword)
+                .WithTrailingTrivia(SyntaxFactory.Space);
+
+            var newModifiers = node.Modifiers.Add(asyncModifier);
+            var newReturnType = TransformReturnType(node.ReturnType, methodSymbol.ReturnType);
+
+            var newBody = (BlockSyntax?)Visit(node.Body);
+            var newExpressionBody = (ArrowExpressionClauseSyntax?)Visit(node.ExpressionBody);
+
+            return node
+                .WithModifiers(newModifiers)
+                .WithReturnType(newReturnType)
+                .WithBody(newBody)
+                .WithExpressionBody(newExpressionBody);
+        }
+
+        return base.VisitLocalFunctionStatement(node);
+    }
+
+    private TypeSyntax TransformReturnType(TypeSyntax originalType, ITypeSymbol typeSymbol)
+    {
+        var typeString = typeSymbol.ToDisplayString();
+
+        // If already Task or Task<T>, keep it
+        if (typeString.StartsWith("System.Threading.Tasks.Task"))
+        {
+            return originalType;
+        }
+
+        // If void, return Task
+        if (typeString == "void")
+        {
+            return SyntaxFactory.ParseTypeName("Task")
+                .WithTrailingTrivia(originalType.GetTrailingTrivia());
+        }
+
+        // Otherwise wrap in Task<T>
+        var taskType = SyntaxFactory.GenericName(
+            SyntaxFactory.Identifier("Task"),
+            SyntaxFactory.TypeArgumentList(
+                SyntaxFactory.SingletonSeparatedList(originalType.WithoutTrailingTrivia())));
+
+        return taskType.WithTrailingTrivia(originalType.GetTrailingTrivia());
+    }
+
+    private string GetMethodId(IMethodSymbol methodSymbol)
+    {
+        var parameters = string.Join(", ", methodSymbol.Parameters.Select(p => p.Type.ToDisplayString()));
+        var signature = $"{methodSymbol.Name}({parameters})";
+        return $"{methodSymbol.ContainingType?.ToDisplayString()}.{signature}";
+    }
+}
