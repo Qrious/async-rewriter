@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -12,8 +13,8 @@ public class CallGraph
     public string Id { get; set; } = Guid.NewGuid().ToString();
     public string ProjectName { get; set; } = string.Empty;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
-    public Dictionary<string, MethodNode> Methods { get; set; } = new();
-    public List<MethodCall> Calls { get; set; } = new();
+    public ConcurrentDictionary<string, MethodNode> Methods { get; set; } = new();
+    public ConcurrentBag<MethodCall> Calls { get; set; } = new();
 
     /// <summary>
     /// Root methods that were marked for async transformation
@@ -30,7 +31,7 @@ public class CallGraph
     /// </summary>
     public void AddMethod(MethodNode method)
     {
-        Methods[method.Id] = method;
+        Methods.AddOrUpdate(method.Id, method, (key, existing) => method);
     }
 
     /// <summary>
