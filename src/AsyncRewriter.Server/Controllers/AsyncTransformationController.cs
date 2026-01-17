@@ -1,6 +1,7 @@
 using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
 using AsyncRewriter.Server.DTOs;
+using AsyncRewriter.Server.Services;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AsyncRewriter.Server.Controllers;
@@ -13,6 +14,7 @@ public class AsyncTransformationController : ControllerBase
     private readonly ICallGraphRepository _callGraphRepository;
     private readonly IAsyncFloodingAnalyzer _floodingAnalyzer;
     private readonly IAsyncTransformer _asyncTransformer;
+    private readonly IJobService _jobService;
     private readonly ILogger<AsyncTransformationController> _logger;
 
     public AsyncTransformationController(
@@ -20,17 +22,89 @@ public class AsyncTransformationController : ControllerBase
         ICallGraphRepository callGraphRepository,
         IAsyncFloodingAnalyzer floodingAnalyzer,
         IAsyncTransformer asyncTransformer,
+        IJobService jobService,
         ILogger<AsyncTransformationController> logger)
     {
         _callGraphAnalyzer = callGraphAnalyzer;
         _callGraphRepository = callGraphRepository;
         _floodingAnalyzer = floodingAnalyzer;
         _asyncTransformer = asyncTransformer;
+        _jobService = jobService;
         _logger = logger;
     }
 
     /// <summary>
-    /// Analyzes a C# project and builds a call graph
+    /// Starts an async analysis job for a C# project (returns immediately with job ID)
+    /// </summary>
+    [HttpPost("analyze/project/async")]
+    public ActionResult<AnalysisJobResponse> StartAnalysisJob([FromBody] AnalyzeProjectRequest request)
+    {
+        try
+        {
+            _logger.LogInformation("Starting async analysis job for project: {ProjectPath}", request.ProjectPath);
+
+            var jobId = _jobService.CreateJob(request.ProjectPath);
+
+            return Ok(new AnalysisJobResponse
+            {
+                JobId = jobId,
+                Status = JobStatus.Queued,
+                Message = "Analysis job has been queued and will be processed in the background"
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to start analysis job");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Gets the status and progress of an analysis job
+    /// </summary>
+    [HttpGet("jobs/{jobId}")]
+    public ActionResult<JobStatusResponse> GetJobStatus(string jobId)
+    {
+        try
+        {
+            var job = _jobService.GetJob(jobId);
+
+            if (job == null)
+                return NotFound(new { error = "Job not found" });
+
+            return Ok(job.ToStatusResponse());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get job status");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Cancels a running or queued analysis job
+    /// </summary>
+    [HttpPost("jobs/{jobId}/cancel")]
+    public ActionResult CancelJob(string jobId)
+    {
+        try
+        {
+            var cancelled = _jobService.CancelJob(jobId);
+
+            if (!cancelled)
+                return BadRequest(new { error = "Job cannot be cancelled (not found or already completed)" });
+
+            return Ok(new { message = "Job cancelled successfully" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to cancel job");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Analyzes a C# project and builds a call graph (synchronous - may timeout on large projects)
     /// </summary>
     [HttpPost("analyze/project")]
     public async Task<ActionResult<CallGraph>> AnalyzeProject(

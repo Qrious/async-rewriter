@@ -2,6 +2,7 @@ using AsyncRewriter.Analyzer;
 using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Neo4j;
 using AsyncRewriter.Neo4j.Configuration;
+using AsyncRewriter.Server.Services;
 using AsyncRewriter.Transformation;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -28,6 +29,10 @@ builder.Services.AddSingleton<ICallGraphAnalyzer, CallGraphAnalyzer>();
 builder.Services.AddSingleton<ICallGraphRepository, CallGraphRepository>();
 builder.Services.AddSingleton<IAsyncFloodingAnalyzer, AsyncFloodingAnalyzer>();
 builder.Services.AddScoped<IAsyncTransformer, AsyncTransformer>();
+
+// Register job service and background worker
+builder.Services.AddSingleton<IJobService, JobService>();
+builder.Services.AddHostedService<AnalysisBackgroundService>();
 
 // Add CORS
 builder.Services.AddCors(options =>
