@@ -40,11 +40,37 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                 continue;
 
             // If this method is not already async, mark it for transformation
-            if (!currentMethod.IsAsync)
+            // Skip sync wrapper methods themselves - they'll be unwrapped, not transformed
+            if (!currentMethod.IsAsync && !callGraph.SyncWrapperMethods.Contains(currentMethodId))
             {
                 methodsToFlood.Add(currentMethodId);
                 currentMethod.RequiresAsyncTransformation = true;
                 currentMethod.AsyncReturnType = DetermineAsyncReturnType(currentMethod.ReturnType);
+
+                // Also mark any interface methods this method implements
+                foreach (var interfaceMethodId in currentMethod.ImplementsInterfaceMethods)
+                {
+                    if (callGraph.Methods.TryGetValue(interfaceMethodId, out var interfaceMethod))
+                    {
+                        if (!interfaceMethod.RequiresAsyncTransformation)
+                        {
+                            methodsToFlood.Add(interfaceMethodId);
+                            interfaceMethod.RequiresAsyncTransformation = true;
+                            interfaceMethod.AsyncReturnType = DetermineAsyncReturnType(interfaceMethod.ReturnType);
+
+                            // Find and mark ALL other implementations of this interface method
+                            foreach (var method in callGraph.Methods.Values)
+                            {
+                                if (method.ImplementsInterfaceMethods.Contains(interfaceMethodId) &&
+                                    !method.RequiresAsyncTransformation &&
+                                    !method.IsAsync)
+                                {
+                                    queue.Enqueue(method.Id);
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // Find all callers (including through interface calls) and add them to the queue

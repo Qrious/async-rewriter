@@ -24,6 +24,7 @@ public interface IAsyncTransformer
     Task<FileTransformation> TransformFileAsync(
         string filePath,
         List<AsyncTransformationInfo> transformations,
+        HashSet<string>? syncWrapperMethodIds = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -32,5 +33,6 @@ public interface IAsyncTransformer
     Task<string> TransformSourceAsync(
         string sourceCode,
         List<AsyncTransformationInfo> transformations,
+        HashSet<string>? syncWrapperMethodIds = null,
         CancellationToken cancellationToken = default);
 }

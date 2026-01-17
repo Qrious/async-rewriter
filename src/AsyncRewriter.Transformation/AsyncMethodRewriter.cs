@@ -15,6 +15,7 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
     private readonly SemanticModel _semanticModel;
     private readonly HashSet<string> _methodsToTransform;
     private readonly HashSet<string> _asyncMethodIds;
+    private readonly HashSet<string> _syncWrapperMethodIds;
     private readonly List<int> _awaitAddedLines = new();
 
     public IReadOnlyList<int> AwaitAddedLines => _awaitAddedLines;
@@ -22,11 +23,13 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
     public AsyncMethodRewriter(
         SemanticModel semanticModel,
         HashSet<string> methodsToTransform,
-        HashSet<string> asyncMethodIds)
+        HashSet<string> asyncMethodIds,
+        HashSet<string>? syncWrapperMethodIds = null)
     {
         _semanticModel = semanticModel;
         _methodsToTransform = methodsToTransform;
         _asyncMethodIds = asyncMethodIds;
+        _syncWrapperMethodIds = syncWrapperMethodIds ?? new HashSet<string>();
     }
 
     public override SyntaxNode? VisitMethodDeclaration(MethodDeclarationSyntax node)
@@ -40,14 +43,24 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         // If this method needs to be transformed to async
         if (_methodsToTransform.Contains(methodId) && !methodSymbol.IsAsync)
         {
-            // Add async modifier
+            // Check if this is an interface method (no body, no expression body)
+            var isInterfaceMethod = methodSymbol.ContainingType?.TypeKind == TypeKind.Interface;
+
+            if (isInterfaceMethod)
+            {
+                // Interface methods only need return type change, no async keyword
+                var newReturnType = TransformReturnType(node.ReturnType, methodSymbol.ReturnType);
+                return node.WithReturnType(newReturnType);
+            }
+
+            // Add async modifier for non-interface methods
             var asyncModifier = SyntaxFactory.Token(SyntaxKind.AsyncKeyword)
                 .WithTrailingTrivia(SyntaxFactory.Space);
 
             var newModifiers = node.Modifiers.Add(asyncModifier);
 
             // Transform return type
-            var newReturnType = TransformReturnType(node.ReturnType, methodSymbol.ReturnType);
+            var newReturnType2 = TransformReturnType(node.ReturnType, methodSymbol.ReturnType);
 
             // Visit method body to add await keywords
             var newBody = (BlockSyntax?)Visit(node.Body);
@@ -55,7 +68,7 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
 
             return node
                 .WithModifiers(newModifiers)
-                .WithReturnType(newReturnType)
+                .WithReturnType(newReturnType2)
                 .WithBody(newBody)
                 .WithExpressionBody(newExpressionBody);
         }
@@ -71,6 +84,16 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         if (methodSymbol != null)
         {
             var methodId = GetMethodId(methodSymbol);
+
+            // Check if this is a sync wrapper call that should be unwrapped
+            if (_syncWrapperMethodIds.Contains(methodId))
+            {
+                var unwrapped = TryUnwrapSyncWrapperCall(node);
+                if (unwrapped != null)
+                {
+                    return unwrapped;
+                }
+            }
 
             // If this invocation calls an async method or a method that will be async
             if (methodSymbol.IsAsync || _asyncMethodIds.Contains(methodId))
@@ -101,6 +124,72 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         }
 
         return base.VisitInvocationExpression(node);
+    }
+
+    /// <summary>
+    /// Attempts to unwrap a sync wrapper call like AsyncHelper.RunSync(() => SomeAsyncMethod())
+    /// into await SomeAsyncMethod()
+    /// </summary>
+    private SyntaxNode? TryUnwrapSyncWrapperCall(InvocationExpressionSyntax node)
+    {
+        // Find the lambda/delegate argument
+        var arguments = node.ArgumentList.Arguments;
+        if (arguments.Count == 0)
+            return null;
+
+        // The first argument should be the Func<Task> or Func<Task<T>>
+        var funcArgument = arguments[0].Expression;
+
+        ExpressionSyntax? asyncCallExpression = null;
+
+        // Handle lambda expression: () => SomeAsyncMethod()
+        if (funcArgument is ParenthesizedLambdaExpressionSyntax lambda)
+        {
+            if (lambda.ExpressionBody != null)
+            {
+                // Simple expression body: () => GetDataAsync()
+                asyncCallExpression = lambda.ExpressionBody;
+            }
+            else if (lambda.Block != null)
+            {
+                // Block body: () => { return GetDataAsync(); }
+                var returnStatement = lambda.Block.Statements
+                    .OfType<ReturnStatementSyntax>()
+                    .FirstOrDefault();
+                if (returnStatement?.Expression != null)
+                {
+                    asyncCallExpression = returnStatement.Expression;
+                }
+            }
+        }
+        // Handle simple lambda: x => SomeAsyncMethod(x)
+        else if (funcArgument is SimpleLambdaExpressionSyntax simpleLambda)
+        {
+            if (simpleLambda.ExpressionBody != null)
+            {
+                asyncCallExpression = simpleLambda.ExpressionBody;
+            }
+        }
+
+        if (asyncCallExpression == null)
+            return null;
+
+        // Preserve leading trivia from the original call
+        var leadingTrivia = node.GetLeadingTrivia();
+
+        // Create await expression for the unwrapped async call
+        var awaitExpression = SyntaxFactory.AwaitExpression(
+                asyncCallExpression.WithoutLeadingTrivia())
+            .WithAwaitKeyword(
+                SyntaxFactory.Token(SyntaxKind.AwaitKeyword)
+                    .WithLeadingTrivia(leadingTrivia)
+                    .WithTrailingTrivia(SyntaxFactory.Space));
+
+        // Track line number
+        var lineSpan = node.GetLocation().GetLineSpan();
+        _awaitAddedLines.Add(lineSpan.StartLinePosition.Line + 1);
+
+        return awaitExpression;
     }
 
     public override SyntaxNode? VisitLocalFunctionStatement(LocalFunctionStatementSyntax node)
@@ -143,20 +232,28 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
             return originalType;
         }
 
+        // Preserve leading and trailing trivia from original type
+        var leadingTrivia = originalType.GetLeadingTrivia();
+        var trailingTrivia = originalType.GetTrailingTrivia();
+
         // If void, return Task
         if (typeString == "void")
         {
             return SyntaxFactory.ParseTypeName("Task")
-                .WithTrailingTrivia(originalType.GetTrailingTrivia());
+                .WithLeadingTrivia(leadingTrivia)
+                .WithTrailingTrivia(trailingTrivia);
         }
 
         // Otherwise wrap in Task<T>
         var taskType = SyntaxFactory.GenericName(
             SyntaxFactory.Identifier("Task"),
             SyntaxFactory.TypeArgumentList(
-                SyntaxFactory.SingletonSeparatedList(originalType.WithoutTrailingTrivia())));
+                SyntaxFactory.SingletonSeparatedList(
+                    originalType.WithoutLeadingTrivia().WithoutTrailingTrivia())));
 
-        return taskType.WithTrailingTrivia(originalType.GetTrailingTrivia());
+        return taskType
+            .WithLeadingTrivia(leadingTrivia)
+            .WithTrailingTrivia(trailingTrivia);
     }
 
     private string GetMethodId(IMethodSymbol methodSymbol)

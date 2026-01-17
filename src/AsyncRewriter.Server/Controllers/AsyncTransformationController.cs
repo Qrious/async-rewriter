@@ -348,6 +348,7 @@ public class AsyncTransformationController : ControllerBase
             var transformedSource = await _asyncTransformer.TransformSourceAsync(
                 request.SourceCode,
                 transformations,
+                null,
                 cancellationToken);
 
             return Ok(new { transformedSource, callGraph = updatedCallGraph });
@@ -493,6 +494,9 @@ public class AsyncTransformationController : ControllerBase
 
             // Step 3: Use sync wrapper method IDs as root methods for flooding
             var rootMethodIds = new HashSet<string>(syncWrappers.Select(sw => sw.MethodId));
+
+            // Track sync wrapper methods for unwrapping during transformation
+            callGraph.SyncWrapperMethods = new HashSet<string>(rootMethodIds);
 
             // Step 4: Analyze flooding
             var updatedCallGraph = await _floodingAnalyzer.AnalyzeFloodingAsync(

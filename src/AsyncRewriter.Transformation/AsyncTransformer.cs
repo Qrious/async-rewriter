@@ -66,7 +66,7 @@ public class AsyncTransformer : IAsyncTransformer
                     .Where(t => callGraph.Methods.TryGetValue(t.MethodId, out var m) && m.FilePath == filePath)
                     .ToList();
 
-                var fileTransformation = await TransformFileAsync(filePath, fileTransformations, cancellationToken);
+                var fileTransformation = await TransformFileAsync(filePath, fileTransformations, callGraph.SyncWrapperMethods, cancellationToken);
                 result.ModifiedFiles.Add(fileTransformation);
 
                 result.TotalMethodsTransformed += fileTransformation.MethodTransformations.Count;
@@ -88,10 +88,11 @@ public class AsyncTransformer : IAsyncTransformer
     public async Task<FileTransformation> TransformFileAsync(
         string filePath,
         List<AsyncTransformationInfo> transformations,
+        HashSet<string>? syncWrapperMethodIds = null,
         CancellationToken cancellationToken = default)
     {
         var originalContent = await File.ReadAllTextAsync(filePath, cancellationToken);
-        var transformedContent = await TransformSourceAsync(originalContent, transformations, cancellationToken);
+        var transformedContent = await TransformSourceAsync(originalContent, transformations, syncWrapperMethodIds, cancellationToken);
 
         var fileTransformation = new FileTransformation
         {
@@ -120,6 +121,7 @@ public class AsyncTransformer : IAsyncTransformer
     public async Task<string> TransformSourceAsync(
         string sourceCode,
         List<AsyncTransformationInfo> transformations,
+        HashSet<string>? syncWrapperMethodIds = null,
         CancellationToken cancellationToken = default)
     {
         var syntaxTree = CSharpSyntaxTree.ParseText(sourceCode, cancellationToken: cancellationToken);
@@ -147,8 +149,8 @@ public class AsyncTransformer : IAsyncTransformer
             }
         }
 
-        // Create rewriter
-        var rewriter = new AsyncMethodRewriter(semanticModel, methodsToTransform, asyncMethodIds);
+        // Create rewriter with sync wrapper method IDs for unwrapping
+        var rewriter = new AsyncMethodRewriter(semanticModel, methodsToTransform, asyncMethodIds, syncWrapperMethodIds);
 
         // Apply transformation
         var newRoot = rewriter.Visit(root);
@@ -164,7 +166,8 @@ public class AsyncTransformer : IAsyncTransformer
             {
                 var taskUsing = SyntaxFactory.UsingDirective(
                     SyntaxFactory.ParseName("System.Threading.Tasks")
-                        .WithLeadingTrivia(SyntaxFactory.Space));
+                        .WithLeadingTrivia(SyntaxFactory.Space))
+                    .WithTrailingTrivia(SyntaxFactory.EndOfLine(Environment.NewLine));
 
                 compilationUnit = compilationUnit.AddUsings(taskUsing);
                 newRoot = compilationUnit;

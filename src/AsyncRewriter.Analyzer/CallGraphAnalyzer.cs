@@ -112,6 +112,26 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
                 callGraph.AddMethod(methodNode);
             });
 
+        // Collect interface method declarations
+        var interfaceDeclarations = root.DescendantNodes()
+            .OfType<InterfaceDeclarationSyntax>()
+            .ToList();
+
+        foreach (var interfaceDecl in interfaceDeclarations)
+        {
+            var interfaceSymbol = semanticModel.GetDeclaredSymbol(interfaceDecl);
+            if (interfaceSymbol == null) continue;
+
+            foreach (var member in interfaceDecl.Members.OfType<MethodDeclarationSyntax>())
+            {
+                var methodSymbol = semanticModel.GetDeclaredSymbol(member);
+                if (methodSymbol == null) continue;
+
+                var methodNode = CreateInterfaceMethodNode(member, methodSymbol, filePath);
+                callGraph.AddMethod(methodNode);
+            }
+        }
+
         // Second pass: analyze method calls in parallel
         Parallel.ForEach(
             methodDeclarations,
@@ -219,6 +239,28 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
             FilePath = filePath,
             IsAsync = methodSymbol.IsAsync,
             Signature = GetMethodSignature(methodSymbol)
+        };
+    }
+
+    private MethodNode CreateInterfaceMethodNode(MethodDeclarationSyntax methodDecl, IMethodSymbol methodSymbol, string filePath)
+    {
+        var lineSpan = methodDecl.GetLocation().GetLineSpan();
+
+        return new MethodNode
+        {
+            Id = GetMethodId(methodSymbol),
+            Name = methodSymbol.Name,
+            ContainingType = methodSymbol.ContainingType?.ToDisplayString() ?? "",
+            ContainingNamespace = methodSymbol.ContainingNamespace?.ToDisplayString() ?? "",
+            ReturnType = methodSymbol.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+            Parameters = methodSymbol.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
+            FilePath = filePath,
+            StartLine = lineSpan.StartLinePosition.Line + 1,
+            EndLine = lineSpan.EndLinePosition.Line + 1,
+            IsAsync = false, // Interface methods cannot have async modifier
+            IsInterfaceMethod = true,
+            Signature = GetMethodSignature(methodSymbol),
+            SourceCode = methodDecl.ToFullString()
         };
     }
 

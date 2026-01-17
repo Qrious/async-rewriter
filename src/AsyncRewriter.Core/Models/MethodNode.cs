@@ -46,4 +46,9 @@ public class MethodNode
     /// IDs of interface methods that this method implements
     /// </summary>
     public List<string> ImplementsInterfaceMethods { get; set; } = new();
+
+    /// <summary>
+    /// Indicates if this method is declared in an interface
+    /// </summary>
+    public bool IsInterfaceMethod { get; set; }
 }

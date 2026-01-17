@@ -22,6 +22,11 @@ public class CallGraph
     public HashSet<string> RootAsyncMethods { get; set; } = new();
 
     /// <summary>
+    /// Sync wrapper methods (like AsyncHelper.RunSync) whose calls should be unwrapped
+    /// </summary>
+    public HashSet<string> SyncWrapperMethods { get; set; } = new();
+
+    /// <summary>
     /// Methods affected by async flooding (need to become async)
     /// </summary>
     public HashSet<string> FloodedMethods { get; set; } = new();

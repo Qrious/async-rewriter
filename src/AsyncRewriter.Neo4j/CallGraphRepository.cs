@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using AsyncRewriter.Core.Interfaces;
@@ -34,12 +35,14 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable
             await tx.RunAsync(
                 @"MERGE (cg:CallGraph {id: $id})
                   SET cg.projectName = $projectName,
-                      cg.createdAt = $createdAt",
+                      cg.createdAt = $createdAt,
+                      cg.syncWrapperMethods = $syncWrapperMethods",
                 new
                 {
                     id = callGraph.Id,
                     projectName = callGraph.ProjectName,
-                    createdAt = callGraph.CreatedAt
+                    createdAt = callGraph.CreatedAt,
+                    syncWrapperMethods = callGraph.SyncWrapperMethods.ToList()
                 });
 
             // Create Method nodes
@@ -59,7 +62,8 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable
                           m.requiresAsyncTransformation = $requiresAsyncTransformation,
                           m.asyncReturnType = $asyncReturnType,
                           m.signature = $signature,
-                          m.sourceCode = $sourceCode
+                          m.sourceCode = $sourceCode,
+                          m.isInterfaceMethod = $isInterfaceMethod
                       MERGE (cg:CallGraph {id: $callGraphId})
                       MERGE (cg)-[:CONTAINS]->(m)",
                     new
@@ -78,6 +82,7 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable
                         asyncReturnType = method.AsyncReturnType ?? "",
                         signature = method.Signature,
                         sourceCode = method.SourceCode ?? "",
+                        isInterfaceMethod = method.IsInterfaceMethod,
                         callGraphId = callGraph.Id
                     });
             }
@@ -143,7 +148,10 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable
             {
                 Id = cgNode.Properties["id"].As<string>(),
                 ProjectName = cgNode.Properties["projectName"].As<string>(),
-                CreatedAt = cgNode.Properties["createdAt"].As<DateTime>()
+                CreatedAt = cgNode.Properties["createdAt"].As<ZonedDateTime>().ToDateTimeOffset().UtcDateTime,
+                SyncWrapperMethods = cgNode.Properties.ContainsKey("syncWrapperMethods")
+                    ? new HashSet<string>(cgNode.Properties["syncWrapperMethods"].As<List<string>>())
+                    : new HashSet<string>()
             };
 
             // Get all methods
@@ -309,7 +317,9 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable
             Signature = node.Properties["signature"].As<string>(),
             SourceCode = node.Properties.ContainsKey("sourceCode")
                 ? node.Properties["sourceCode"].As<string>()
-                : null
+                : null,
+            IsInterfaceMethod = node.Properties.ContainsKey("isInterfaceMethod")
+                && node.Properties["isInterfaceMethod"].As<bool>()
         };
     }
 
