@@ -10,6 +10,9 @@ A C# Roslyn-based server for efficiently transforming synchronous methods to asy
 - **Automated Transformation**: Automatically rewrites code to add async/await keywords and transform return types
 - **REST API**: Provides a complete API for analysis and transformation
 - **Batch Processing**: Outputs all modified files at once for review before applying
+- **Async Background Processing**: Long-running analysis jobs run in the background to prevent timeouts
+- **Job Status Tracking**: Query job progress and status with real-time updates
+- **CLI Client**: Command-line tool for easy interaction with the API
 
 ## Architecture
 
@@ -19,7 +22,8 @@ The solution is divided into several projects:
 - **AsyncRewriter.Analyzer**: Roslyn-based call graph analyzer and flooding analyzer
 - **AsyncRewriter.Neo4j**: Neo4j repository for call graph storage
 - **AsyncRewriter.Transformation**: Roslyn syntax rewriter for code transformation
-- **AsyncRewriter.Server**: ASP.NET Core Web API
+- **AsyncRewriter.Server**: ASP.NET Core Web API with background job processing
+- **AsyncRewriter.Client**: Command-line interface for interacting with the API
 
 ## Prerequisites
 
@@ -77,11 +81,91 @@ To run the entire stack (API + Neo4j):
 docker-compose up --build
 ```
 
+## CLI Client (Recommended)
+
+The easiest way to use Async Rewriter is through the CLI client:
+
+```bash
+cd src/AsyncRewriter.Client
+
+# Analyze a project (returns job ID and waits for completion)
+dotnet run -- analyze /path/to/project.csproj
+
+# Analyze without waiting
+dotnet run -- analyze /path/to/project.csproj --wait false
+
+# Check job status
+dotnet run -- status <job-id>
+
+# Cancel a job
+dotnet run -- cancel <job-id>
+
+# Use custom API server URL
+dotnet run -- --base-url http://your-server:port analyze /path/to/project.csproj
+```
+
+See [AsyncRewriter.Client/README.md](src/AsyncRewriter.Client/README.md) for full documentation.
+
 ## API Usage
 
-### 1. Analyze a Project
+### Async Analysis (Recommended for Large Projects)
 
-Analyzes a C# project and builds a call graph:
+For large projects that may take a while to analyze, use the async endpoint that returns immediately with a job ID:
+
+#### Start Analysis Job
+
+```bash
+POST /api/asynctransformation/analyze/project/async
+Content-Type: application/json
+
+{
+  "projectPath": "/path/to/your/project.csproj"
+}
+```
+
+Response:
+```json
+{
+  "jobId": "abc-123-def-456",
+  "status": "Queued",
+  "message": "Analysis job has been queued and will be processed in the background"
+}
+```
+
+#### Check Job Status
+
+```bash
+GET /api/asynctransformation/jobs/{jobId}
+```
+
+Response:
+```json
+{
+  "jobId": "abc-123-def-456",
+  "status": "Processing",
+  "progressPercentage": 60,
+  "currentStep": "Building call graph",
+  "createdAt": "2024-01-15T10:30:45Z",
+  "startedAt": "2024-01-15T10:30:46Z",
+  "completedAt": null,
+  "errorMessage": null,
+  "result": null
+}
+```
+
+When completed, the `result` field will contain the full call graph.
+
+#### Cancel Job
+
+```bash
+POST /api/asynctransformation/jobs/{jobId}/cancel
+```
+
+### Synchronous Analysis (May Timeout on Large Projects)
+
+#### 1. Analyze a Project
+
+Analyzes a C# project and builds a call graph (blocks until complete):
 
 ```bash
 POST /api/asynctransformation/analyze/project
@@ -356,10 +440,11 @@ The transformer uses Roslyn's `CSharpSyntaxRewriter` to:
 
 - Support for lambda expressions and local functions
 - Integration with MSBuild for automated project transformation
-- CLI tool for command-line usage
 - Visual Studio extension
 - Support for ConfigureAwait(false)
 - Deadlock detection and prevention analysis
+- Persistent job storage (currently jobs are stored in memory)
+- Webhook notifications when jobs complete
 
 ## Contributing
 

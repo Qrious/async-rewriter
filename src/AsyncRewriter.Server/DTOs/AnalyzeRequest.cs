@@ -29,3 +29,32 @@ public class TransformSourceRequest
     public string SourceCode { get; set; } = string.Empty;
     public List<string> MethodsToTransform { get; set; } = new();
 }
+
+public class AnalysisJobResponse
+{
+    public string JobId { get; set; } = string.Empty;
+    public JobStatus Status { get; set; }
+    public string Message { get; set; } = string.Empty;
+}
+
+public class JobStatusResponse
+{
+    public string JobId { get; set; } = string.Empty;
+    public JobStatus Status { get; set; }
+    public int ProgressPercentage { get; set; }
+    public string? CurrentStep { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime? StartedAt { get; set; }
+    public DateTime? CompletedAt { get; set; }
+    public string? ErrorMessage { get; set; }
+    public object? Result { get; set; }
+}
+
+public enum JobStatus
+{
+    Queued,
+    Processing,
+    Completed,
+    Failed,
+    Cancelled
+}
