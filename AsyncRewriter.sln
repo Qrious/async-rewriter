@@ -15,6 +15,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AsyncRewriter.Server", "src
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AsyncRewriter.Client", "src\AsyncRewriter.Client\AsyncRewriter.Client.csproj", "{F6A7B8C9-D0E1-4F5A-3B4C-5D6E7F8A9B0C}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AsyncRewriter.Tests", "tests\AsyncRewriter.Tests\AsyncRewriter.Tests.csproj", "{A7B8C9D0-E1F2-4A5B-3C4D-6E7F8A9B0C1D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AsyncRewriter.IntegrationTests", "tests\AsyncRewriter.IntegrationTests\AsyncRewriter.IntegrationTests.csproj", "{B8C9D0E1-F2A3-4B5C-4D5E-7F8A9B0C1D2E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -45,5 +49,13 @@ Global
 		{F6A7B8C9-D0E1-4F5A-3B4C-5D6E7F8A9B0C}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{F6A7B8C9-D0E1-4F5A-3B4C-5D6E7F8A9B0C}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{F6A7B8C9-D0E1-4F5A-3B4C-5D6E7F8A9B0C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A7B8C9D0-E1F2-4A5B-3C4D-6E7F8A9B0C1D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A7B8C9D0-E1F2-4A5B-3C4D-6E7F8A9B0C1D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A7B8C9D0-E1F2-4A5B-3C4D-6E7F8A9B0C1D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A7B8C9D0-E1F2-4A5B-3C4D-6E7F8A9B0C1D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B8C9D0E1-F2A3-4B5C-4D5E-7F8A9B0C1D2E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B8C9D0E1-F2A3-4B5C-4D5E-7F8A9B0C1D2E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B8C9D0E1-F2A3-4B5C-4D5E-7F8A9B0C1D2E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B8C9D0E1-F2A3-4B5C-4D5E-7F8A9B0C1D2E}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
