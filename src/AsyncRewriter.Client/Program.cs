@@ -89,10 +89,30 @@ class Program
             await FindSyncWrappersAsync(projectPath, analyzeFromWrappers, applyChanges);
         }, baseUrlOption, syncWrapperProjectPath, analyzeFromWrappersOption, applyChangesOption);
 
+        // Transform command
+        var transformCommand = new Command("transform", "Transform a C# project from sync to async based on a call graph");
+        var transformProjectPath = new Argument<string>("project-path", "The path to the C# project to transform");
+        var transformCallGraphId = new Argument<string>("call-graph-id", "The ID of the call graph to use for transformation");
+        var transformApplyOption = new Option<bool>(
+            aliases: new[] { "--apply", "-y" },
+            description: "Apply the changes to the files (default is preview only)",
+            getDefaultValue: () => false);
+
+        transformCommand.AddArgument(transformProjectPath);
+        transformCommand.AddArgument(transformCallGraphId);
+        transformCommand.AddOption(transformApplyOption);
+
+        transformCommand.SetHandler(async (baseUrl, projectPath, callGraphId, applyChanges) =>
+        {
+            _baseUrl = baseUrl;
+            await TransformProjectAsync(projectPath, callGraphId, applyChanges);
+        }, baseUrlOption, transformProjectPath, transformCallGraphId, transformApplyOption);
+
         rootCommand.AddCommand(analyzeCommand);
         rootCommand.AddCommand(statusCommand);
         rootCommand.AddCommand(cancelCommand);
         rootCommand.AddCommand(findSyncWrappersCommand);
+        rootCommand.AddCommand(transformCommand);
 
         return await rootCommand.InvokeAsync(args);
     }
@@ -325,7 +345,7 @@ class Program
         }
     }
 
-    static async Task FindSyncWrappersAsync(string projectPath, bool analyzeFromWrappers)
+    static async Task FindSyncWrappersAsync(string projectPath, bool analyzeFromWrappers, bool applyChanges)
     {
         try
         {
@@ -358,6 +378,17 @@ class Program
                 }
 
                 PrintSyncWrapperAnalysisResult(result);
+
+                // If apply flag is set and we have a call graph, apply the transformations
+                if (applyChanges && result.CallGraph != null && result.CallGraph.FloodedMethods.Count > 0)
+                {
+                    Console.WriteLine();
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine($"Applying transformations to {result.CallGraph.FloodedMethods.Count} method(s)...");
+                    Console.ResetColor();
+
+                    await TransformProjectAsync(projectPath, result.CallGraph.Id, true);
+                }
             }
             else
             {
@@ -397,6 +428,115 @@ class Program
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine($"Error: {ex.Message}");
             Console.ResetColor();
+        }
+    }
+
+    static async Task TransformProjectAsync(string projectPath, string callGraphId, bool applyChanges)
+    {
+        try
+        {
+            Console.WriteLine($"Transforming project: {projectPath}");
+            Console.WriteLine($"Call Graph ID: {callGraphId}");
+            Console.WriteLine($"Apply Changes: {applyChanges}");
+            Console.WriteLine();
+
+            var request = new { projectPath, callGraphId, applyChanges };
+            var response = await _httpClient.PostAsJsonAsync($"{_baseUrl}/api/asynctransformation/transform/project", request);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadAsStringAsync();
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"Error ({response.StatusCode}): {(string.IsNullOrEmpty(error) ? "No error details provided" : error)}");
+                Console.ResetColor();
+                return;
+            }
+
+            var result = await response.Content.ReadFromJsonAsync<TransformationResult>();
+            if (result == null)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("Error: Failed to deserialize transformation result");
+                Console.ResetColor();
+                return;
+            }
+
+            PrintTransformationResult(result, applyChanges);
+        }
+        catch (HttpRequestException ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Error connecting to API: {ex.Message}");
+            Console.WriteLine($"Make sure the API server is running at {_baseUrl}");
+            Console.ResetColor();
+        }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Error: {ex.Message}");
+            Console.ResetColor();
+        }
+    }
+
+    static void PrintTransformationResult(TransformationResult result, bool applied)
+    {
+        if (result.Success)
+        {
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine($"✓ Transformation {(applied ? "applied" : "preview generated")} successfully!");
+            Console.ResetColor();
+            Console.WriteLine();
+            Console.WriteLine($"Files modified: {result.ModifiedFiles.Count}");
+            Console.WriteLine();
+
+            foreach (var file in result.ModifiedFiles)
+            {
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine($"  {file.FilePath}");
+                Console.ResetColor();
+                Console.WriteLine($"    Methods transformed: {file.TransformedMethods.Count}");
+                Console.WriteLine($"    Await keywords added: {file.AwaitLocations.Count}");
+
+                if (file.TransformedMethods.Count > 0)
+                {
+                    Console.WriteLine("    Transformed methods:");
+                    foreach (var method in file.TransformedMethods)
+                    {
+                        Console.WriteLine($"      - {method}");
+                    }
+                }
+                Console.WriteLine();
+            }
+
+            if (!applied)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine("Note: Changes have not been applied to the files.");
+                Console.WriteLine("To apply the changes, use the --apply flag.");
+                Console.ResetColor();
+            }
+            else
+            {
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"✓ Changes have been written to {result.ModifiedFiles.Count} file(s).");
+                Console.ResetColor();
+            }
+        }
+        else
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine("✗ Transformation failed");
+            Console.ResetColor();
+
+            if (result.Errors.Count > 0)
+            {
+                Console.WriteLine();
+                Console.WriteLine("Errors:");
+                foreach (var error in result.Errors)
+                {
+                    Console.WriteLine($"  - {error}");
+                }
+            }
         }
     }
 
@@ -570,4 +710,20 @@ public class MethodNodeResult
     public string? AsyncReturnType { get; set; }
     public string Signature { get; set; } = string.Empty;
     public bool RequiresAsyncTransformation { get; set; }
+}
+
+public class TransformationResult
+{
+    public bool Success { get; set; }
+    public List<FileTransformation> ModifiedFiles { get; set; } = new();
+    public List<string> Errors { get; set; } = new();
+}
+
+public class FileTransformation
+{
+    public string FilePath { get; set; } = string.Empty;
+    public string OriginalContent { get; set; } = string.Empty;
+    public string TransformedContent { get; set; } = string.Empty;
+    public List<string> TransformedMethods { get; set; } = new();
+    public List<int> AwaitLocations { get; set; } = new();
 }

@@ -8,6 +8,9 @@ A command-line interface (CLI) client for the Async Rewriter API. This tool allo
 - Monitor job progress with real-time updates
 - Check job status on demand
 - Cancel running jobs
+- Find sync-over-async wrapper methods
+- Transform projects from sync to async
+- Apply code transformations automatically
 - Configurable API endpoint
 
 ## Prerequisites
@@ -76,6 +79,54 @@ Cancel a running or queued job:
 dotnet run -- cancel <job-id>
 ```
 
+#### Find Sync Wrapper Methods
+
+Find sync-over-async wrapper methods in a project:
+
+```bash
+dotnet run -- find-sync-wrappers /path/to/your/project.csproj
+```
+
+This command identifies methods that wrap async operations in a synchronous manner, which are common candidates for async transformation.
+
+##### Find and Analyze
+
+Automatically run async flooding analysis from the found sync wrappers:
+
+```bash
+dotnet run -- find-sync-wrappers /path/to/your/project.csproj --analyze
+```
+
+##### Find, Analyze, and Apply
+
+Automatically find sync wrappers, analyze, and apply transformations:
+
+```bash
+dotnet run -- find-sync-wrappers /path/to/your/project.csproj --analyze --apply
+```
+
+**Warning:** The `--apply` flag will modify your source files. Make sure you have committed your changes or have a backup before using this option.
+
+#### Transform a Project
+
+Transform a project from sync to async based on a previously analyzed call graph:
+
+```bash
+dotnet run -- transform /path/to/your/project.csproj <call-graph-id>
+```
+
+This will generate a preview of the transformations without modifying files.
+
+##### Apply Transformations
+
+To actually apply the transformations to your source files:
+
+```bash
+dotnet run -- transform /path/to/your/project.csproj <call-graph-id> --apply
+```
+
+**Warning:** The `--apply` flag will modify your source files. Make sure you have committed your changes or have a backup before using this option.
+
 ### Advanced Options
 
 #### Custom Polling Interval
@@ -94,6 +145,9 @@ Display help information:
 dotnet run -- --help
 dotnet run -- analyze --help
 dotnet run -- status --help
+dotnet run -- cancel --help
+dotnet run -- find-sync-wrappers --help
+dotnet run -- transform --help
 ```
 
 ## Examples
@@ -148,6 +202,96 @@ Result:
 
 ```bash
 dotnet run -- --base-url https://api.example.com analyze /path/to/project.csproj
+```
+
+### Example 4: Find and Transform Sync Wrappers
+
+```bash
+$ dotnet run -- find-sync-wrappers /home/user/myproject/MyProject.csproj --analyze
+
+Finding sync wrapper methods in project: /home/user/myproject/MyProject.csproj
+
+Found 2 sync wrapper(s), 15 method(s) need async transformation
+
+Sync Wrapper Methods (Root Methods for Transformation):
+  - MyNamespace.DataService.GetDataSync(Func<Task<string>> fetchAsync)
+    Method with Func<Task<TResult>> parameter that returns TResult
+
+  - MyNamespace.DataService.ExecuteSync(Func<Task> action)
+    Method with Func<Task> parameter that returns void
+
+Methods requiring async transformation (15):
+  - MyNamespace.DataService.GetDataSync
+    Current: string -> Will become: Task<string>
+  - MyNamespace.DataService.ExecuteSync
+    Current: void -> Will become: Task
+  ...
+
+Call Graph ID: callgraph-abc123
+Use this ID with the transform command to apply the changes.
+```
+
+### Example 5: Preview and Apply Transformations
+
+```bash
+# First, preview the transformations
+$ dotnet run -- transform /home/user/myproject/MyProject.csproj callgraph-abc123
+
+Transforming project: /home/user/myproject/MyProject.csproj
+Call Graph ID: callgraph-abc123
+Apply Changes: False
+
+✓ Transformation preview generated successfully!
+
+Files modified: 3
+
+  /home/user/myproject/DataService.cs
+    Methods transformed: 5
+    Await keywords added: 8
+    Transformed methods:
+      - GetDataSync
+      - ExecuteSync
+      - HelperMethod1
+      - HelperMethod2
+      - ProcessData
+
+Note: Changes have not been applied to the files.
+To apply the changes, use the --apply flag.
+
+# Then apply the changes
+$ dotnet run -- transform /home/user/myproject/MyProject.csproj callgraph-abc123 --apply
+
+Transforming project: /home/user/myproject/MyProject.csproj
+Call Graph ID: callgraph-abc123
+Apply Changes: True
+
+✓ Transformation applied successfully!
+
+Files modified: 3
+...
+
+✓ Changes have been written to 3 file(s).
+```
+
+### Example 6: One-Command Transform
+
+```bash
+# Find sync wrappers, analyze, and apply in one command
+$ dotnet run -- find-sync-wrappers /home/user/myproject/MyProject.csproj --analyze --apply
+
+Finding sync wrapper methods in project: /home/user/myproject/MyProject.csproj
+
+Found 2 sync wrapper(s), 15 method(s) need async transformation
+...
+
+Applying transformations to 15 method(s)...
+
+Transforming project: /home/user/myproject/MyProject.csproj
+Call Graph ID: callgraph-abc123
+Apply Changes: True
+
+✓ Transformation applied successfully!
+✓ Changes have been written to 3 file(s).
 ```
 
 ## Building for Production
