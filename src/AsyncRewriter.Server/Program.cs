@@ -1,7 +1,6 @@
 using AsyncRewriter.Analyzer;
 using AsyncRewriter.Core.Interfaces;
-using AsyncRewriter.Neo4j;
-using AsyncRewriter.Neo4j.Configuration;
+using AsyncRewriter.Server.Repositories;
 using AsyncRewriter.Server.Services;
 using AsyncRewriter.Transformation;
 using Microsoft.Build.Locator;
@@ -24,13 +23,9 @@ builder.Services.AddSwaggerGen(c =>
     });
 });
 
-// Configure Neo4j
-builder.Services.Configure<Neo4jOptions>(
-    builder.Configuration.GetSection(Neo4jOptions.SectionName));
-
 // Register services
 builder.Services.AddSingleton<ICallGraphAnalyzer, CallGraphAnalyzer>();
-builder.Services.AddSingleton<ICallGraphRepository, CallGraphRepository>();
+builder.Services.AddSingleton<ICallGraphRepository, InMemoryCallGraphRepository>();
 builder.Services.AddSingleton<IAsyncFloodingAnalyzer, AsyncFloodingAnalyzer>();
 builder.Services.AddScoped<IAsyncTransformer, AsyncTransformer>();
 
