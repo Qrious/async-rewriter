@@ -56,6 +56,24 @@ This is a Roslyn-based tool for transforming synchronous C# methods to async by 
 3. **Flooding**: Given root methods (methods that should be async), `AsyncFloodingAnalyzer` traverses callers via BFS, marking all upstream methods as needing transformation
 4. **Transformation**: `AsyncTransformer` rewrites the syntax tree to add async/await keywords and transform return types
 
+### Transformation Optimizations
+
+The `AsyncMethodRewriter` applies intelligent transformations to minimize async overhead:
+
+1. **Direct Task Return**: Methods with a single async call directly return the task instead of using async/await
+   ```csharp
+   // Before: void Get() { _repo.Connect(); }
+   // After:  Task Get() { return _repo.Connect(); }
+   ```
+
+2. **Task.FromResult**: Methods marked for transformation but containing no async calls use `Task.FromResult<T>()` or `Task.CompletedTask`
+   ```csharp
+   // Before: bool IsConnected() { return true; }
+   // After:  Task<bool> IsConnected() { return Task.FromResult<bool>(true); }
+   ```
+
+3. **Async/Await**: Only used when necessary (multiple statements, result used in computation)
+
 ### Key Types
 
 - `CallGraph`: Contains `MethodNode` collection and `MethodCall` relationships
