@@ -25,6 +25,7 @@ public interface IAsyncTransformer
         string filePath,
         List<AsyncTransformationInfo> transformations,
         HashSet<string>? syncWrapperMethodIds = null,
+        HashSet<string>? allAsyncMethodIds = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -34,5 +35,6 @@ public interface IAsyncTransformer
         string sourceCode,
         List<AsyncTransformationInfo> transformations,
         HashSet<string>? syncWrapperMethodIds = null,
+        HashSet<string>? allAsyncMethodIds = null,
         CancellationToken cancellationToken = default);
 }

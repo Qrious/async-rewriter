@@ -349,6 +349,7 @@ public class AsyncTransformationController : ControllerBase
                 request.SourceCode,
                 transformations,
                 null,
+                null,
                 cancellationToken);
 
             return Ok(new { transformedSource, callGraph = updatedCallGraph });

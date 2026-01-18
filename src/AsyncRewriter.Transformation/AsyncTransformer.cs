@@ -51,6 +51,25 @@ public class AsyncTransformer : IAsyncTransformer
             // Get transformation info
             var transformations = await _floodingAnalyzer.GetTransformationInfoAsync(callGraph, cancellationToken);
 
+            // Build complete set of all async method IDs (methods that are or will be async)
+            var allAsyncMethodIds = new HashSet<string>();
+            foreach (var transformation in transformations)
+            {
+                allAsyncMethodIds.Add(transformation.MethodId);
+                foreach (var interfaceMethodId in transformation.ImplementsInterfaceMethods)
+                {
+                    allAsyncMethodIds.Add(interfaceMethodId);
+                }
+            }
+            // Also include methods that are already async in the call graph
+            foreach (var method in callGraph.Methods.Values)
+            {
+                if (method.IsAsync)
+                {
+                    allAsyncMethodIds.Add(method.Id);
+                }
+            }
+
             // Group by file
             var methodsByFile = callGraph.Methods.Values
                 .Where(m => m.RequiresAsyncTransformation)
@@ -66,7 +85,7 @@ public class AsyncTransformer : IAsyncTransformer
                     .Where(t => callGraph.Methods.TryGetValue(t.MethodId, out var m) && m.FilePath == filePath)
                     .ToList();
 
-                var fileTransformation = await TransformFileAsync(filePath, fileTransformations, callGraph.SyncWrapperMethods, cancellationToken);
+                var fileTransformation = await TransformFileAsync(filePath, fileTransformations, callGraph.SyncWrapperMethods, allAsyncMethodIds, cancellationToken);
                 result.ModifiedFiles.Add(fileTransformation);
 
                 result.TotalMethodsTransformed += fileTransformation.MethodTransformations.Count;
@@ -89,10 +108,11 @@ public class AsyncTransformer : IAsyncTransformer
         string filePath,
         List<AsyncTransformationInfo> transformations,
         HashSet<string>? syncWrapperMethodIds = null,
+        HashSet<string>? allAsyncMethodIds = null,
         CancellationToken cancellationToken = default)
     {
         var originalContent = await File.ReadAllTextAsync(filePath, cancellationToken);
-        var transformedContent = await TransformSourceAsync(originalContent, transformations, syncWrapperMethodIds, cancellationToken);
+        var transformedContent = await TransformSourceAsync(originalContent, transformations, syncWrapperMethodIds, allAsyncMethodIds, cancellationToken);
 
         var fileTransformation = new FileTransformation
         {
@@ -122,6 +142,7 @@ public class AsyncTransformer : IAsyncTransformer
         string sourceCode,
         List<AsyncTransformationInfo> transformations,
         HashSet<string>? syncWrapperMethodIds = null,
+        HashSet<string>? allAsyncMethodIds = null,
         CancellationToken cancellationToken = default)
     {
         var syntaxTree = CSharpSyntaxTree.ParseText(sourceCode, cancellationToken: cancellationToken);
@@ -136,16 +157,25 @@ public class AsyncTransformer : IAsyncTransformer
         var semanticModel = compilation.GetSemanticModel(syntaxTree);
         var root = await syntaxTree.GetRootAsync(cancellationToken);
 
-        // Get all method IDs that need transformation
+        // Get all method IDs that need transformation in this file
         var methodsToTransform = transformations.Select(t => t.MethodId).ToHashSet();
 
-        // Get all method IDs that are or will be async (including interface methods they implement)
-        var asyncMethodIds = new HashSet<string>(methodsToTransform);
-        foreach (var transformation in transformations)
+        // Use provided allAsyncMethodIds if available, otherwise compute from transformations
+        HashSet<string> asyncMethodIds;
+        if (allAsyncMethodIds != null)
         {
-            foreach (var interfaceMethodId in transformation.ImplementsInterfaceMethods)
+            asyncMethodIds = allAsyncMethodIds;
+        }
+        else
+        {
+            // Fallback: compute from per-file transformations (for backwards compatibility)
+            asyncMethodIds = new HashSet<string>(methodsToTransform);
+            foreach (var transformation in transformations)
             {
-                asyncMethodIds.Add(interfaceMethodId);
+                foreach (var interfaceMethodId in transformation.ImplementsInterfaceMethods)
+                {
+                    asyncMethodIds.Add(interfaceMethodId);
+                }
             }
         }
 
