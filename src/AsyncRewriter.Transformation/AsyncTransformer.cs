@@ -108,7 +108,8 @@ public class AsyncTransformer : IAsyncTransformer
             var documentsByPath = solution.Projects
                 .SelectMany(project => project.Documents)
                 .Where(d => d.FilePath != null)
-                .ToDictionary(d => d.FilePath!, d => d);
+                .GroupBy(d => d.FilePath!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
 
             foreach (var filePath in filesToProcess)
             {

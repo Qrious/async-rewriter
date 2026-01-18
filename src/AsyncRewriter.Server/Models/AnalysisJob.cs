@@ -71,6 +71,15 @@ public class AnalysisJob
             MethodsRemaining = methodsRemaining,
             FloodedMethodCount = FloodedMethodCount,
             SyncWrapperCount = SyncWrapperCount,
+            SyncWrappers = SyncWrappers?.Select(wrapper => new SyncWrapperSummary
+            {
+                MethodId = wrapper.MethodId,
+                ContainingType = wrapper.ContainingType,
+                Signature = wrapper.Signature,
+                FilePath = wrapper.FilePath,
+                StartLine = wrapper.StartLine,
+                PatternDescription = wrapper.PatternDescription
+            }).ToList(),
             PendingWorkSummary = PendingWorkSummary,
             Result = result
         };

@@ -693,6 +693,17 @@ class Program
         {
             Console.WriteLine($"  Sync Wrappers: {status.SyncWrapperCount}");
         }
+
+        if (status.SyncWrappers != null && status.SyncWrappers.Count > 0)
+        {
+            Console.WriteLine("  Sync Wrapper Methods:");
+            foreach (var wrapper in status.SyncWrappers)
+            {
+                Console.WriteLine($"    - {wrapper.ContainingType}.{wrapper.Signature}");
+                Console.WriteLine($"      {wrapper.FilePath}:{wrapper.StartLine}");
+                Console.WriteLine($"      {wrapper.PatternDescription}");
+            }
+        }
     }
 }
 
@@ -720,8 +731,19 @@ public class JobStatusResponse
     public int? MethodsRemaining { get; set; }
     public int? FloodedMethodCount { get; set; }
     public int? SyncWrapperCount { get; set; }
+    public List<SyncWrapperSummary>? SyncWrappers { get; set; }
     public string? PendingWorkSummary { get; set; }
     public object? Result { get; set; }
+}
+
+public class SyncWrapperSummary
+{
+    public string MethodId { get; set; } = string.Empty;
+    public string ContainingType { get; set; } = string.Empty;
+    public string Signature { get; set; } = string.Empty;
+    public string FilePath { get; set; } = string.Empty;
+    public int StartLine { get; set; }
+    public string PatternDescription { get; set; } = string.Empty;
 }
 
 public enum JobStatus
