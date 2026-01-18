@@ -88,7 +88,10 @@ namespace InheritanceScenario
         productGetById!.RequiresAsyncTransformation.Should().BeTrue();
 
         // Verify transformations
-        transformedSource.Should().Contain("async Task<string> LoadFromStorage(int id)");
+        // LoadFromStorage has no async calls, so it uses Task.FromResult instead of async
+        transformedSource.Should().Contain("Task<string> LoadFromStorage(int id)");
+        transformedSource.Should().Contain("Task.FromResult");
+        transformedSource.Should().NotContain("async Task<string> LoadFromStorage");
     }
 
     [Fact]

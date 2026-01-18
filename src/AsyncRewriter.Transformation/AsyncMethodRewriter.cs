@@ -53,24 +53,42 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
                 return node.WithReturnType(newReturnType);
             }
 
-            // Add async modifier for non-interface methods
-            var asyncModifier = SyntaxFactory.Token(SyntaxKind.AsyncKeyword)
-                .WithTrailingTrivia(SyntaxFactory.Space);
-
-            var newModifiers = node.Modifiers.Add(asyncModifier);
+            // Check if the method body actually contains calls that need await
+            var needsAwait = MethodBodyNeedsAwait(node);
+            var returnsVoid = methodSymbol.ReturnType.SpecialType == SpecialType.System_Void;
 
             // Transform return type
             var newReturnType2 = TransformReturnType(node.ReturnType, methodSymbol.ReturnType);
 
-            // Visit method body to add await keywords
-            var newBody = (BlockSyntax?)Visit(node.Body);
-            var newExpressionBody = (ArrowExpressionClauseSyntax?)Visit(node.ExpressionBody);
+            if (needsAwait)
+            {
+                // Method has async calls - add async modifier and awaits
+                var asyncModifier = SyntaxFactory.Token(SyntaxKind.AsyncKeyword)
+                    .WithTrailingTrivia(SyntaxFactory.Space);
 
-            return node
-                .WithModifiers(newModifiers)
-                .WithReturnType(newReturnType2)
-                .WithBody(newBody)
-                .WithExpressionBody(newExpressionBody);
+                var newModifiers = node.Modifiers.Add(asyncModifier);
+
+                // Visit method body to add await keywords
+                var newBody = (BlockSyntax?)Visit(node.Body);
+                var newExpressionBody = (ArrowExpressionClauseSyntax?)Visit(node.ExpressionBody);
+
+                return node
+                    .WithModifiers(newModifiers)
+                    .WithReturnType(newReturnType2)
+                    .WithBody(newBody)
+                    .WithExpressionBody(newExpressionBody);
+            }
+            else
+            {
+                // Method has no async calls - use Task.FromResult/Task.CompletedTask instead
+                var newBody = TransformBodyForTaskFromResult(node.Body, returnsVoid, node.ReturnType);
+                var newExpressionBody = TransformExpressionBodyForTaskFromResult(node.ExpressionBody, returnsVoid, node.ReturnType);
+
+                return node
+                    .WithReturnType(newReturnType2)
+                    .WithBody(newBody)
+                    .WithExpressionBody(newExpressionBody);
+            }
         }
 
         return base.VisitMethodDeclaration(node);
@@ -203,23 +221,77 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         // If this local function needs to be transformed to async
         if (_methodsToTransform.Contains(methodId) && !methodSymbol.IsAsync)
         {
-            var asyncModifier = SyntaxFactory.Token(SyntaxKind.AsyncKeyword)
-                .WithTrailingTrivia(SyntaxFactory.Space);
+            // Check if the function body actually contains calls that need await
+            var needsAwait = LocalFunctionBodyNeedsAwait(node);
+            var returnsVoid = methodSymbol.ReturnType.SpecialType == SpecialType.System_Void;
 
-            var newModifiers = node.Modifiers.Add(asyncModifier);
             var newReturnType = TransformReturnType(node.ReturnType, methodSymbol.ReturnType);
 
-            var newBody = (BlockSyntax?)Visit(node.Body);
-            var newExpressionBody = (ArrowExpressionClauseSyntax?)Visit(node.ExpressionBody);
+            if (needsAwait)
+            {
+                // Function has async calls - add async modifier and awaits
+                var asyncModifier = SyntaxFactory.Token(SyntaxKind.AsyncKeyword)
+                    .WithTrailingTrivia(SyntaxFactory.Space);
 
-            return node
-                .WithModifiers(newModifiers)
-                .WithReturnType(newReturnType)
-                .WithBody(newBody)
-                .WithExpressionBody(newExpressionBody);
+                var newModifiers = node.Modifiers.Add(asyncModifier);
+
+                var newBody = (BlockSyntax?)Visit(node.Body);
+                var newExpressionBody = (ArrowExpressionClauseSyntax?)Visit(node.ExpressionBody);
+
+                return node
+                    .WithModifiers(newModifiers)
+                    .WithReturnType(newReturnType)
+                    .WithBody(newBody)
+                    .WithExpressionBody(newExpressionBody);
+            }
+            else
+            {
+                // Function has no async calls - use Task.FromResult/Task.CompletedTask instead
+                var newBody = TransformBodyForTaskFromResult(node.Body, returnsVoid, node.ReturnType);
+                var newExpressionBody = TransformExpressionBodyForTaskFromResult(node.ExpressionBody, returnsVoid, node.ReturnType);
+
+                return node
+                    .WithReturnType(newReturnType)
+                    .WithBody(newBody)
+                    .WithExpressionBody(newExpressionBody);
+            }
         }
 
         return base.VisitLocalFunctionStatement(node);
+    }
+
+    /// <summary>
+    /// Checks if a local function body contains any calls that would need await
+    /// </summary>
+    private bool LocalFunctionBodyNeedsAwait(LocalFunctionStatementSyntax node)
+    {
+        var invocations = node.DescendantNodes().OfType<InvocationExpressionSyntax>();
+
+        foreach (var invocation in invocations)
+        {
+            var symbolInfo = _semanticModel.GetSymbolInfo(invocation);
+            var methodSymbol = symbolInfo.Symbol as IMethodSymbol;
+
+            if (methodSymbol != null)
+            {
+                var methodId = GetMethodId(methodSymbol);
+
+                if (_syncWrapperMethodIds.Contains(methodId))
+                {
+                    return true;
+                }
+
+                if (methodSymbol.IsAsync || _asyncMethodIds.Contains(methodId))
+                {
+                    if (invocation.Parent is not AwaitExpressionSyntax)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     private TypeSyntax TransformReturnType(TypeSyntax originalType, ITypeSymbol typeSymbol)
@@ -263,5 +335,165 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         var parameters = string.Join(", ", originalMethod.Parameters.Select(p => p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)));
         var signature = $"{originalMethod.Name}({parameters})";
         return $"{originalMethod.ContainingType?.ToDisplayString()}.{signature}";
+    }
+
+    /// <summary>
+    /// Checks if a method body contains any calls that would need await
+    /// </summary>
+    private bool MethodBodyNeedsAwait(MethodDeclarationSyntax node)
+    {
+        // Check all invocations in the method body
+        var invocations = node.DescendantNodes().OfType<InvocationExpressionSyntax>();
+
+        foreach (var invocation in invocations)
+        {
+            var symbolInfo = _semanticModel.GetSymbolInfo(invocation);
+            var methodSymbol = symbolInfo.Symbol as IMethodSymbol;
+
+            if (methodSymbol != null)
+            {
+                var methodId = GetMethodId(methodSymbol);
+
+                // Check if this is a sync wrapper call that would be unwrapped
+                if (_syncWrapperMethodIds.Contains(methodId))
+                {
+                    return true;
+                }
+
+                // Check if this call is to an async method or a method that will be async
+                if (methodSymbol.IsAsync || _asyncMethodIds.Contains(methodId))
+                {
+                    // Only count if not already awaited
+                    if (invocation.Parent is not AwaitExpressionSyntax)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Transforms a block body to use Task.FromResult/Task.CompletedTask instead of async
+    /// </summary>
+    private BlockSyntax? TransformBodyForTaskFromResult(BlockSyntax? body, bool returnsVoid, TypeSyntax originalReturnType)
+    {
+        if (body == null)
+            return null;
+
+        var newStatements = new List<StatementSyntax>();
+        var hasReturn = false;
+
+        foreach (var statement in body.Statements)
+        {
+            if (statement is ReturnStatementSyntax returnStatement)
+            {
+                hasReturn = true;
+                newStatements.Add(TransformReturnStatement(returnStatement, returnsVoid, originalReturnType));
+            }
+            else
+            {
+                newStatements.Add(statement);
+            }
+        }
+
+        // If void-returning method has no explicit return, add return Task.CompletedTask at the end
+        if (returnsVoid && !hasReturn)
+        {
+            var completedTaskReturn = SyntaxFactory.ReturnStatement(
+                SyntaxFactory.MemberAccessExpression(
+                    SyntaxKind.SimpleMemberAccessExpression,
+                    SyntaxFactory.IdentifierName("Task"),
+                    SyntaxFactory.IdentifierName("CompletedTask")))
+                .WithLeadingTrivia(body.Statements.LastOrDefault()?.GetTrailingTrivia() ?? SyntaxFactory.TriviaList())
+                .NormalizeWhitespace()
+                .WithTrailingTrivia(SyntaxFactory.EndOfLine("\n"));
+
+            newStatements.Add(completedTaskReturn);
+        }
+
+        return body.WithStatements(SyntaxFactory.List(newStatements));
+    }
+
+    /// <summary>
+    /// Transforms an expression body to use Task.FromResult
+    /// </summary>
+    private ArrowExpressionClauseSyntax? TransformExpressionBodyForTaskFromResult(
+        ArrowExpressionClauseSyntax? expressionBody,
+        bool returnsVoid,
+        TypeSyntax originalReturnType)
+    {
+        if (expressionBody == null)
+            return null;
+
+        var expression = expressionBody.Expression;
+
+        if (returnsVoid)
+        {
+            // For void methods with expression body (like: void Foo() => DoSomething();)
+            // This is rare but possible - we can't easily convert to Task.CompletedTask
+            // For now, keep the expression as-is and it will need manual adjustment
+            // A block body would be needed: { DoSomething(); return Task.CompletedTask; }
+            return expressionBody;
+        }
+
+        // Wrap the expression with Task.FromResult
+        var taskFromResult = CreateTaskFromResultExpression(expression, originalReturnType);
+        return expressionBody.WithExpression(taskFromResult);
+    }
+
+    /// <summary>
+    /// Transforms a return statement to use Task.FromResult or Task.CompletedTask
+    /// </summary>
+    private ReturnStatementSyntax TransformReturnStatement(
+        ReturnStatementSyntax returnStatement,
+        bool returnsVoid,
+        TypeSyntax originalReturnType)
+    {
+        if (returnsVoid || returnStatement.Expression == null)
+        {
+            // return; -> return Task.CompletedTask;
+            var completedTask = SyntaxFactory.MemberAccessExpression(
+                SyntaxKind.SimpleMemberAccessExpression,
+                SyntaxFactory.IdentifierName("Task"),
+                SyntaxFactory.IdentifierName("CompletedTask"));
+
+            return returnStatement
+                .WithExpression(completedTask)
+                .WithLeadingTrivia(returnStatement.GetLeadingTrivia())
+                .WithTrailingTrivia(returnStatement.GetTrailingTrivia());
+        }
+
+        // return value; -> return Task.FromResult(value);
+        var taskFromResult = CreateTaskFromResultExpression(returnStatement.Expression, originalReturnType);
+
+        return returnStatement
+            .WithExpression(taskFromResult)
+            .WithLeadingTrivia(returnStatement.GetLeadingTrivia())
+            .WithTrailingTrivia(returnStatement.GetTrailingTrivia());
+    }
+
+    /// <summary>
+    /// Creates a Task.FromResult(expression) invocation
+    /// </summary>
+    private InvocationExpressionSyntax CreateTaskFromResultExpression(ExpressionSyntax expression, TypeSyntax returnType)
+    {
+        // Create Task.FromResult<T>(expression) or Task.FromResult(expression)
+        var taskFromResult = SyntaxFactory.InvocationExpression(
+            SyntaxFactory.MemberAccessExpression(
+                SyntaxKind.SimpleMemberAccessExpression,
+                SyntaxFactory.IdentifierName("Task"),
+                SyntaxFactory.GenericName(
+                    SyntaxFactory.Identifier("FromResult"),
+                    SyntaxFactory.TypeArgumentList(
+                        SyntaxFactory.SingletonSeparatedList(
+                            returnType.WithoutLeadingTrivia().WithoutTrailingTrivia())))),
+            SyntaxFactory.ArgumentList(
+                SyntaxFactory.SingletonSeparatedList(
+                    SyntaxFactory.Argument(expression.WithoutLeadingTrivia()))));
+
+        return taskFromResult;
     }
 }

@@ -18,9 +18,9 @@ public class AsyncTransformerTests
     }
 
     [Fact]
-    public async Task TransformSourceAsync_SimpleVoidMethod_AddsAsyncModifierAndTaskReturnType()
+    public async Task TransformSourceAsync_SimpleVoidMethod_UsesTaskCompletedTask()
     {
-        // Arrange
+        // Arrange - method has no async calls, so should use Task.CompletedTask instead of async
         var sourceCode = @"
 namespace TestNamespace
 {
@@ -46,15 +46,17 @@ namespace TestNamespace
         // Act
         var result = await _transformer.TransformSourceAsync(sourceCode, transformations);
 
-        // Assert
-        result.Should().Contain("async Task TestMethod()");
+        // Assert - no async keyword, uses Task.CompletedTask
+        result.Should().Contain("Task TestMethod()");
+        result.Should().Contain("Task.CompletedTask");
+        result.Should().NotContain("async Task TestMethod()");
         result.Should().Contain("using System.Threading.Tasks;");
     }
 
     [Fact]
-    public async Task TransformSourceAsync_MethodReturningInt_TransformsToTaskOfInt()
+    public async Task TransformSourceAsync_MethodReturningInt_UsesTaskFromResult()
     {
-        // Arrange
+        // Arrange - method has no async calls, so should use Task.FromResult instead of async
         var sourceCode = @"
 namespace TestNamespace
 {
@@ -81,8 +83,10 @@ namespace TestNamespace
         // Act
         var result = await _transformer.TransformSourceAsync(sourceCode, transformations);
 
-        // Assert
-        result.Should().Contain("async Task<int> GetValue()");
+        // Assert - no async keyword, uses Task.FromResult
+        result.Should().Contain("Task<int> GetValue()");
+        result.Should().Contain("Task.FromResult<int>(42)");
+        result.Should().NotContain("async Task<int> GetValue()");
     }
 
     [Fact]
@@ -129,9 +133,12 @@ namespace TestNamespace
         var result = await _transformer.TransformSourceAsync(sourceCode, transformations);
 
         // Assert
+        // CallerMethod has an async call, so it should use async/await
         result.Should().Contain("async Task CallerMethod()");
         result.Should().Contain("await CalleeMethod()");
-        result.Should().Contain("async Task CalleeMethod()");
+        // CalleeMethod has no async calls, so it should use Task.CompletedTask
+        result.Should().Contain("Task CalleeMethod()");
+        result.Should().Contain("Task.CompletedTask");
     }
 
     [Fact]
@@ -173,7 +180,7 @@ namespace TestNamespace
     [Fact]
     public async Task TransformSourceAsync_PublicMethod_PreservesModifiers()
     {
-        // Arrange
+        // Arrange - method has no async calls, so should use Task.CompletedTask
         var sourceCode = @"
 namespace TestNamespace
 {
@@ -199,14 +206,15 @@ namespace TestNamespace
         // Act
         var result = await _transformer.TransformSourceAsync(sourceCode, transformations);
 
-        // Assert
-        result.Should().Contain("public async Task TestMethod()");
+        // Assert - preserves public modifier, uses Task.CompletedTask
+        result.Should().Contain("public Task TestMethod()");
+        result.Should().Contain("Task.CompletedTask");
     }
 
     [Fact]
     public async Task TransformSourceAsync_PrivateMethod_PreservesModifiers()
     {
-        // Arrange
+        // Arrange - method has no async calls, so should use Task.CompletedTask
         var sourceCode = @"
 namespace TestNamespace
 {
@@ -232,14 +240,15 @@ namespace TestNamespace
         // Act
         var result = await _transformer.TransformSourceAsync(sourceCode, transformations);
 
-        // Assert
-        result.Should().Contain("private async Task TestMethod()");
+        // Assert - preserves private modifier, uses Task.CompletedTask
+        result.Should().Contain("private Task TestMethod()");
+        result.Should().Contain("Task.CompletedTask");
     }
 
     [Fact]
     public async Task TransformSourceAsync_MethodReturningTaskAlready_KeepsTaskReturnType()
     {
-        // Arrange
+        // Arrange - method already returns Task and has no async calls, keeps Task return type
         var sourceCode = @"
 using System.Threading.Tasks;
 
@@ -268,15 +277,15 @@ namespace TestNamespace
         // Act
         var result = await _transformer.TransformSourceAsync(sourceCode, transformations);
 
-        // Assert
-        result.Should().Contain("async Task TestMethod()");
+        // Assert - keeps Task return type, doesn't wrap in Task<Task>
+        result.Should().Contain("Task TestMethod()");
         result.Should().NotContain("Task<Task>");
     }
 
     [Fact]
     public async Task TransformSourceAsync_MultipleMethodsInClass_TransformsOnlySpecified()
     {
-        // Arrange
+        // Arrange - Method1 has no async calls, should use Task.CompletedTask
         var sourceCode = @"
 namespace TestNamespace
 {
@@ -306,16 +315,17 @@ namespace TestNamespace
         // Act
         var result = await _transformer.TransformSourceAsync(sourceCode, transformations);
 
-        // Assert
-        result.Should().Contain("async Task Method1()");
+        // Assert - Method1 transformed, Method2 unchanged
+        result.Should().Contain("Task Method1()");
+        result.Should().Contain("Task.CompletedTask");
         result.Should().Contain("void Method2()");
-        result.Should().NotContain("async Task Method2()");
+        result.Should().NotContain("Task Method2()");
     }
 
     [Fact]
     public async Task TransformSourceAsync_MethodWithParameters_PreservesParameters()
     {
-        // Arrange
+        // Arrange - method has no async calls, should use Task.FromResult
         var sourceCode = @"
 namespace TestNamespace
 {
@@ -342,14 +352,15 @@ namespace TestNamespace
         // Act
         var result = await _transformer.TransformSourceAsync(sourceCode, transformations);
 
-        // Assert
-        result.Should().Contain("async Task<int> Calculate(int x, string name)");
+        // Assert - preserves parameters, uses Task.FromResult
+        result.Should().Contain("Task<int> Calculate(int x, string name)");
+        result.Should().Contain("Task.FromResult<int>(x)");
     }
 
     [Fact]
-    public async Task TransformSourceAsync_GenericReturnType_TransformsToTaskOfGeneric()
+    public async Task TransformSourceAsync_GenericReturnType_UsesTaskFromResult()
     {
-        // Arrange
+        // Arrange - method has no async calls, should use Task.FromResult
         var sourceCode = @"
 using System.Collections.Generic;
 
@@ -378,8 +389,9 @@ namespace TestNamespace
         // Act
         var result = await _transformer.TransformSourceAsync(sourceCode, transformations);
 
-        // Assert
-        result.Should().Contain("async Task<List<string>> GetNames()");
+        // Assert - uses Task.FromResult with generic type
+        result.Should().Contain("Task<List<string>> GetNames()");
+        result.Should().Contain("Task.FromResult<List<string>>");
     }
 
     [Fact]
@@ -432,9 +444,11 @@ namespace TestNamespace
         // Act
         var result = await _transformer.TransformSourceAsync(sourceCode, transformations);
 
-        // Assert
+        // Assert - Method1 and Method2 have async calls so use async/await
+        // Method3 has no async calls so uses Task.CompletedTask
         result.Should().Contain("await Method2()");
         result.Should().Contain("await Method3()");
+        result.Should().Contain("Task.CompletedTask");
     }
 
     [Fact]
@@ -465,7 +479,7 @@ namespace TestNamespace
     [Fact]
     public async Task TransformSourceAsync_StaticMethod_PreservesStaticModifier()
     {
-        // Arrange
+        // Arrange - method has no async calls, should use Task.CompletedTask
         var sourceCode = @"
 namespace TestNamespace
 {
@@ -491,8 +505,9 @@ namespace TestNamespace
         // Act
         var result = await _transformer.TransformSourceAsync(sourceCode, transformations);
 
-        // Assert
-        result.Should().Contain("public static async Task TestMethod()");
+        // Assert - preserves static modifier, uses Task.CompletedTask
+        result.Should().Contain("public static Task TestMethod()");
+        result.Should().Contain("Task.CompletedTask");
     }
 
     [Fact]
