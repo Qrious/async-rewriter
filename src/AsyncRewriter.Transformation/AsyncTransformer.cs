@@ -70,22 +70,118 @@ public class AsyncTransformer : IAsyncTransformer
                 }
             }
 
-            // Group by file
-            var methodsByFile = callGraph.Methods.Values
-                .Where(m => m.RequiresAsyncTransformation)
-                .GroupBy(m => m.FilePath);
+            // Collect all files that need processing:
+            // 1. Files with methods requiring async transformation
+            // 2. Files with calls requiring await (even if containing method is already async)
+            var filesToProcess = new HashSet<string>();
 
-            foreach (var fileGroup in methodsByFile)
+            foreach (var method in callGraph.Methods.Values)
             {
-                var filePath = fileGroup.Key;
-                if (string.IsNullOrEmpty(filePath) || filePath == "external")
-                    continue;
+                if (method.RequiresAsyncTransformation &&
+                    !string.IsNullOrEmpty(method.FilePath) &&
+                    method.FilePath != "external")
+                {
+                    filesToProcess.Add(method.FilePath);
+                }
+            }
 
+            foreach (var call in callGraph.Calls)
+            {
+                if (call.RequiresAwait &&
+                    !string.IsNullOrEmpty(call.FilePath) &&
+                    call.FilePath != "external")
+                {
+                    filesToProcess.Add(call.FilePath);
+                }
+            }
+
+            // Build a lookup of documents by file path
+            var documentsByPath = project.Documents
+                .Where(d => d.FilePath != null)
+                .ToDictionary(d => d.FilePath!, d => d);
+
+            foreach (var filePath in filesToProcess)
+            {
                 var fileTransformations = transformations
                     .Where(t => callGraph.Methods.TryGetValue(t.MethodId, out var m) && m.FilePath == filePath)
                     .ToList();
 
-                var fileTransformation = await TransformFileAsync(filePath, fileTransformations, callGraph.SyncWrapperMethods, allAsyncMethodIds, cancellationToken);
+                // Get methods to transform for this file
+                var methodsToTransform = fileTransformations.Select(t => t.MethodId).ToHashSet();
+
+                FileTransformation fileTransformation;
+
+                // Try to use the project's document for proper semantic analysis
+                if (documentsByPath.TryGetValue(filePath, out var document))
+                {
+                    var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
+                    var syntaxTree = await document.GetSyntaxTreeAsync(cancellationToken);
+                    var originalContent = await File.ReadAllTextAsync(filePath, cancellationToken);
+
+                    if (semanticModel != null && syntaxTree != null)
+                    {
+                        var root = await syntaxTree.GetRootAsync(cancellationToken);
+
+                        // Create rewriter with the real semantic model
+                        var rewriter = new AsyncMethodRewriter(
+                            semanticModel,
+                            methodsToTransform,
+                            allAsyncMethodIds,
+                            callGraph.SyncWrapperMethods);
+
+                        var newRoot = rewriter.Visit(root);
+
+                        // Add using directive for System.Threading.Tasks if not present
+                        var compilationUnit = newRoot as CompilationUnitSyntax;
+                        if (compilationUnit != null)
+                        {
+                            var hasTaskUsing = compilationUnit.Usings
+                                .Any(u => u.Name?.ToString() == "System.Threading.Tasks");
+
+                            if (!hasTaskUsing)
+                            {
+                                var taskUsing = SyntaxFactory.UsingDirective(
+                                    SyntaxFactory.ParseName("System.Threading.Tasks")
+                                        .WithLeadingTrivia(SyntaxFactory.Space))
+                                    .WithTrailingTrivia(SyntaxFactory.EndOfLine(Environment.NewLine));
+
+                                compilationUnit = compilationUnit.AddUsings(taskUsing);
+                                newRoot = compilationUnit;
+                            }
+                        }
+
+                        var transformedContent = newRoot?.ToFullString() ?? originalContent;
+
+                        fileTransformation = new FileTransformation
+                        {
+                            FilePath = filePath,
+                            OriginalContent = originalContent,
+                            TransformedContent = transformedContent
+                        };
+
+                        foreach (var transformation in fileTransformations)
+                        {
+                            fileTransformation.MethodTransformations.Add(new MethodTransformation
+                            {
+                                MethodName = transformation.MethodId,
+                                OriginalReturnType = transformation.OriginalReturnType,
+                                NewReturnType = transformation.NewReturnType,
+                                AwaitAddedAtLines = rewriter.AwaitAddedLines.ToList()
+                            });
+                        }
+                    }
+                    else
+                    {
+                        // Fallback to source-based transformation
+                        fileTransformation = await TransformFileAsync(filePath, fileTransformations, callGraph.SyncWrapperMethods, allAsyncMethodIds, cancellationToken);
+                    }
+                }
+                else
+                {
+                    // File not in project, use source-based transformation
+                    fileTransformation = await TransformFileAsync(filePath, fileTransformations, callGraph.SyncWrapperMethods, allAsyncMethodIds, cancellationToken);
+                }
+
                 result.ModifiedFiles.Add(fileTransformation);
 
                 result.TotalMethodsTransformed += fileTransformation.MethodTransformations.Count;
