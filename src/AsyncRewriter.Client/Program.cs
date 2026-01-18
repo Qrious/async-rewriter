@@ -79,15 +79,21 @@ class Program
             description: "Automatically apply changes without prompting (use with caution)",
             getDefaultValue: () => false);
 
+        var syncWrapperPollIntervalOption = new Option<int>(
+            aliases: new[] { "--poll-interval", "-p" },
+            description: "Polling interval in milliseconds when waiting for completion",
+            getDefaultValue: () => 2000);
+
         findSyncWrappersCommand.AddArgument(syncWrapperProjectPath);
         findSyncWrappersCommand.AddOption(analyzeFromWrappersOption);
         findSyncWrappersCommand.AddOption(applyChangesOption);
+        findSyncWrappersCommand.AddOption(syncWrapperPollIntervalOption);
 
-        findSyncWrappersCommand.SetHandler(async (baseUrl, projectPath, analyzeFromWrappers, applyChanges) =>
+        findSyncWrappersCommand.SetHandler(async (baseUrl, projectPath, analyzeFromWrappers, applyChanges, pollInterval) =>
         {
             _baseUrl = baseUrl;
-            await FindSyncWrappersAsync(projectPath, analyzeFromWrappers, applyChanges);
-        }, baseUrlOption, syncWrapperProjectPath, analyzeFromWrappersOption, applyChangesOption);
+            await FindSyncWrappersAsync(projectPath, analyzeFromWrappers, applyChanges, pollInterval);
+        }, baseUrlOption, syncWrapperProjectPath, analyzeFromWrappersOption, applyChangesOption, syncWrapperPollIntervalOption);
 
         // Transform command
         var transformCommand = new Command("transform", "Transform a C# project from sync to async based on a call graph");
@@ -345,7 +351,7 @@ class Program
         }
     }
 
-    static async Task FindSyncWrappersAsync(string projectPath, bool analyzeFromWrappers, bool applyChanges)
+    static async Task FindSyncWrappersAsync(string projectPath, bool analyzeFromWrappers, bool applyChanges, int pollInterval)
     {
         try
         {
@@ -356,8 +362,7 @@ class Program
 
             if (analyzeFromWrappers)
             {
-                // Use the combined endpoint that finds wrappers and runs flooding analysis
-                var response = await _httpClient.PostAsJsonAsync($"{_baseUrl}/api/asynctransformation/analyze/from-sync-wrappers", request);
+                var response = await _httpClient.PostAsJsonAsync($"{_baseUrl}/api/asynctransformation/analyze/from-sync-wrappers/async", request);
 
                 if (!response.IsSuccessStatusCode)
                 {
@@ -368,31 +373,84 @@ class Program
                     return;
                 }
 
-                var result = await response.Content.ReadFromJsonAsync<SyncWrapperAnalysisResult>();
-                if (result == null)
+                var jobResponse = await response.Content.ReadFromJsonAsync<AnalysisJobResponse>();
+                if (jobResponse == null)
                 {
                     Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("Error: Failed to deserialize response");
+                    Console.WriteLine("Error: Failed to deserialize job response");
                     Console.ResetColor();
                     return;
                 }
 
-                PrintSyncWrapperAnalysisResult(result);
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine("✓ Job created successfully!");
+                Console.ResetColor();
+                Console.WriteLine($"Job ID: {jobResponse.JobId}");
+                Console.WriteLine($"Status: {jobResponse.Status}");
+                Console.WriteLine($"Message: {jobResponse.Message}");
+                Console.WriteLine();
 
-                // If apply flag is set and we have a call graph, apply the transformations
-                if (applyChanges && result.CallGraph != null && result.CallGraph.FloodedMethods.Count > 0)
+                await WaitForCompletionAsync(jobResponse.JobId, pollInterval);
+
+                var statusResponse = await _httpClient.GetAsync($"{_baseUrl}/api/asynctransformation/jobs/{jobResponse.JobId}");
+                if (!statusResponse.IsSuccessStatusCode)
                 {
-                    Console.WriteLine();
-                    Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine($"Applying transformations to {result.CallGraph.FloodedMethods.Count} method(s)...");
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("Error retrieving sync wrapper analysis result");
                     Console.ResetColor();
+                    return;
+                }
 
-                    await TransformProjectAsync(projectPath, result.CallGraph.Id, true);
+                var status = await statusResponse.Content.ReadFromJsonAsync<JobStatusResponse>();
+                if (status == null)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("Error: Failed to deserialize status response");
+                    Console.ResetColor();
+                    return;
+                }
+
+                if (status.Status == JobStatus.Completed && status.Result is JsonElement resultElement)
+                {
+                    var result = JsonSerializer.Deserialize<SyncWrapperAnalysisJobResult>(resultElement.GetRawText());
+                    if (result == null)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Red;
+                        Console.WriteLine("Error: Failed to deserialize sync wrapper analysis result");
+                        Console.ResetColor();
+                        return;
+                    }
+
+                    var analysisResult = new SyncWrapperAnalysisResult
+                    {
+                        SyncWrappers = result.SyncWrappers,
+                        CallGraph = result.CallGraph,
+                        Message = result.SyncWrappers.Count == 0
+                            ? "No sync wrapper methods found in the project"
+                            : $"Found {result.SyncWrappers.Count} sync wrapper(s), {result.CallGraph?.FloodedMethods.Count ?? 0} method(s) need async transformation"
+                    };
+
+                    PrintSyncWrapperAnalysisResult(analysisResult);
+
+                    if (applyChanges && analysisResult.CallGraph != null && analysisResult.CallGraph.FloodedMethods.Count > 0)
+                    {
+                        Console.WriteLine();
+                        Console.ForegroundColor = ConsoleColor.Yellow;
+                        Console.WriteLine($"Applying transformations to {analysisResult.CallGraph.FloodedMethods.Count} method(s)...");
+                        Console.ResetColor();
+
+                        await TransformProjectAsync(projectPath, analysisResult.CallGraph.Id, true);
+                    }
+                }
+                else if (status.Status == JobStatus.Completed)
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine("Sync wrapper analysis completed without a result payload.");
+                    Console.ResetColor();
                 }
             }
             else
             {
-                // Just find the sync wrappers without running analysis
                 var response = await _httpClient.PostAsJsonAsync($"{_baseUrl}/api/asynctransformation/find-sync-wrappers/project", request);
 
                 if (!response.IsSuccessStatusCode)
@@ -692,6 +750,12 @@ public class SyncWrapperAnalysisResult
     public List<SyncWrapperMethod> SyncWrappers { get; set; } = new();
     public CallGraphResult? CallGraph { get; set; }
     public string Message { get; set; } = string.Empty;
+}
+
+public class SyncWrapperAnalysisJobResult
+{
+    public List<SyncWrapperMethod> SyncWrappers { get; set; } = new();
+    public CallGraphResult? CallGraph { get; set; }
 }
 
 public class CallGraphResult

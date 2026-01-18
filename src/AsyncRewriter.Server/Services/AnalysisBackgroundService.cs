@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -55,6 +56,7 @@ public class AnalysisBackgroundService : BackgroundService
         var jobService = scope.ServiceProvider.GetRequiredService<IJobService>();
         var callGraphAnalyzer = scope.ServiceProvider.GetRequiredService<ICallGraphAnalyzer>();
         var callGraphRepository = scope.ServiceProvider.GetRequiredService<ICallGraphRepository>();
+        var floodingAnalyzer = scope.ServiceProvider.GetRequiredService<IAsyncFloodingAnalyzer>();
 
         var queuedJobs = jobService.GetQueuedJobs().ToList();
 
@@ -65,7 +67,14 @@ public class AnalysisBackgroundService : BackgroundService
                 break;
             }
 
-            await ProcessJobAsync(job, jobService, callGraphAnalyzer, callGraphRepository, stoppingToken);
+            if (job.JobType == JobType.SyncWrapperAnalysis)
+            {
+                await ProcessSyncWrapperJobAsync(job, jobService, callGraphAnalyzer, callGraphRepository, floodingAnalyzer, stoppingToken);
+            }
+            else
+            {
+                await ProcessJobAsync(job, jobService, callGraphAnalyzer, callGraphRepository, stoppingToken);
+            }
         }
     }
 
@@ -149,6 +158,116 @@ public class AnalysisBackgroundService : BackgroundService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Job {JobId} failed", job.JobId);
+            jobService.UpdateJob(job.JobId, j =>
+            {
+                j.Status = JobStatus.Failed;
+                j.CompletedAt = DateTime.UtcNow;
+                j.ErrorMessage = ex.Message;
+            });
+        }
+    }
+
+    private async Task ProcessSyncWrapperJobAsync(
+        AnalysisJob job,
+        IJobService jobService,
+        ICallGraphAnalyzer callGraphAnalyzer,
+        ICallGraphRepository callGraphRepository,
+        IAsyncFloodingAnalyzer floodingAnalyzer,
+        CancellationToken stoppingToken)
+    {
+        var combinedToken = CancellationTokenSource.CreateLinkedTokenSource(
+            stoppingToken,
+            job.CancellationTokenSource.Token).Token;
+
+        try
+        {
+            _logger.LogInformation("Processing sync wrapper job {JobId} for project {ProjectPath}", job.JobId, job.ProjectPath);
+
+            jobService.UpdateJob(job.JobId, j =>
+            {
+                j.Status = JobStatus.Processing;
+                j.StartedAt = DateTime.UtcNow;
+                j.CurrentStep = "Finding sync wrapper methods";
+                j.ProgressPercentage = 0;
+            });
+
+            combinedToken.ThrowIfCancellationRequested();
+
+            var syncWrappers = await callGraphAnalyzer.FindSyncWrapperMethodsAsync(job.ProjectPath, combinedToken);
+
+            combinedToken.ThrowIfCancellationRequested();
+
+            if (syncWrappers.Count == 0)
+            {
+                jobService.UpdateJob(job.JobId, j =>
+                {
+                    j.Status = JobStatus.Completed;
+                    j.CompletedAt = DateTime.UtcNow;
+                    j.CurrentStep = "No sync wrapper methods found";
+                    j.ProgressPercentage = 100;
+                    j.SyncWrappers = syncWrappers;
+                });
+                return;
+            }
+
+            jobService.UpdateJob(job.JobId, j =>
+            {
+                j.CurrentStep = "Analyzing project structure";
+                j.ProgressPercentage = 30;
+                j.SyncWrappers = syncWrappers;
+            });
+
+            await Task.Delay(100, combinedToken);
+
+            var callGraph = await callGraphAnalyzer.AnalyzeProjectAsync(job.ProjectPath, combinedToken);
+
+            combinedToken.ThrowIfCancellationRequested();
+
+            var rootMethodIds = new HashSet<string>(syncWrappers.Select(wrapper => wrapper.MethodId));
+            callGraph.SyncWrapperMethods = new HashSet<string>(rootMethodIds);
+
+            jobService.UpdateJob(job.JobId, j =>
+            {
+                j.CurrentStep = "Running flooding analysis";
+                j.ProgressPercentage = 70;
+            });
+
+            await Task.Delay(100, combinedToken);
+
+            var updatedCallGraph = await floodingAnalyzer.AnalyzeFloodingAsync(
+                callGraph,
+                rootMethodIds,
+                combinedToken);
+
+            await callGraphRepository.StoreCallGraphAsync(updatedCallGraph, combinedToken);
+
+            combinedToken.ThrowIfCancellationRequested();
+
+            jobService.UpdateJob(job.JobId, j =>
+            {
+                j.Status = JobStatus.Completed;
+                j.CompletedAt = DateTime.UtcNow;
+                j.CurrentStep = "Sync wrapper analysis complete";
+                j.ProgressPercentage = 100;
+                j.CallGraph = updatedCallGraph;
+            });
+
+            _logger.LogInformation("Sync wrapper job {JobId} completed successfully. CallGraph ID: {CallGraphId}",
+                job.JobId, updatedCallGraph.Id);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("Sync wrapper job {JobId} was cancelled", job.JobId);
+            jobService.UpdateJob(job.JobId, j =>
+            {
+                j.Status = JobStatus.Cancelled;
+                j.CompletedAt = DateTime.UtcNow;
+                j.ErrorMessage = "Job was cancelled";
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Sync wrapper job {JobId} failed", job.JobId);
             jobService.UpdateJob(job.JobId, j =>
             {
                 j.Status = JobStatus.Failed;

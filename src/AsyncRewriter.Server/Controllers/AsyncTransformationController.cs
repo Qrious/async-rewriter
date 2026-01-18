@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
 using AsyncRewriter.Server.DTOs;
+using AsyncRewriter.Server.Models;
 using AsyncRewriter.Server.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -48,7 +49,7 @@ public class AsyncTransformationController : ControllerBase
         {
             _logger.LogInformation("Starting async analysis job for project: {ProjectPath}", request.ProjectPath);
 
-            var jobId = _jobService.CreateJob(request.ProjectPath);
+            var jobId = _jobService.CreateJob(request.ProjectPath, JobType.Analysis);
 
             return Ok(new AnalysisJobResponse
             {
@@ -457,6 +458,32 @@ public class AsyncTransformationController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to find sync wrapper methods");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Starts an async analysis job for sync wrapper-based flooding (returns immediately with job ID)
+    /// </summary>
+    [HttpPost("analyze/from-sync-wrappers/async")]
+    public ActionResult<AnalysisJobResponse> StartSyncWrapperAnalysisJob([FromBody] AnalyzeProjectRequest request)
+    {
+        try
+        {
+            _logger.LogInformation("Starting async sync wrapper analysis job for project: {ProjectPath}", request.ProjectPath);
+
+            var jobId = _jobService.CreateJob(request.ProjectPath, JobType.SyncWrapperAnalysis);
+
+            return Ok(new AnalysisJobResponse
+            {
+                JobId = jobId,
+                Status = JobStatus.Queued,
+                Message = "Sync wrapper analysis job has been queued and will be processed in the background"
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to start sync wrapper analysis job");
             return StatusCode(500, new { error = ex.Message });
         }
     }
