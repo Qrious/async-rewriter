@@ -90,7 +90,7 @@ namespace TestNamespace
     }
 
     [Fact]
-    public async Task TransformSourceAsync_MethodCallsAsyncMethod_AddsAwait()
+    public async Task TransformSourceAsync_MethodCallsAsyncMethod_DirectlyReturnsTask()
     {
         // Arrange
         var sourceCode = @"
@@ -133,9 +133,10 @@ namespace TestNamespace
         var result = await _transformer.TransformSourceAsync(sourceCode, transformations);
 
         // Assert
-        // CallerMethod has an async call, so it should use async/await
-        result.Should().Contain("async Task CallerMethod()");
-        result.Should().Contain("await CalleeMethod()");
+        // CallerMethod only has one async call, so it directly returns the task (no async/await overhead)
+        result.Should().Contain("Task CallerMethod()");
+        result.Should().Contain("return CalleeMethod()");
+        result.Should().NotContain("async Task CallerMethod()");
         // CalleeMethod has no async calls, so it should use Task.CompletedTask
         result.Should().Contain("Task CalleeMethod()");
         result.Should().Contain("Task.CompletedTask");
@@ -395,7 +396,7 @@ namespace TestNamespace
     }
 
     [Fact]
-    public async Task TransformSourceAsync_ChainOfMethodCalls_AddsAwaitToAll()
+    public async Task TransformSourceAsync_ChainOfMethodCalls_DirectlyReturnsTasks()
     {
         // Arrange
         var sourceCode = @"
@@ -444,11 +445,12 @@ namespace TestNamespace
         // Act
         var result = await _transformer.TransformSourceAsync(sourceCode, transformations);
 
-        // Assert - Method1 and Method2 have async calls so use async/await
+        // Assert - Method1 and Method2 have single async calls, so directly return the task
         // Method3 has no async calls so uses Task.CompletedTask
-        result.Should().Contain("await Method2()");
-        result.Should().Contain("await Method3()");
+        result.Should().Contain("return Method2()");
+        result.Should().Contain("return Method3()");
         result.Should().Contain("Task.CompletedTask");
+        result.Should().NotContain("await");
     }
 
     [Fact]

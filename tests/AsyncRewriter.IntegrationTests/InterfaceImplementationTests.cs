@@ -85,9 +85,10 @@ namespace InterfaceImplementation
         var transformedSource = await _transformer.TransformSourceAsync(serviceSource, transformations.ToList());
 
         // Assert - Verify transformations
-        // GetData calls FetchFromDatabase which is being transformed, so it uses async/await
-        transformedSource.Should().Contain("async Task<string> GetData()");
-        transformedSource.Should().Contain("await FetchFromDatabase()");
+        // GetData has a single call to FetchFromDatabase, so it directly returns the task
+        transformedSource.Should().Contain("Task<string> GetData()");
+        transformedSource.Should().Contain("return FetchFromDatabase()");
+        transformedSource.Should().NotContain("async Task<string> GetData()");
         // FetchFromDatabase has no async calls, so it uses Task.FromResult
         transformedSource.Should().Contain("Task<string> FetchFromDatabase()");
         transformedSource.Should().Contain("Task.FromResult");
@@ -200,8 +201,10 @@ namespace InterfaceImplementation
         var transformations = await _floodingAnalyzer.GetTransformationInfoAsync(callGraph);
         var transformedSource = await _transformer.TransformSourceAsync(source, transformations.ToList());
 
-        // Assert - GetData calls FetchFromDatabase, so it uses async/await
-        transformedSource.Should().Contain("async Task<string> GetData()");
+        // Assert - GetData has a single call to FetchFromDatabase, so it directly returns the task
+        transformedSource.Should().Contain("Task<string> GetData()");
+        transformedSource.Should().Contain("return FetchFromDatabase()");
+        transformedSource.Should().NotContain("async Task<string> GetData()");
 
         // FetchFromDatabase has no async calls, so it uses Task.FromResult
         transformedSource.Should().Contain("Task<string> FetchFromDatabase()");

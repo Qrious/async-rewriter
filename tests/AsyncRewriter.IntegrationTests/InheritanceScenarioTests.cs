@@ -217,8 +217,10 @@ namespace InheritanceScenario
         productSave.Should().NotBeNull();
         productSave!.RequiresAsyncTransformation.Should().BeFalse();
 
-        // Verify UserRepository transformation
-        transformedSource.Should().Contain("async Task<string> GetById(int id)");
+        // Verify UserRepository transformation - has single call so directly returns task
+        transformedSource.Should().Contain("Task<string> GetById(int id)");
+        // LoadFromStorage has no async calls so uses Task.FromResult
+        transformedSource.Should().Contain("Task.FromResult");
     }
 
     [Fact]

@@ -149,14 +149,17 @@ namespace MyApp
 
         // Assert - Verify transformations
         transformedSource.Should().Contain("using System.Threading.Tasks;");
-        transformedSource.Should().Contain("async Task<User> GetUser(int id)");
-        transformedSource.Should().Contain("async Task UpdateUser(User user)");
+        // Methods with single calls directly return the task (no async overhead)
+        transformedSource.Should().Contain("Task<User> GetUser(int id)");
+        transformedSource.Should().Contain("return _database.Query<User>(id)");
+        transformedSource.Should().Contain("Task UpdateUser(User user)");
+        transformedSource.Should().Contain("return _database.Save(user)");
+        // HandleGetRequest has 2 statements so needs async/await
         transformedSource.Should().Contain("async Task HandleGetRequest(int id)");
-        transformedSource.Should().Contain("async Task HandleUpdateRequest(User user)");
-        transformedSource.Should().Contain("await _database.Query<User>(id)");
-        transformedSource.Should().Contain("await _database.Save(user)");
         transformedSource.Should().Contain("await _userService.GetUser(id)");
-        transformedSource.Should().Contain("await _userService.UpdateUser(user)");
+        // HandleUpdateRequest has single statement so directly returns task
+        transformedSource.Should().Contain("Task HandleUpdateRequest(User user)");
+        transformedSource.Should().Contain("return _userService.UpdateUser(user)");
     }
 
     [Fact]
@@ -214,13 +217,15 @@ namespace MyApp
         var transformations = await _floodingAnalyzer.GetTransformationInfoAsync(callGraph);
         var transformedSource = await _transformer.TransformSourceAsync(source, transformations.ToList());
 
-        // Assert
-        transformedSource.Should().Contain("async Task Method1()");
-        transformedSource.Should().Contain("async Task Method2()");
-        transformedSource.Should().Contain("await Helper1()");
-        transformedSource.Should().Contain("await Helper2()");
-        transformedSource.Should().Contain("await AsyncOperation1()");
-        transformedSource.Should().Contain("await AsyncOperation2()");
+        // Assert - All methods have single calls so they directly return tasks
+        transformedSource.Should().Contain("Task Method1()");
+        transformedSource.Should().Contain("return Helper1()");
+        transformedSource.Should().Contain("Task Method2()");
+        transformedSource.Should().Contain("return Helper2()");
+        transformedSource.Should().Contain("return AsyncOperation1()");
+        transformedSource.Should().Contain("return AsyncOperation2()");
+        // No async/await needed
+        transformedSource.Should().NotContain("await");
     }
 
     [Fact]

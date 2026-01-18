@@ -62,6 +62,13 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
 
             if (needsAwait)
             {
+                // Check if we can directly return the task instead of using async/await
+                var directReturnTransform = TryTransformToDirectTaskReturn(node, returnsVoid);
+                if (directReturnTransform != null)
+                {
+                    return directReturnTransform.WithReturnType(newReturnType2);
+                }
+
                 // Method has async calls - add async modifier and awaits
                 var asyncModifier = SyntaxFactory.Token(SyntaxKind.AsyncKeyword)
                     .WithTrailingTrivia(SyntaxFactory.Space);
@@ -229,6 +236,13 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
 
             if (needsAwait)
             {
+                // Check if we can directly return the task instead of using async/await
+                var directReturnTransform = TryTransformLocalFunctionToDirectTaskReturn(node, returnsVoid);
+                if (directReturnTransform != null)
+                {
+                    return directReturnTransform.WithReturnType(newReturnType);
+                }
+
                 // Function has async calls - add async modifier and awaits
                 var asyncModifier = SyntaxFactory.Token(SyntaxKind.AsyncKeyword)
                     .WithTrailingTrivia(SyntaxFactory.Space);
@@ -258,6 +272,66 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         }
 
         return base.VisitLocalFunctionStatement(node);
+    }
+
+    /// <summary>
+    /// Tries to transform a local function to directly return a task instead of using async/await.
+    /// </summary>
+    private LocalFunctionStatementSyntax? TryTransformLocalFunctionToDirectTaskReturn(LocalFunctionStatementSyntax node, bool returnsVoid)
+    {
+        // Handle expression body
+        if (node.ExpressionBody != null)
+        {
+            var asyncCall = GetAsyncCallExpression(node.ExpressionBody.Expression);
+            if (asyncCall != null)
+            {
+                var newExpressionBody = node.ExpressionBody.WithExpression(asyncCall);
+                return node.WithExpressionBody(newExpressionBody);
+            }
+            return null;
+        }
+
+        // Handle block body
+        if (node.Body == null || node.Body.Statements.Count != 1)
+            return null;
+
+        var statement = node.Body.Statements[0];
+
+        if (returnsVoid)
+        {
+            if (statement is ExpressionStatementSyntax exprStatement)
+            {
+                var asyncCall = GetAsyncCallExpression(exprStatement.Expression);
+                if (asyncCall != null)
+                {
+                    var returnStatement = SyntaxFactory.ReturnStatement(
+                            SyntaxFactory.Token(SyntaxKind.ReturnKeyword)
+                                .WithLeadingTrivia(exprStatement.GetLeadingTrivia())
+                                .WithTrailingTrivia(SyntaxFactory.Space),
+                            asyncCall.WithoutLeadingTrivia(),
+                            SyntaxFactory.Token(SyntaxKind.SemicolonToken)
+                                .WithTrailingTrivia(exprStatement.GetTrailingTrivia()));
+
+                    var newBody = node.Body.WithStatements(SyntaxFactory.SingletonList<StatementSyntax>(returnStatement));
+                    return node.WithBody(newBody);
+                }
+            }
+        }
+        else
+        {
+            if (statement is ReturnStatementSyntax returnStatement && returnStatement.Expression != null)
+            {
+                var asyncCall = GetAsyncCallExpression(returnStatement.Expression);
+                if (asyncCall != null)
+                {
+                    var newReturnStatement = returnStatement.WithExpression(asyncCall);
+                    var newBody = node.Body.WithStatements(SyntaxFactory.SingletonList<StatementSyntax>(newReturnStatement));
+                    return node.WithBody(newBody);
+                }
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -335,6 +409,109 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         var parameters = string.Join(", ", originalMethod.Parameters.Select(p => p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)));
         var signature = $"{originalMethod.Name}({parameters})";
         return $"{originalMethod.ContainingType?.ToDisplayString()}.{signature}";
+    }
+
+    /// <summary>
+    /// Tries to transform a method to directly return a task instead of using async/await.
+    /// This is possible when:
+    /// - Void method has a single statement that is just an async call (return the task)
+    /// - Method has a single return statement that just returns an async call result
+    /// </summary>
+    private MethodDeclarationSyntax? TryTransformToDirectTaskReturn(MethodDeclarationSyntax node, bool returnsVoid)
+    {
+        // Handle expression body: T Method() => AsyncCall();
+        if (node.ExpressionBody != null)
+        {
+            var asyncCall = GetAsyncCallExpression(node.ExpressionBody.Expression);
+            if (asyncCall != null)
+            {
+                // Transform to: Task<T> Method() => AsyncCall();
+                var newExpressionBody = node.ExpressionBody.WithExpression(asyncCall);
+                return node.WithExpressionBody(newExpressionBody);
+            }
+            return null;
+        }
+
+        // Handle block body
+        if (node.Body == null || node.Body.Statements.Count != 1)
+            return null;
+
+        var statement = node.Body.Statements[0];
+
+        if (returnsVoid)
+        {
+            // Void method: look for single expression statement like: AsyncCall();
+            if (statement is ExpressionStatementSyntax exprStatement)
+            {
+                var asyncCall = GetAsyncCallExpression(exprStatement.Expression);
+                if (asyncCall != null)
+                {
+                    // Transform to: return AsyncCall();
+                    // Preserve statement's leading trivia, add space after return keyword
+                    var returnStatement = SyntaxFactory.ReturnStatement(
+                            SyntaxFactory.Token(SyntaxKind.ReturnKeyword)
+                                .WithLeadingTrivia(exprStatement.GetLeadingTrivia())
+                                .WithTrailingTrivia(SyntaxFactory.Space),
+                            asyncCall.WithoutLeadingTrivia(),
+                            SyntaxFactory.Token(SyntaxKind.SemicolonToken)
+                                .WithTrailingTrivia(exprStatement.GetTrailingTrivia()));
+
+                    var newBody = node.Body.WithStatements(SyntaxFactory.SingletonList<StatementSyntax>(returnStatement));
+                    return node.WithBody(newBody);
+                }
+            }
+        }
+        else
+        {
+            // Non-void method: look for single return statement like: return AsyncCall();
+            if (statement is ReturnStatementSyntax returnStatement && returnStatement.Expression != null)
+            {
+                var asyncCall = GetAsyncCallExpression(returnStatement.Expression);
+                if (asyncCall != null)
+                {
+                    // Transform to: return AsyncCall(); (just use the call directly without await)
+                    var newReturnStatement = returnStatement.WithExpression(asyncCall);
+                    var newBody = node.Body.WithStatements(SyntaxFactory.SingletonList<StatementSyntax>(newReturnStatement));
+                    return node.WithBody(newBody);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Gets the async call expression if the expression is (or will become) an async call.
+    /// Returns null if not an async call or if the call can't be directly returned.
+    /// </summary>
+    private InvocationExpressionSyntax? GetAsyncCallExpression(ExpressionSyntax expression)
+    {
+        // Handle case where it's already a direct invocation
+        if (expression is InvocationExpressionSyntax invocation)
+        {
+            var symbolInfo = _semanticModel.GetSymbolInfo(invocation);
+            var methodSymbol = symbolInfo.Symbol as IMethodSymbol;
+
+            if (methodSymbol != null)
+            {
+                var methodId = GetMethodId(methodSymbol);
+
+                // Check if this call is to an async method or will become async
+                if (methodSymbol.IsAsync || _asyncMethodIds.Contains(methodId))
+                {
+                    return invocation;
+                }
+
+                // Check if this is a sync wrapper that will be unwrapped
+                // In that case, we can't directly return (it needs unwrapping)
+                if (_syncWrapperMethodIds.Contains(methodId))
+                {
+                    return null;
+                }
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
