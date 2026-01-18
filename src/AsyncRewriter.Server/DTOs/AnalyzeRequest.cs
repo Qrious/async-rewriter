@@ -50,6 +50,13 @@ public class JobStatusResponse
     public DateTime? StartedAt { get; set; }
     public DateTime? CompletedAt { get; set; }
     public string? ErrorMessage { get; set; }
+    public string? CallGraphId { get; set; }
+    public int? MethodCount { get; set; }
+    public int? MethodsProcessed { get; set; }
+    public int? MethodsRemaining { get; set; }
+    public int? FloodedMethodCount { get; set; }
+    public int? SyncWrapperCount { get; set; }
+    public string? PendingWorkSummary { get; set; }
     public object? Result { get; set; }
 }
 

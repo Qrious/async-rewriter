@@ -410,43 +410,17 @@ class Program
                     return;
                 }
 
-                if (status.Status == JobStatus.Completed && status.Result is JsonElement resultElement)
+                if (status.Status == JobStatus.Completed)
                 {
-                    var result = JsonSerializer.Deserialize<SyncWrapperAnalysisJobResult>(resultElement.GetRawText());
-                    if (result == null)
-                    {
-                        Console.ForegroundColor = ConsoleColor.Red;
-                        Console.WriteLine("Error: Failed to deserialize sync wrapper analysis result");
-                        Console.ResetColor();
-                        return;
-                    }
-
-                    var analysisResult = new SyncWrapperAnalysisResult
-                    {
-                        SyncWrappers = result.SyncWrappers,
-                        CallGraph = result.CallGraph,
-                        Message = result.SyncWrappers.Count == 0
-                            ? "No sync wrapper methods found in the project"
-                            : $"Found {result.SyncWrappers.Count} sync wrapper(s), {result.CallGraph?.FloodedMethods.Count ?? 0} method(s) need async transformation"
-                    };
-
-                    PrintSyncWrapperAnalysisResult(analysisResult);
-
-                    if (applyChanges && analysisResult.CallGraph != null && analysisResult.CallGraph.FloodedMethods.Count > 0)
+                    if (applyChanges && !string.IsNullOrWhiteSpace(status.CallGraphId) && (status.FloodedMethodCount ?? 0) > 0)
                     {
                         Console.WriteLine();
                         Console.ForegroundColor = ConsoleColor.Yellow;
-                        Console.WriteLine($"Applying transformations to {analysisResult.CallGraph.FloodedMethods.Count} method(s)...");
+                        Console.WriteLine($"Applying transformations to {status.FloodedMethodCount} method(s)...");
                         Console.ResetColor();
 
-                        await TransformProjectAsync(projectPath, analysisResult.CallGraph.Id, true);
+                        await TransformProjectAsync(projectPath, status.CallGraphId!, true);
                     }
-                }
-                else if (status.Status == JobStatus.Completed)
-                {
-                    Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine("Sync wrapper analysis completed without a result payload.");
-                    Console.ResetColor();
                 }
             }
             else
@@ -689,16 +663,35 @@ class Program
             Console.ResetColor();
         }
 
-        if (status.Result != null)
+        if (!string.IsNullOrWhiteSpace(status.PendingWorkSummary))
         {
-            Console.WriteLine();
-            Console.WriteLine("Result:");
-            var json = JsonSerializer.Serialize(status.Result, new JsonSerializerOptions
-            {
-                WriteIndented = true,
-                DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-            });
-            Console.WriteLine(json);
+            Console.WriteLine($"  Pending: {status.PendingWorkSummary}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(status.CallGraphId))
+        {
+            Console.WriteLine($"  Call Graph ID: {status.CallGraphId}");
+        }
+
+        if (status.MethodCount.HasValue)
+        {
+            var processed = status.MethodsProcessed ?? 0;
+            Console.WriteLine($"  Methods: {processed} / {status.MethodCount}");
+        }
+
+        if (status.MethodsRemaining.HasValue)
+        {
+            Console.WriteLine($"  Methods Remaining: {status.MethodsRemaining}");
+        }
+
+        if (status.FloodedMethodCount.HasValue)
+        {
+            Console.WriteLine($"  Flooded Methods: {status.FloodedMethodCount}");
+        }
+
+        if (status.SyncWrapperCount.HasValue)
+        {
+            Console.WriteLine($"  Sync Wrappers: {status.SyncWrapperCount}");
         }
     }
 }
@@ -721,6 +714,13 @@ public class JobStatusResponse
     public DateTime? StartedAt { get; set; }
     public DateTime? CompletedAt { get; set; }
     public string? ErrorMessage { get; set; }
+    public string? CallGraphId { get; set; }
+    public int? MethodCount { get; set; }
+    public int? MethodsProcessed { get; set; }
+    public int? MethodsRemaining { get; set; }
+    public int? FloodedMethodCount { get; set; }
+    public int? SyncWrapperCount { get; set; }
+    public string? PendingWorkSummary { get; set; }
     public object? Result { get; set; }
 }
 

@@ -99,6 +99,8 @@ public class AnalysisBackgroundService : BackgroundService
                 j.StartedAt = DateTime.UtcNow;
                 j.CurrentStep = "Starting analysis";
                 j.ProgressPercentage = 0;
+                j.MethodsProcessed = 0;
+                j.PendingWorkSummary = "Preparing analysis";
             });
 
             combinedToken.ThrowIfCancellationRequested();
@@ -107,6 +109,8 @@ public class AnalysisBackgroundService : BackgroundService
             {
                 j.CurrentStep = "Analyzing project structure";
                 j.ProgressPercentage = 20;
+                j.MethodsProcessed = 0;
+                j.PendingWorkSummary = "Scanning project for method declarations";
             });
 
             await Task.Delay(100, combinedToken);
@@ -119,6 +123,9 @@ public class AnalysisBackgroundService : BackgroundService
             {
                 j.CurrentStep = "Building call graph";
                 j.ProgressPercentage = 60;
+                j.MethodsProcessed = callGraph.Methods.Count;
+                j.MethodCount = callGraph.Methods.Count;
+                j.PendingWorkSummary = "Resolving call graph edges";
             });
 
             await Task.Delay(100, combinedToken);
@@ -127,6 +134,7 @@ public class AnalysisBackgroundService : BackgroundService
             {
                 j.CurrentStep = "Saving to database";
                 j.ProgressPercentage = 80;
+                j.PendingWorkSummary = "Writing call graph to storage";
             });
 
             await callGraphRepository.StoreCallGraphAsync(callGraph, combinedToken);
@@ -139,6 +147,10 @@ public class AnalysisBackgroundService : BackgroundService
                 j.CompletedAt = DateTime.UtcNow;
                 j.CurrentStep = "Analysis complete";
                 j.ProgressPercentage = 100;
+                j.CallGraphId = callGraph.Id;
+                j.MethodsProcessed = callGraph.Methods.Count;
+                j.MethodCount = callGraph.Methods.Count;
+                j.PendingWorkSummary = "Completed";
                 j.CallGraph = callGraph;
             });
 
@@ -189,6 +201,8 @@ public class AnalysisBackgroundService : BackgroundService
                 j.StartedAt = DateTime.UtcNow;
                 j.CurrentStep = "Finding sync wrapper methods";
                 j.ProgressPercentage = 0;
+                j.MethodsProcessed = 0;
+                j.PendingWorkSummary = "Scanning for sync wrapper patterns";
             });
 
             combinedToken.ThrowIfCancellationRequested();
@@ -206,6 +220,8 @@ public class AnalysisBackgroundService : BackgroundService
                     j.CurrentStep = "No sync wrapper methods found";
                     j.ProgressPercentage = 100;
                     j.SyncWrappers = syncWrappers;
+                    j.SyncWrapperCount = 0;
+                    j.PendingWorkSummary = "Completed";
                 });
                 return;
             }
@@ -215,6 +231,9 @@ public class AnalysisBackgroundService : BackgroundService
                 j.CurrentStep = "Analyzing project structure";
                 j.ProgressPercentage = 30;
                 j.SyncWrappers = syncWrappers;
+                j.SyncWrapperCount = syncWrappers.Count;
+                j.MethodsProcessed = 0;
+                j.PendingWorkSummary = "Preparing call graph analysis";
             });
 
             await Task.Delay(100, combinedToken);
@@ -230,6 +249,9 @@ public class AnalysisBackgroundService : BackgroundService
             {
                 j.CurrentStep = "Running flooding analysis";
                 j.ProgressPercentage = 70;
+                j.MethodCount = callGraph.Methods.Count;
+                j.MethodsProcessed = callGraph.Methods.Count;
+                j.PendingWorkSummary = "Traversing call graph for async flooding";
             });
 
             await Task.Delay(100, combinedToken);
@@ -249,6 +271,11 @@ public class AnalysisBackgroundService : BackgroundService
                 j.CompletedAt = DateTime.UtcNow;
                 j.CurrentStep = "Sync wrapper analysis complete";
                 j.ProgressPercentage = 100;
+                j.CallGraphId = updatedCallGraph.Id;
+                j.MethodCount = updatedCallGraph.Methods.Count;
+                j.MethodsProcessed = updatedCallGraph.Methods.Count;
+                j.FloodedMethodCount = updatedCallGraph.FloodedMethods.Count;
+                j.PendingWorkSummary = "Completed";
                 j.CallGraph = updatedCallGraph;
             });
 

@@ -25,27 +25,34 @@ public class AnalysisJob
     public string? ErrorMessage { get; set; }
 
     public string ProjectPath { get; set; } = string.Empty;
+    public string? CallGraphId { get; set; }
+    public int? MethodCount { get; set; }
+    public int? MethodsProcessed { get; set; }
+    public int? FloodedMethodCount { get; set; }
+    public int? SyncWrapperCount { get; set; }
+    public string? PendingWorkSummary { get; set; }
     public CallGraph? CallGraph { get; set; }
     public List<SyncWrapperMethod>? SyncWrappers { get; set; }
     public CancellationTokenSource CancellationTokenSource { get; set; } = new();
 
     public JobStatusResponse ToStatusResponse()
     {
+        int? methodsRemaining = null;
+        if (MethodCount.HasValue && MethodsProcessed.HasValue)
+        {
+            methodsRemaining = Math.Max(0, MethodCount.Value - MethodsProcessed.Value);
+        }
+
         object? result = null;
         if (Status == JobStatus.Completed)
         {
-            if (JobType == JobType.SyncWrapperAnalysis)
+            result = new AnalysisJobResultSummary
             {
-                result = new SyncWrapperAnalysisJobResult
-                {
-                    SyncWrappers = SyncWrappers ?? new List<SyncWrapperMethod>(),
-                    CallGraph = CallGraph
-                };
-            }
-            else
-            {
-                result = CallGraph;
-            }
+                CallGraphId = CallGraphId,
+                MethodCount = MethodCount,
+                FloodedMethodCount = FloodedMethodCount,
+                SyncWrapperCount = SyncWrapperCount
+            };
         }
 
         return new JobStatusResponse
@@ -58,13 +65,22 @@ public class AnalysisJob
             StartedAt = StartedAt,
             CompletedAt = CompletedAt,
             ErrorMessage = ErrorMessage,
+            CallGraphId = CallGraphId,
+            MethodCount = MethodCount,
+            MethodsProcessed = MethodsProcessed,
+            MethodsRemaining = methodsRemaining,
+            FloodedMethodCount = FloodedMethodCount,
+            SyncWrapperCount = SyncWrapperCount,
+            PendingWorkSummary = PendingWorkSummary,
             Result = result
         };
     }
 }
 
-public class SyncWrapperAnalysisJobResult
+public class AnalysisJobResultSummary
 {
-    public List<SyncWrapperMethod> SyncWrappers { get; set; } = new();
-    public CallGraph? CallGraph { get; set; }
+    public string? CallGraphId { get; set; }
+    public int? MethodCount { get; set; }
+    public int? FloodedMethodCount { get; set; }
+    public int? SyncWrapperCount { get; set; }
 }
