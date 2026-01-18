@@ -26,6 +26,12 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
 
     public async Task<CallGraph> AnalyzeProjectAsync(string projectPath, CancellationToken cancellationToken = default)
     {
+        // If a solution file is provided, delegate to AnalyzeSolutionAsync
+        if (projectPath.EndsWith(".sln", StringComparison.OrdinalIgnoreCase))
+        {
+            return await AnalyzeSolutionAsync(projectPath, cancellationToken);
+        }
+
         var workspace = MSBuildWorkspace.Create();
         var project = await workspace.OpenProjectAsync(projectPath, cancellationToken: cancellationToken);
 
@@ -55,6 +61,47 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
 
                 AnalyzeSyntaxTree(root, semanticModel, syntaxTree.FilePath, callGraph);
             });
+
+        return callGraph;
+    }
+
+    public async Task<CallGraph> AnalyzeSolutionAsync(string solutionPath, CancellationToken cancellationToken = default)
+    {
+        var workspace = MSBuildWorkspace.Create();
+        var solution = await workspace.OpenSolutionAsync(solutionPath, cancellationToken: cancellationToken);
+
+        var callGraph = new CallGraph
+        {
+            ProjectName = Path.GetFileNameWithoutExtension(solutionPath)
+        };
+
+        // Process all projects in the solution
+        foreach (var project in solution.Projects)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var compilation = await project.GetCompilationAsync(cancellationToken);
+            if (compilation == null)
+            {
+                continue; // Skip projects that fail to compile
+            }
+
+            // Process syntax trees in parallel
+            await Parallel.ForEachAsync(
+                compilation.SyntaxTrees,
+                new ParallelOptions
+                {
+                    CancellationToken = cancellationToken,
+                    MaxDegreeOfParallelism = Environment.ProcessorCount
+                },
+                async (syntaxTree, ct) =>
+                {
+                    var semanticModel = compilation.GetSemanticModel(syntaxTree);
+                    var root = await syntaxTree.GetRootAsync(ct);
+
+                    AnalyzeSyntaxTree(root, semanticModel, syntaxTree.FilePath, callGraph);
+                });
+        }
 
         return callGraph;
     }
@@ -283,19 +330,45 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
     public async Task<List<SyncWrapperMethod>> FindSyncWrapperMethodsAsync(string projectPath, CancellationToken cancellationToken = default)
     {
         var results = new List<SyncWrapperMethod>();
-
         var workspace = MSBuildWorkspace.Create();
-        var project = await workspace.OpenProjectAsync(projectPath, cancellationToken: cancellationToken);
 
-        var compilation = await project.GetCompilationAsync(cancellationToken);
-        if (compilation == null)
+        // Handle solution files
+        if (projectPath.EndsWith(".sln", StringComparison.OrdinalIgnoreCase))
+        {
+            var solution = await workspace.OpenSolutionAsync(projectPath, cancellationToken: cancellationToken);
+
+            foreach (var project in solution.Projects)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var compilation = await project.GetCompilationAsync(cancellationToken);
+                if (compilation == null) continue;
+
+                foreach (var syntaxTree in compilation.SyntaxTrees)
+                {
+                    var semanticModel = compilation.GetSemanticModel(syntaxTree);
+                    var root = await syntaxTree.GetRootAsync(cancellationToken);
+
+                    var syncWrappers = FindSyncWrappersInSyntaxTree(root, semanticModel, syntaxTree.FilePath);
+                    results.AddRange(syncWrappers);
+                }
+            }
+
+            return results;
+        }
+
+        // Handle single project files
+        var proj = await workspace.OpenProjectAsync(projectPath, cancellationToken: cancellationToken);
+
+        var comp = await proj.GetCompilationAsync(cancellationToken);
+        if (comp == null)
         {
             throw new InvalidOperationException("Failed to get compilation");
         }
 
-        foreach (var syntaxTree in compilation.SyntaxTrees)
+        foreach (var syntaxTree in comp.SyntaxTrees)
         {
-            var semanticModel = compilation.GetSemanticModel(syntaxTree);
+            var semanticModel = comp.GetSemanticModel(syntaxTree);
             var root = await syntaxTree.GetRootAsync(cancellationToken);
 
             var syncWrappers = FindSyncWrappersInSyntaxTree(root, semanticModel, syntaxTree.FilePath);

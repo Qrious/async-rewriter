@@ -16,9 +16,15 @@ public interface ICallGraphAnalyzer
     Task<CallGraph> AnalyzeFileAsync(string filePath, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Analyzes an entire project and builds a call graph
+    /// Analyzes an entire project and builds a call graph.
+    /// If a solution file (.sln) is provided, analyzes all projects in the solution.
     /// </summary>
     Task<CallGraph> AnalyzeProjectAsync(string projectPath, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Analyzes all projects in a solution and builds a combined call graph
+    /// </summary>
+    Task<CallGraph> AnalyzeSolutionAsync(string solutionPath, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Analyzes source code and builds a call graph
