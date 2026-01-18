@@ -38,14 +38,23 @@ public class AsyncTransformer : IAsyncTransformer
         try
         {
             var workspace = MSBuildWorkspace.Create();
-            var project = await workspace.OpenProjectAsync(projectPath, cancellationToken: cancellationToken);
-            var compilation = await project.GetCompilationAsync(cancellationToken);
+            Solution solution;
 
-            if (compilation == null)
+            if (projectPath.EndsWith(".sln", StringComparison.OrdinalIgnoreCase))
             {
-                result.Success = false;
-                result.Errors.Add("Failed to get compilation");
-                return result;
+                solution = await workspace.OpenSolutionAsync(projectPath, cancellationToken: cancellationToken);
+
+                if (!solution.Projects.Any())
+                {
+                    result.Success = false;
+                    result.Errors.Add("Solution contains no projects");
+                    return result;
+                }
+            }
+            else
+            {
+                var project = await workspace.OpenProjectAsync(projectPath, cancellationToken: cancellationToken);
+                solution = project.Solution;
             }
 
             // Get transformation info
@@ -96,7 +105,8 @@ public class AsyncTransformer : IAsyncTransformer
             }
 
             // Build a lookup of documents by file path
-            var documentsByPath = project.Documents
+            var documentsByPath = solution.Projects
+                .SelectMany(project => project.Documents)
                 .Where(d => d.FilePath != null)
                 .ToDictionary(d => d.FilePath!, d => d);
 
