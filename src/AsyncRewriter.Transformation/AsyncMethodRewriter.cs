@@ -1,4 +1,6 @@
 using System.Collections.Generic;
+using System;
+using System.Collections.Generic;
 using System.Linq;
 using AsyncRewriter.Core.Models;
 using Microsoft.CodeAnalysis;
@@ -120,6 +122,33 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
                 }
             }
 
+            var throwAsyncInvocation = TryTransformThrowToThrowAsync(node, methodSymbol);
+            if (throwAsyncInvocation != null)
+            {
+                if (throwAsyncInvocation.Parent is AwaitExpressionSyntax)
+                {
+                    return throwAsyncInvocation;
+                }
+
+                return WrapWithAwait(throwAsyncInvocation);
+            }
+
+            var notThrowAsyncInvocation = TryTransformNotThrowToNotThrowAsync(node, methodSymbol);
+            if (notThrowAsyncInvocation != null)
+            {
+                if (notThrowAsyncInvocation.Parent is AwaitExpressionSyntax)
+                {
+                    return notThrowAsyncInvocation;
+                }
+
+                return WrapWithAwait(notThrowAsyncInvocation);
+            }
+
+            if (IsFluentAssertionAsyncInvocation(methodSymbol) && node.Parent is not AwaitExpressionSyntax)
+            {
+                return WrapWithAwait(node);
+            }
+
             // If this invocation calls an async method or a method that will be async
             if (methodSymbol.IsAsync || _asyncMethodIds.Contains(methodId))
             {
@@ -130,31 +159,339 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
                     return base.VisitInvocationExpression(node);
                 }
 
-                // Add await - preserve leading trivia from the invocation
-                var leadingTrivia = node.GetLeadingTrivia();
-                var nodeWithoutLeadingTrivia = node.WithoutLeadingTrivia();
-
-                var awaitExpression = SyntaxFactory.AwaitExpression(nodeWithoutLeadingTrivia)
-                    .WithAwaitKeyword(
-                        SyntaxFactory.Token(SyntaxKind.AwaitKeyword)
-                            .WithLeadingTrivia(leadingTrivia)
-                            .WithTrailingTrivia(SyntaxFactory.Space));
-
-                // Track line number
-                var lineSpan = node.GetLocation().GetLineSpan();
-                _awaitAddedLines.Add(lineSpan.StartLinePosition.Line + 1);
-
-                return awaitExpression;
+                return WrapWithAwait(node);
             }
         }
 
         return base.VisitInvocationExpression(node);
     }
 
+    private InvocationExpressionSyntax? TryTransformThrowToThrowAsync(InvocationExpressionSyntax node, IMethodSymbol methodSymbol)
+    {
+        if (!IsAssertionThrow(methodSymbol))
+        {
+            return null;
+        }
+
+        return TryTransformAssertion(node, "ThrowAsync");
+    }
+
+    private InvocationExpressionSyntax? TryTransformNotThrowToNotThrowAsync(InvocationExpressionSyntax node, IMethodSymbol methodSymbol)
+    {
+        if (!IsAssertionNotThrow(methodSymbol))
+        {
+            return null;
+        }
+
+        return TryTransformAssertion(node, "NotThrowAsync");
+    }
+
+    private InvocationExpressionSyntax? TryTransformAssertion(InvocationExpressionSyntax node, string asyncMethodName)
+    {
+        if (!ShouldUseAsyncAssertion(node))
+        {
+            return null;
+        }
+
+        var newExpression = node.Expression;
+
+        if (newExpression is MemberAccessExpressionSyntax memberAccess)
+        {
+            newExpression = memberAccess.WithName(SyntaxFactory.IdentifierName(asyncMethodName));
+        }
+        else if (newExpression is MemberBindingExpressionSyntax memberBinding)
+        {
+            newExpression = memberBinding.WithName(SyntaxFactory.IdentifierName(asyncMethodName));
+        }
+
+        return node.WithExpression(newExpression);
+    }
+
+    private bool ShouldUseAsyncAssertion(InvocationExpressionSyntax node)
+    {
+        var subject = GetAssertionSubject(node.Expression);
+        if (subject == null)
+        {
+            return false;
+        }
+
+        var subjectType = _semanticModel.GetTypeInfo(subject).Type;
+        if (IsAsyncDelegateType(subjectType))
+        {
+            return true;
+        }
+
+        if (subject is LambdaExpressionSyntax lambda)
+        {
+            return LambdaContainsAsyncCall(lambda);
+        }
+
+        if (subject is IdentifierNameSyntax identifier)
+        {
+            var symbol = _semanticModel.GetSymbolInfo(identifier).Symbol;
+            return SymbolRepresentsAsyncDelegate(symbol);
+        }
+
+        return false;
+    }
+
+    private ExpressionSyntax? GetAssertionSubject(ExpressionSyntax expression)
+    {
+        if (expression is MemberAccessExpressionSyntax memberAccess)
+        {
+            if (memberAccess.Expression is InvocationExpressionSyntax invocation && IsShouldInvocation(invocation))
+            {
+                return GetShouldReceiver(invocation.Expression);
+            }
+        }
+        else if (expression is MemberBindingExpressionSyntax &&
+                 expression.Parent is ConditionalAccessExpressionSyntax conditionalAccess &&
+                 conditionalAccess.Expression is InvocationExpressionSyntax invocation &&
+                 IsShouldInvocation(invocation))
+        {
+            return GetShouldReceiver(invocation.Expression);
+        }
+
+        return null;
+    }
+
+    private bool IsShouldInvocation(InvocationExpressionSyntax invocation)
+    {
+        if (invocation.Expression is MemberAccessExpressionSyntax memberAccess)
+        {
+            return memberAccess.Name.Identifier.Text == "Should";
+        }
+
+        if (invocation.Expression is MemberBindingExpressionSyntax memberBinding)
+        {
+            return memberBinding.Name.Identifier.Text == "Should";
+        }
+
+        return false;
+    }
+
+    private ExpressionSyntax? GetShouldReceiver(ExpressionSyntax shouldExpression)
+    {
+        if (shouldExpression is MemberAccessExpressionSyntax memberAccess)
+        {
+            return memberAccess.Expression;
+        }
+
+        if (shouldExpression is MemberBindingExpressionSyntax &&
+            shouldExpression.Parent is ConditionalAccessExpressionSyntax conditionalAccess)
+        {
+            return conditionalAccess.Expression;
+        }
+
+        return null;
+    }
+
+    private bool SymbolRepresentsAsyncDelegate(ISymbol? symbol)
+    {
+        return symbol switch
+        {
+            ILocalSymbol local => IsAsyncDelegateType(local.Type) || LambdaInitializerContainsAsyncCall(local.DeclaringSyntaxReferences),
+            IParameterSymbol parameter => IsAsyncDelegateType(parameter.Type),
+            IFieldSymbol field => IsAsyncDelegateType(field.Type) || LambdaInitializerContainsAsyncCall(field.DeclaringSyntaxReferences),
+            _ => false
+        };
+    }
+
+    private bool LambdaInitializerContainsAsyncCall(IEnumerable<SyntaxReference> references)
+    {
+        foreach (var reference in references)
+        {
+            if (reference.GetSyntax() is VariableDeclaratorSyntax declarator &&
+                declarator.Initializer?.Value is LambdaExpressionSyntax lambda &&
+                LambdaContainsAsyncCall(lambda))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool IsAsyncDelegateType(ITypeSymbol? typeSymbol)
+    {
+        if (typeSymbol is not INamedTypeSymbol namedType || namedType.Name != "Func")
+        {
+            return false;
+        }
+
+        if (namedType.TypeArguments.Length == 0)
+        {
+            return false;
+        }
+
+        var returnType = namedType.TypeArguments[^1];
+        return IsTaskType(returnType);
+    }
+
+    private bool IsTaskType(ITypeSymbol typeSymbol)
+    {
+        return typeSymbol.ToDisplayString().StartsWith("System.Threading.Tasks.Task", StringComparison.Ordinal);
+    }
+
+    private bool LambdaContainsAsyncCall(LambdaExpressionSyntax lambda)
+    {
+        var invocations = lambda.DescendantNodes().OfType<InvocationExpressionSyntax>();
+
+        foreach (var invocation in invocations)
+        {
+            var symbolInfo = _semanticModel.GetSymbolInfo(invocation);
+            var methodSymbol = symbolInfo.Symbol as IMethodSymbol;
+
+            if (methodSymbol == null)
+            {
+                continue;
+            }
+
+            var methodId = GetMethodId(methodSymbol);
+            if (methodSymbol.IsAsync || _asyncMethodIds.Contains(methodId))
+            {
+                return true;
+            }
+
+            if (_syncWrapperMethodIds.Contains(methodId))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool IsAssertionThrow(IMethodSymbol methodSymbol)
+    {
+        return methodSymbol.Name == "Throw" && IsAssertionType(methodSymbol.ContainingType);
+    }
+
+    private bool IsAssertionNotThrow(IMethodSymbol methodSymbol)
+    {
+        return methodSymbol.Name == "NotThrow" && IsAssertionType(methodSymbol.ContainingType);
+    }
+
+    private bool IsFluentAssertionAsyncInvocation(IMethodSymbol methodSymbol)
+    {
+        return IsAssertionType(methodSymbol.ContainingType) &&
+            methodSymbol.Name.EndsWith("Async", StringComparison.Ordinal);
+    }
+
+    private bool IsAssertionType(INamedTypeSymbol? typeSymbol)
+    {
+        if (typeSymbol == null)
+        {
+            return false;
+        }
+
+        return typeSymbol.Name is "DelegateAssertions" or "ActionAssertions";
+    }
+
+    private InvocationExpressionSyntax? GetThrowTargetExpression(ExpressionSyntax expression)
+    {
+        if (expression is MemberAccessExpressionSyntax memberAccess)
+        {
+            if (memberAccess.Expression is InvocationExpressionSyntax invocation)
+            {
+                return invocation;
+            }
+        }
+        else if (expression is MemberBindingExpressionSyntax memberBinding)
+        {
+            if (memberBinding.Parent is ConditionalAccessExpressionSyntax conditionalAccess &&
+                conditionalAccess.Expression is InvocationExpressionSyntax invocation)
+            {
+                return invocation;
+            }
+        }
+
+        return null;
+    }
+
+    private ExpressionSyntax WrapInvocationInAsyncLambda(InvocationExpressionSyntax invocation)
+    {
+        var awaitExpression = SyntaxFactory.AwaitExpression(invocation.WithoutLeadingTrivia());
+        var block = SyntaxFactory.Block(
+            SyntaxFactory.ExpressionStatement(awaitExpression));
+
+        return SyntaxFactory.ParenthesizedLambdaExpression(block)
+            .WithAsyncKeyword(SyntaxFactory.Token(SyntaxKind.AsyncKeyword).WithTrailingTrivia(SyntaxFactory.Space));
+    }
+
+    private SyntaxNode WrapWithAwait(InvocationExpressionSyntax node)
+    {
+        var leadingTrivia = node.GetLeadingTrivia();
+        var nodeWithoutLeadingTrivia = node.WithoutLeadingTrivia();
+
+        var awaitExpression = SyntaxFactory.AwaitExpression(nodeWithoutLeadingTrivia)
+            .WithAwaitKeyword(
+                SyntaxFactory.Token(SyntaxKind.AwaitKeyword)
+                    .WithLeadingTrivia(leadingTrivia)
+                    .WithTrailingTrivia(SyntaxFactory.Space));
+
+        var lineSpan = node.GetLocation().GetLineSpan();
+        _awaitAddedLines.Add(lineSpan.StartLinePosition.Line + 1);
+
+        return awaitExpression;
+    }
+
     /// <summary>
     /// Attempts to unwrap a sync wrapper call like AsyncHelper.RunSync(() => SomeAsyncMethod())
     /// into await SomeAsyncMethod()
     /// </summary>
+    private bool LambdaHasAwait(LambdaExpressionSyntax node)
+    {
+        if (node.ExpressionBody is AwaitExpressionSyntax)
+        {
+            return true;
+        }
+
+        if (node.Body is BlockSyntax block)
+        {
+            return block.DescendantNodes().OfType<AwaitExpressionSyntax>().Any();
+        }
+
+        return false;
+    }
+
+    private bool IsSystemActionType(INamedTypeSymbol? typeSymbol)
+    {
+        return typeSymbol != null &&
+            typeSymbol.Name == "Action" &&
+            typeSymbol.ContainingNamespace.ToDisplayString() == "System";
+    }
+
+    private bool IsActionTypeSyntax(TypeSyntax typeSyntax)
+    {
+        return typeSyntax is IdentifierNameSyntax identifier && identifier.Identifier.Text == "Action";
+    }
+
+    private bool HasAsyncLambdaInitializer(SeparatedSyntaxList<VariableDeclaratorSyntax> variables)
+    {
+        foreach (var variable in variables)
+        {
+            if (variable.Initializer?.Value is LambdaExpressionSyntax lambda && LambdaHasAwait(lambda))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private TypeSyntax CreateFuncTypeSyntax(INamedTypeSymbol typeSymbol, TypeSyntax originalType)
+    {
+        var taskType = SyntaxFactory.IdentifierName("Task");
+
+        return SyntaxFactory.GenericName(
+                SyntaxFactory.Identifier("Func"),
+                SyntaxFactory.TypeArgumentList(
+                    SyntaxFactory.SingletonSeparatedList<TypeSyntax>(taskType)))
+            .WithLeadingTrivia(originalType.GetLeadingTrivia())
+            .WithTrailingTrivia(originalType.GetTrailingTrivia());
+    }
+
     private SyntaxNode? TryUnwrapSyncWrapperCall(InvocationExpressionSyntax node)
     {
         // Find the lambda/delegate argument
@@ -215,6 +552,66 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         _awaitAddedLines.Add(lineSpan.StartLinePosition.Line + 1);
 
         return awaitExpression;
+    }
+
+    public override SyntaxNode? VisitParenthesizedLambdaExpression(ParenthesizedLambdaExpressionSyntax node)
+    {
+        var updated = (ParenthesizedLambdaExpressionSyntax)base.VisitParenthesizedLambdaExpression(node)!;
+        if (updated.AsyncKeyword != default)
+        {
+            return updated;
+        }
+
+        if (LambdaHasAwait(updated))
+        {
+            return updated.WithAsyncKeyword(
+                SyntaxFactory.Token(SyntaxKind.AsyncKeyword)
+                    .WithTrailingTrivia(SyntaxFactory.Space));
+        }
+
+        return updated;
+    }
+
+    public override SyntaxNode? VisitSimpleLambdaExpression(SimpleLambdaExpressionSyntax node)
+    {
+        var updated = (SimpleLambdaExpressionSyntax)base.VisitSimpleLambdaExpression(node)!;
+        if (updated.AsyncKeyword != default)
+        {
+            return updated;
+        }
+
+        if (LambdaHasAwait(updated))
+        {
+            return updated.WithAsyncKeyword(
+                SyntaxFactory.Token(SyntaxKind.AsyncKeyword)
+                    .WithTrailingTrivia(SyntaxFactory.Space));
+        }
+
+        return updated;
+    }
+
+    public override SyntaxNode? VisitVariableDeclaration(VariableDeclarationSyntax node)
+    {
+        var updated = (VariableDeclarationSyntax)base.VisitVariableDeclaration(node)!;
+        var typeSymbol = _semanticModel.GetTypeInfo(node.Type).Type as INamedTypeSymbol;
+
+        if (!IsSystemActionType(typeSymbol))
+        {
+            return updated;
+        }
+
+        if (!IsActionTypeSyntax(node.Type))
+        {
+            return updated;
+        }
+
+        if (!HasAsyncLambdaInitializer(updated.Variables))
+        {
+            return updated;
+        }
+
+        var newType = CreateFuncTypeSyntax(typeSymbol!, node.Type);
+        return updated.WithType(newType);
     }
 
     public override SyntaxNode? VisitLocalFunctionStatement(LocalFunctionStatementSyntax node)
