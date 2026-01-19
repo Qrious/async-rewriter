@@ -25,13 +25,24 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable
         _driver = GraphDatabase.Driver(_options.Uri, AuthTokens.Basic(_options.Username, _options.Password));
     }
 
-    public async Task StoreCallGraphAsync(CallGraph callGraph, CancellationToken cancellationToken = default)
+    public Task StoreCallGraphAsync(CallGraph callGraph, CancellationToken cancellationToken = default)
+    {
+        return StoreCallGraphAsync(callGraph, null, cancellationToken);
+    }
+
+    public async Task StoreCallGraphAsync(CallGraph callGraph, Action<string, int, int>? progressCallback, CancellationToken cancellationToken = default)
     {
         await using var session = _driver.AsyncSession(o => o.WithDatabase(_options.Database));
+
+        var methodsList = callGraph.Methods.Values.ToList();
+        var callsList = callGraph.Calls.ToList();
+        var totalMethods = methodsList.Count;
+        var totalCalls = callsList.Count;
 
         await session.ExecuteWriteAsync(async tx =>
         {
             // Create CallGraph node
+            progressCallback?.Invoke("Creating call graph node...", 0, totalMethods);
             await tx.RunAsync(
                 @"MERGE (cg:CallGraph {id: $id})
                   SET cg.projectName = $projectName,
@@ -46,7 +57,8 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable
                 });
 
             // Create Method nodes
-            foreach (var method in callGraph.Methods.Values)
+            var methodsProcessed = 0;
+            foreach (var method in methodsList)
             {
                 await tx.RunAsync(
                     @"MERGE (m:Method {id: $id})
@@ -85,10 +97,18 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable
                         isInterfaceMethod = method.IsInterfaceMethod,
                         callGraphId = callGraph.Id
                     });
+
+                methodsProcessed++;
+                if (methodsProcessed % 100 == 0 || methodsProcessed == totalMethods)
+                {
+                    progressCallback?.Invoke($"Writing methods ({methodsProcessed}/{totalMethods})...", methodsProcessed, totalMethods);
+                }
             }
 
             // Create CALLS relationships
-            foreach (var call in callGraph.Calls)
+            var callsProcessed = 0;
+            progressCallback?.Invoke($"Writing call relationships (0/{totalCalls})...", 0, totalCalls);
+            foreach (var call in callsList)
             {
                 await tx.RunAsync(
                     @"MATCH (caller:Method {id: $callerId})
@@ -106,9 +126,16 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable
                         filePath = call.FilePath,
                         requiresAwait = call.RequiresAwait
                     });
+
+                callsProcessed++;
+                if (callsProcessed % 100 == 0 || callsProcessed == totalCalls)
+                {
+                    progressCallback?.Invoke($"Writing call relationships ({callsProcessed}/{totalCalls})...", callsProcessed, totalCalls);
+                }
             }
 
             // Mark root async methods
+            progressCallback?.Invoke("Marking root async methods...", 0, 0);
             foreach (var rootMethodId in callGraph.RootAsyncMethods)
             {
                 await tx.RunAsync(
@@ -119,6 +146,7 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable
             }
 
             // Mark flooded methods
+            progressCallback?.Invoke("Marking flooded methods...", 0, 0);
             foreach (var floodedMethodId in callGraph.FloodedMethods)
             {
                 await tx.RunAsync(

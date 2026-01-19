@@ -32,6 +32,19 @@ public interface ICallGraphAnalyzer
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Analyzes an entire project and builds a call graph with progress reporting.
+    /// </summary>
+    /// <param name="projectPath">Path to the project or solution</param>
+    /// <param name="externalSyncWrapperMethods">External sync wrapper method IDs</param>
+    /// <param name="progressCallback">Callback for progress updates (statusMessage, currentIndex, totalCount)</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    Task<CallGraph> AnalyzeProjectAsync(
+        string projectPath,
+        IEnumerable<string>? externalSyncWrapperMethods,
+        Action<string, int, int>? progressCallback,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Analyzes all projects in a solution and builds a combined call graph
     /// </summary>
     Task<CallGraph> AnalyzeSolutionAsync(string solutionPath, CancellationToken cancellationToken = default);

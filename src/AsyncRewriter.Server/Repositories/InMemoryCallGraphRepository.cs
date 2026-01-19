@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Concurrent;
 using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
@@ -14,6 +15,13 @@ public class InMemoryCallGraphRepository : ICallGraphRepository
 
     public Task StoreCallGraphAsync(CallGraph callGraph, CancellationToken cancellationToken = default)
     {
+        return StoreCallGraphAsync(callGraph, null, cancellationToken);
+    }
+
+    public Task StoreCallGraphAsync(CallGraph callGraph, Action<string, int, int>? progressCallback, CancellationToken cancellationToken = default)
+    {
+        progressCallback?.Invoke("Storing call graph in memory...", 0, 0);
+
         _callGraphsById[callGraph.Id] = callGraph;
 
         _callGraphIdsByProject.AddOrUpdate(
@@ -27,6 +35,8 @@ public class InMemoryCallGraphRepository : ICallGraphRepository
                 }
                 return list;
             });
+
+        progressCallback?.Invoke("Call graph stored.", callGraph.Methods.Count, callGraph.Methods.Count);
 
         return Task.CompletedTask;
     }

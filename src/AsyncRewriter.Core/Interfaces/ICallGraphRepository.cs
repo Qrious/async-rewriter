@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -14,6 +15,14 @@ public interface ICallGraphRepository
     /// Stores a call graph in Neo4j
     /// </summary>
     Task StoreCallGraphAsync(CallGraph callGraph, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Stores a call graph in Neo4j with progress reporting
+    /// </summary>
+    /// <param name="callGraph">The call graph to store</param>
+    /// <param name="progressCallback">Callback for progress updates (phase, itemsProcessed, totalItems)</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    Task StoreCallGraphAsync(CallGraph callGraph, Action<string, int, int>? progressCallback, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Retrieves a call graph by ID

@@ -223,15 +223,24 @@ public class AnalysisBackgroundService : BackgroundService
                 {
                     jobService.UpdateJob(job.JobId, j =>
                     {
-                        j.CurrentFile = currentFile;
-                        j.MethodsProcessed = filesProcessed;
-                        j.MethodCount = totalFiles;
-                        j.ProgressPercentage = totalFiles > 0
-                            ? Math.Min(25, (int)Math.Round((double)filesProcessed / totalFiles * 25))
-                            : 0;
-                        j.PendingWorkSummary = !string.IsNullOrEmpty(currentFile)
-                            ? $"Scanning {Path.GetFileName(currentFile)}"
-                            : "Scanning for sync wrapper patterns";
+                        // When totalFiles is 0, we're in a loading/compiling phase
+                        if (totalFiles == 0)
+                        {
+                            j.CurrentFile = null;
+                            j.MethodsProcessed = null;
+                            j.MethodCount = null;
+                            j.PendingWorkSummary = currentFile; // currentFile contains the status message
+                        }
+                        else
+                        {
+                            j.CurrentFile = currentFile;
+                            j.MethodsProcessed = filesProcessed;
+                            j.MethodCount = totalFiles;
+                            j.ProgressPercentage = Math.Min(25, (int)Math.Round((double)filesProcessed / totalFiles * 25));
+                            j.PendingWorkSummary = !string.IsNullOrEmpty(currentFile)
+                                ? $"Scanning {Path.GetFileName(currentFile)}"
+                                : "Scanning for sync wrapper patterns";
+                        }
                     });
                 },
                 combinedToken);
@@ -270,19 +279,43 @@ public class AnalysisBackgroundService : BackgroundService
 
             jobService.UpdateJob(job.JobId, j =>
             {
-                j.CurrentStep = "Analyzing project structure";
+                j.CurrentStep = "Building call graph";
                 j.ProgressPercentage = 30;
                 j.SyncWrappers = syncWrappers;
                 j.SyncWrapperCount = syncWrappers.Count;
                 j.MethodsProcessed = 0;
+                j.MethodCount = null;
+                j.CurrentFile = null;
                 j.PendingWorkSummary = "Preparing call graph analysis";
             });
-
-            await Task.Delay(100, combinedToken);
 
             var callGraph = await callGraphAnalyzer.AnalyzeProjectAsync(
                 job.ProjectPath,
                 job.ExternalSyncWrapperMethods,
+                (statusMessage, currentIndex, totalCount) =>
+                {
+                    jobService.UpdateJob(job.JobId, j =>
+                    {
+                        // When totalCount is 0, we're in a loading/compiling phase
+                        if (totalCount == 0)
+                        {
+                            j.CurrentFile = null;
+                            j.MethodsProcessed = null;
+                            j.MethodCount = null;
+                            j.PendingWorkSummary = statusMessage;
+                        }
+                        else
+                        {
+                            j.CurrentFile = statusMessage;
+                            j.MethodsProcessed = currentIndex;
+                            j.MethodCount = totalCount;
+                            j.ProgressPercentage = Math.Min(65, 30 + (int)Math.Round((double)currentIndex / totalCount * 35));
+                            j.PendingWorkSummary = !string.IsNullOrEmpty(statusMessage)
+                                ? $"Analyzing {Path.GetFileName(statusMessage)}"
+                                : "Building call graph";
+                        }
+                    });
+                },
                 combinedToken);
 
             combinedToken.ThrowIfCancellationRequested();
@@ -320,7 +353,25 @@ public class AnalysisBackgroundService : BackgroundService
                 },
                 combinedToken);
 
-            await callGraphRepository.StoreCallGraphAsync(updatedCallGraph, combinedToken);
+            jobService.UpdateJob(job.JobId, j =>
+            {
+                j.CurrentStep = "Storing call graph";
+                j.ProgressPercentage = 96;
+                j.CurrentMethod = null;
+                j.CurrentFile = null;
+                j.PendingWorkSummary = $"Writing {updatedCallGraph.Methods.Count} methods and {updatedCallGraph.Calls.Count} calls to Neo4j...";
+            });
+
+            await callGraphRepository.StoreCallGraphAsync(
+                updatedCallGraph,
+                (statusMessage, itemsProcessed, totalItems) =>
+                {
+                    jobService.UpdateJob(job.JobId, j =>
+                    {
+                        j.PendingWorkSummary = statusMessage;
+                    });
+                },
+                combinedToken);
 
             combinedToken.ThrowIfCancellationRequested();
 

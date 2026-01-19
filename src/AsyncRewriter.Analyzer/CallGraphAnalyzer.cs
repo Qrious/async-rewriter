@@ -26,21 +26,33 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
 
     public Task<CallGraph> AnalyzeProjectAsync(string projectPath, CancellationToken cancellationToken = default)
     {
-        return AnalyzeProjectAsync(projectPath, null, cancellationToken);
+        return AnalyzeProjectAsync(projectPath, null, null, cancellationToken);
+    }
+
+    public Task<CallGraph> AnalyzeProjectAsync(
+        string projectPath,
+        IEnumerable<string>? externalSyncWrapperMethods,
+        CancellationToken cancellationToken = default)
+    {
+        return AnalyzeProjectAsync(projectPath, externalSyncWrapperMethods, null, cancellationToken);
     }
 
     public async Task<CallGraph> AnalyzeProjectAsync(
         string projectPath,
         IEnumerable<string>? externalSyncWrapperMethods,
+        Action<string, int, int>? progressCallback,
         CancellationToken cancellationToken = default)
     {
         // If a solution file is provided, delegate to AnalyzeSolutionAsync
         if (projectPath.EndsWith(".sln", StringComparison.OrdinalIgnoreCase))
         {
-            return await AnalyzeSolutionAsync(projectPath, externalSyncWrapperMethods, cancellationToken);
+            return await AnalyzeSolutionAsync(projectPath, externalSyncWrapperMethods, progressCallback, cancellationToken);
         }
 
+        progressCallback?.Invoke("Creating MSBuild workspace...", 0, 0);
         var workspace = MSBuildWorkspace.Create();
+
+        progressCallback?.Invoke($"Loading project {Path.GetFileName(projectPath)}...", 0, 0);
         var project = await workspace.OpenProjectAsync(projectPath, cancellationToken: cancellationToken);
 
         var callGraph = new CallGraph
@@ -50,15 +62,22 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
 
         ApplyExternalSyncWrapperMethods(callGraph, externalSyncWrapperMethods);
 
+        progressCallback?.Invoke($"Compiling {project.Name}...", 0, 0);
         var compilation = await project.GetCompilationAsync(cancellationToken);
         if (compilation == null)
         {
             throw new InvalidOperationException("Failed to get compilation");
         }
 
+        var trees = compilation.SyntaxTrees.ToList();
+        var total = trees.Count;
+        var processed = 0;
+
+        progressCallback?.Invoke($"Building call graph (0/{total} files)...", 0, total);
+
         // Process syntax trees in parallel
         await Parallel.ForEachAsync(
-            compilation.SyntaxTrees,
+            trees,
             new ParallelOptions
             {
                 CancellationToken = cancellationToken,
@@ -70,6 +89,9 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
                 var root = await syntaxTree.GetRootAsync(ct);
 
                 AnalyzeSyntaxTree(root, semanticModel, syntaxTree.FilePath, callGraph);
+
+                var current = Interlocked.Increment(ref processed);
+                progressCallback?.Invoke(syntaxTree.FilePath, current, total);
             });
 
         return callGraph;
@@ -77,15 +99,27 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
 
     public Task<CallGraph> AnalyzeSolutionAsync(string solutionPath, CancellationToken cancellationToken = default)
     {
-        return AnalyzeSolutionAsync(solutionPath, null, cancellationToken);
+        return AnalyzeSolutionAsync(solutionPath, null, null, cancellationToken);
+    }
+
+    public Task<CallGraph> AnalyzeSolutionAsync(
+        string solutionPath,
+        IEnumerable<string>? externalSyncWrapperMethods,
+        CancellationToken cancellationToken = default)
+    {
+        return AnalyzeSolutionAsync(solutionPath, externalSyncWrapperMethods, null, cancellationToken);
     }
 
     public async Task<CallGraph> AnalyzeSolutionAsync(
         string solutionPath,
         IEnumerable<string>? externalSyncWrapperMethods,
+        Action<string, int, int>? progressCallback,
         CancellationToken cancellationToken = default)
     {
+        progressCallback?.Invoke("Creating MSBuild workspace...", 0, 0);
         var workspace = MSBuildWorkspace.Create();
+
+        progressCallback?.Invoke($"Loading solution {Path.GetFileName(solutionPath)}...", 0, 0);
         var solution = await workspace.OpenSolutionAsync(solutionPath, cancellationToken: cancellationToken);
 
         var callGraph = new CallGraph
@@ -96,19 +130,30 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
         ApplyExternalSyncWrapperMethods(callGraph, externalSyncWrapperMethods);
 
         // Process all projects in the solution
-        foreach (var project in solution.Projects)
+        var projectList = solution.Projects.ToList();
+        var projectIndex = 0;
+
+        foreach (var project in projectList)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            projectIndex++;
 
+            progressCallback?.Invoke($"Compiling {project.Name} ({projectIndex}/{projectList.Count})...", 0, 0);
             var compilation = await project.GetCompilationAsync(cancellationToken);
             if (compilation == null)
             {
                 continue; // Skip projects that fail to compile
             }
 
+            var trees = compilation.SyntaxTrees.ToList();
+            var total = trees.Count;
+            var processed = 0;
+
+            progressCallback?.Invoke($"Analyzing {project.Name} (0/{total} files)...", 0, total);
+
             // Process syntax trees in parallel
             await Parallel.ForEachAsync(
-                compilation.SyntaxTrees,
+                trees,
                 new ParallelOptions
                 {
                     CancellationToken = cancellationToken,
@@ -120,6 +165,9 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
                     var root = await syntaxTree.GetRootAsync(ct);
 
                     AnalyzeSyntaxTree(root, semanticModel, syntaxTree.FilePath, callGraph);
+
+                    var current = Interlocked.Increment(ref processed);
+                    progressCallback?.Invoke(syntaxTree.FilePath, current, total);
                 });
         }
 
@@ -401,18 +449,28 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
         CancellationToken cancellationToken = default)
     {
         var results = new List<SyncWrapperMethod>();
+
+        // Report workspace creation
+        progressCallback?.Invoke("Creating MSBuild workspace...", 0, 0);
         var workspace = MSBuildWorkspace.Create();
 
         // Handle solution files
         if (projectPath.EndsWith(".sln", StringComparison.OrdinalIgnoreCase))
         {
+            progressCallback?.Invoke($"Loading solution {Path.GetFileName(projectPath)}...", 0, 0);
             var solution = await workspace.OpenSolutionAsync(projectPath, cancellationToken: cancellationToken);
 
             // Collect all syntax trees first to get total count
             var allTrees = new List<(Compilation compilation, SyntaxTree tree)>();
-            foreach (var project in solution.Projects)
+            var projectList = solution.Projects.ToList();
+            var projectIndex = 0;
+
+            foreach (var project in projectList)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                projectIndex++;
+                progressCallback?.Invoke($"Compiling {project.Name} ({projectIndex}/{projectList.Count})...", 0, 0);
+
                 var compilation = await project.GetCompilationAsync(cancellationToken);
                 if (compilation == null) continue;
 
@@ -445,8 +503,10 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
         }
 
         // Handle single project files
+        progressCallback?.Invoke($"Loading project {Path.GetFileName(projectPath)}...", 0, 0);
         var proj = await workspace.OpenProjectAsync(projectPath, cancellationToken: cancellationToken);
 
+        progressCallback?.Invoke($"Compiling {proj.Name}...", 0, 0);
         var comp = await proj.GetCompilationAsync(cancellationToken);
         if (comp == null)
         {
