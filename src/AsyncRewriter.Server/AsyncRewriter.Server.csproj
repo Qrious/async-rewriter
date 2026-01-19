@@ -15,6 +15,7 @@
   <ItemGroup>
     <ProjectReference Include="..\AsyncRewriter.Core\AsyncRewriter.Core.csproj" />
     <ProjectReference Include="..\AsyncRewriter.Analyzer\AsyncRewriter.Analyzer.csproj" />
+    <ProjectReference Include="..\AsyncRewriter.Neo4j\AsyncRewriter.Neo4j.csproj" />
     <ProjectReference Include="..\AsyncRewriter.Transformation\AsyncRewriter.Transformation.csproj" />
   </ItemGroup>
 
