@@ -76,32 +76,19 @@ public class CallGraph
         {
             foreach (var interfaceMethodId in method.ImplementsInterfaceMethods)
             {
-                if (!Methods.TryGetValue(interfaceMethodId, out var interfaceMethod))
-                {
-                    continue;
-                }
-
-                if (!interfaceMethod.IsAsync && !interfaceMethod.RequiresAsyncTransformation)
-                {
-                    continue;
-                }
-
                 var interfaceCallers = GetCallers(interfaceMethodId);
                 directCallers = directCallers.Concat(interfaceCallers);
             }
         }
 
         // If this method is an interface method, also get callers of its implementations
-        if (Methods.TryGetValue(methodId, out var interfaceMethodNode) && interfaceMethodNode.IsInterfaceMethod)
+        if (Methods.TryGetValue(methodId, out var interfaceMethod) && interfaceMethod.IsInterfaceMethod)
         {
-            if (interfaceMethodNode.IsAsync || interfaceMethodNode.RequiresAsyncTransformation)
-            {
-                var implementationCallers = Methods.Values
-                    .Where(m => m.ImplementsInterfaceMethods.Contains(methodId))
-                    .SelectMany(m => GetCallers(m.Id));
+            var implementationCallers = Methods.Values
+                .Where(m => m.ImplementsInterfaceMethods.Contains(methodId))
+                .SelectMany(m => GetCallers(m.Id));
 
-                directCallers = directCallers.Concat(implementationCallers);
-            }
+            directCallers = directCallers.Concat(implementationCallers);
         }
 
         return directCallers.DistinctBy(m => m.Id);
