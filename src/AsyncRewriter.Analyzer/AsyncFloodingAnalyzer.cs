@@ -39,6 +39,7 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
         var visited = new HashSet<string>();
         var totalMethods = callGraph.Methods.Count;
         var processedCount = 0;
+        var interfaceImplementations = BuildInterfaceImplementationLookup(callGraph);
 
         progressCallback?.Invoke("Starting flood from root methods", 0, totalMethods);
 
@@ -73,25 +74,44 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                 // Also mark any interface methods this method implements
                 foreach (var interfaceMethodId in currentMethod.ImplementsInterfaceMethods)
                 {
-                    if (callGraph.Methods.TryGetValue(interfaceMethodId, out var interfaceMethod))
+                    if (!callGraph.Methods.TryGetValue(interfaceMethodId, out var interfaceMethod))
                     {
-                        if (!interfaceMethod.RequiresAsyncTransformation)
+                        continue;
+                    }
+
+                    interfaceImplementations.TryGetValue(interfaceMethodId, out var implementations);
+                    implementations ??= new List<MethodNode>();
+
+                    var asyncImplementationCount = implementations.Count(method => method.IsAsync || method.RequiresAsyncTransformation);
+                    var shouldPropagateInterface = interfaceMethod.IsAsync || interfaceMethod.RequiresAsyncTransformation || asyncImplementationCount > 1;
+
+                    if (!shouldPropagateInterface)
+                    {
+                        continue;
+                    }
+
+                    if (asyncImplementationCount > 1 || interfaceMethod.IsAsync || interfaceMethod.RequiresAsyncTransformation)
+                    {
+                        if (!interfaceMethod.RequiresAsyncTransformation && !interfaceMethod.IsAsync)
                         {
                             methodsToFlood.Add(interfaceMethodId);
                             interfaceMethod.RequiresAsyncTransformation = true;
                             interfaceMethod.AsyncReturnType = DetermineAsyncReturnType(interfaceMethod.ReturnType);
                             SetPropagationSource(interfaceMethod, currentMethodId);
+                        }
 
-                            // Find and mark ALL other implementations of this interface method
-                            foreach (var method in callGraph.Methods.Values)
+                        // Find and mark ALL other implementations of this interface method
+                        foreach (var method in implementations)
+                        {
+                            if (method.Id == currentMethodId)
                             {
-                                if (method.ImplementsInterfaceMethods.Contains(interfaceMethodId) &&
-                                    !method.RequiresAsyncTransformation &&
-                                    !method.IsAsync)
-                                {
-                                    SetPropagationSource(method, interfaceMethodId);
-                                    queue.Enqueue(method.Id);
-                                }
+                                continue;
+                            }
+
+                            if (!method.RequiresAsyncTransformation && !method.IsAsync)
+                            {
+                                SetPropagationSource(method, interfaceMethodId);
+                                queue.Enqueue(method.Id);
                             }
                         }
                     }
@@ -144,7 +164,10 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                 OriginalReturnType = method.ReturnType,
                 NewReturnType = method.AsyncReturnType ?? DetermineAsyncReturnType(method.ReturnType),
                 NeedsAsyncKeyword = true,
-                ImplementsInterfaceMethods = new List<string>(method.ImplementsInterfaceMethods)
+                ImplementsInterfaceMethods = method.ImplementsInterfaceMethods
+                    .Where(interfaceMethodId => callGraph.Methods.TryGetValue(interfaceMethodId, out var interfaceMethod)
+                        && (interfaceMethod.RequiresAsyncTransformation || interfaceMethod.IsAsync))
+                    .ToList()
             };
 
             // Find all call sites in this method that need await
@@ -210,8 +233,13 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
 
             if (method.ImplementsInterfaceMethods.Count > 0)
             {
-                method.AsyncPropagationSourceMethodId = method.ImplementsInterfaceMethods[0];
-                continue;
+                var interfaceId = method.ImplementsInterfaceMethods[0];
+                if (callGraph.Methods.TryGetValue(interfaceId, out var interfaceMethod) &&
+                    (interfaceMethod.IsAsync || interfaceMethod.RequiresAsyncTransformation))
+                {
+                    method.AsyncPropagationSourceMethodId = interfaceId;
+                    continue;
+                }
             }
 
             var fallbackCaller = callGraph.GetCallersIncludingInterfaceCalls(methodId).FirstOrDefault();
@@ -228,5 +256,26 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
         {
             method.AsyncPropagationSourceMethodId = sourceMethodId;
         }
+    }
+
+    private static Dictionary<string, List<MethodNode>> BuildInterfaceImplementationLookup(CallGraph callGraph)
+    {
+        var lookup = new Dictionary<string, List<MethodNode>>();
+
+        foreach (var method in callGraph.Methods.Values)
+        {
+            foreach (var interfaceMethodId in method.ImplementsInterfaceMethods)
+            {
+                if (!lookup.TryGetValue(interfaceMethodId, out var implementations))
+                {
+                    implementations = new List<MethodNode>();
+                    lookup[interfaceMethodId] = implementations;
+                }
+
+                implementations.Add(method);
+            }
+        }
+
+        return lookup;
     }
 }

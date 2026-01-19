@@ -682,7 +682,8 @@ public class AsyncTransformationController : ControllerBase
                 continue;
             }
 
-            if (!interfaceMethod.RequiresAsyncTransformation && !interfaceMethod.IsAsync)
+            var shouldExplainInterface = interfaceMethod.RequiresAsyncTransformation || interfaceMethod.IsAsync;
+            if (!shouldExplainInterface)
             {
                 continue;
             }
@@ -770,7 +771,8 @@ public class AsyncTransformationController : ControllerBase
             if (method.ImplementsInterfaceMethods.Count > 0)
             {
                 var interfaceId = method.ImplementsInterfaceMethods[0];
-                if (callGraph.Methods.TryGetValue(interfaceId, out var interfaceMethod))
+                if (callGraph.Methods.TryGetValue(interfaceId, out var interfaceMethod) &&
+                    (interfaceMethod.RequiresAsyncTransformation || interfaceMethod.IsAsync))
                 {
                     reasons.Add($"Implements interface method '{interfaceMethod.ContainingType}.{interfaceMethod.Name}'");
                 }
