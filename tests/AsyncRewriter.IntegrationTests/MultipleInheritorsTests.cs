@@ -181,9 +181,11 @@ namespace MultipleInheritors
     }
 
     [Fact]
-    public async Task MultipleInheritors_OnlyOneImplementationHasAsyncRoot_OnlyThatPathFloods()
+    public async Task MultipleInheritors_OneImplementationHasAsyncRoot_AllImplementationsFlooded()
     {
         // Arrange
+        // For non-generic interfaces, when one implementation becomes async,
+        // the interface signature must change, requiring ALL implementations to change
         var source = @"
 using System;
 
@@ -236,11 +238,19 @@ namespace MultipleInheritors
         dbFetchData.Should().NotBeNull();
         dbFetchData!.RequiresAsyncTransformation.Should().BeTrue();
 
-        // InMemoryProvider.FetchData should NOT be flooded
+        // InMemoryProvider.FetchData MUST also be flooded because the interface
+        // signature changes to Task<string>, requiring all implementations to match
         var memoryFetchData = callGraph.Methods.Values
             .FirstOrDefault(m => m.Name == "FetchData" && m.ContainingType.Contains("InMemoryProvider"));
         memoryFetchData.Should().NotBeNull();
-        memoryFetchData!.RequiresAsyncTransformation.Should().BeFalse();
+        memoryFetchData!.RequiresAsyncTransformation.Should().BeTrue(
+            "all implementations must match the async interface signature");
+
+        // The interface method itself should be marked for transformation
+        var interfaceMethod = callGraph.Methods.Values
+            .FirstOrDefault(m => m.Name == "FetchData" && m.IsInterfaceMethod);
+        interfaceMethod.Should().NotBeNull();
+        interfaceMethod!.RequiresAsyncTransformation.Should().BeTrue();
     }
 
     [Fact]
