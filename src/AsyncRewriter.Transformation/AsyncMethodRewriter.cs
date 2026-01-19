@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -18,6 +17,7 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
     private readonly HashSet<string> _methodsToTransform;
     private readonly HashSet<string> _asyncMethodIds;
     private readonly HashSet<string> _syncWrapperMethodIds;
+    private readonly Dictionary<string, List<BaseTypeTransformation>> _baseTypeTransformations;
     private readonly List<int> _awaitAddedLines = new();
 
     public IReadOnlyList<int> AwaitAddedLines => _awaitAddedLines;
@@ -26,12 +26,129 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         SemanticModel semanticModel,
         HashSet<string> methodsToTransform,
         HashSet<string> asyncMethodIds,
-        HashSet<string>? syncWrapperMethodIds = null)
+        HashSet<string>? syncWrapperMethodIds = null,
+        Dictionary<string, List<BaseTypeTransformation>>? baseTypeTransformations = null)
     {
         _semanticModel = semanticModel;
         _methodsToTransform = methodsToTransform;
         _asyncMethodIds = asyncMethodIds;
         _syncWrapperMethodIds = syncWrapperMethodIds ?? new HashSet<string>();
+        _baseTypeTransformations = baseTypeTransformations ?? new Dictionary<string, List<BaseTypeTransformation>>();
+    }
+
+    public override SyntaxNode? VisitClassDeclaration(ClassDeclarationSyntax node)
+    {
+        // Check if this class needs base type transformations BEFORE visiting children
+        // We use the original node with the semantic model
+        var classSymbol = _semanticModel.GetDeclaredSymbol(node);
+        List<BaseTypeTransformation>? transformations = null;
+        Dictionary<int, int>? baseTypeIndexToTransformationIndex = null;
+
+        if (classSymbol != null)
+        {
+            var className = classSymbol.ToDisplayString();
+            if (_baseTypeTransformations.TryGetValue(className, out transformations) && node.BaseList != null)
+            {
+                // Pre-compute which base types need transformation using the original semantic model
+                baseTypeIndexToTransformationIndex = new Dictionary<int, int>();
+
+                for (int baseIdx = 0; baseIdx < node.BaseList.Types.Count; baseIdx++)
+                {
+                    var baseType = node.BaseList.Types[baseIdx];
+                    if (baseType.Type is GenericNameSyntax)
+                    {
+                        var typeInfo = _semanticModel.GetTypeInfo(baseType.Type);
+                        var namedType = typeInfo.Type as INamedTypeSymbol;
+
+                        if (namedType != null)
+                        {
+                            var originalDef = namedType.OriginalDefinition.ToDisplayString();
+
+                            for (int transIdx = 0; transIdx < transformations.Count; transIdx++)
+                            {
+                                var transformation = transformations[transIdx];
+                                if (originalDef == transformation.InterfaceTypeName ||
+                                    transformation.InterfaceTypeName.StartsWith(namedType.OriginalDefinition.Name + "<"))
+                                {
+                                    baseTypeIndexToTransformationIndex[baseIdx] = transIdx;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Now visit all children (including methods)
+        var visited = (ClassDeclarationSyntax)base.VisitClassDeclaration(node)!;
+
+        // Apply base type transformations if needed
+        if (transformations == null || baseTypeIndexToTransformationIndex == null || baseTypeIndexToTransformationIndex.Count == 0)
+            return visited;
+
+        if (visited.BaseList == null)
+            return visited;
+
+        var newBaseTypes = new List<BaseTypeSyntax>();
+        var modified = false;
+
+        for (int baseIdx = 0; baseIdx < visited.BaseList.Types.Count; baseIdx++)
+        {
+            var baseType = visited.BaseList.Types[baseIdx];
+            var newBaseType = baseType;
+
+            if (baseTypeIndexToTransformationIndex.TryGetValue(baseIdx, out var transIdx) &&
+                baseType.Type is GenericNameSyntax genericName)
+            {
+                var transformation = transformations[transIdx];
+                var typeArguments = genericName.TypeArgumentList.Arguments;
+
+                if (transformation.TypeArgumentIndex < typeArguments.Count)
+                {
+                    var originalArg = typeArguments[transformation.TypeArgumentIndex];
+
+                    // Wrap the type argument in Task<>
+                    var taskWrappedArg = SyntaxFactory.GenericName(
+                        SyntaxFactory.Identifier("Task"),
+                        SyntaxFactory.TypeArgumentList(
+                            SyntaxFactory.SingletonSeparatedList(
+                                originalArg.WithoutLeadingTrivia().WithoutTrailingTrivia())))
+                        .WithLeadingTrivia(originalArg.GetLeadingTrivia())
+                        .WithTrailingTrivia(originalArg.GetTrailingTrivia());
+
+                    var newTypeArguments = new List<TypeSyntax>();
+                    for (int i = 0; i < typeArguments.Count; i++)
+                    {
+                        if (i == transformation.TypeArgumentIndex)
+                        {
+                            newTypeArguments.Add(taskWrappedArg);
+                        }
+                        else
+                        {
+                            newTypeArguments.Add(typeArguments[i]);
+                        }
+                    }
+
+                    var newGenericName = genericName.WithTypeArgumentList(
+                        SyntaxFactory.TypeArgumentList(
+                            SyntaxFactory.SeparatedList(newTypeArguments)));
+
+                    newBaseType = baseType.WithType(newGenericName);
+                    modified = true;
+                }
+            }
+
+            newBaseTypes.Add(newBaseType);
+        }
+
+        if (modified)
+        {
+            var newBaseList = visited.BaseList.WithTypes(SyntaxFactory.SeparatedList(newBaseTypes));
+            return visited.WithBaseList(newBaseList);
+        }
+
+        return visited;
     }
 
     public override SyntaxNode? VisitMethodDeclaration(MethodDeclarationSyntax node)

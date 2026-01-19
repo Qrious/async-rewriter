@@ -75,6 +75,36 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                 {
                     if (callGraph.Methods.TryGetValue(interfaceMethodId, out var interfaceMethod))
                     {
+                        // If the interface method's return type is a type parameter of a generic interface,
+                        // don't mark the interface for transformation - instead the implementation
+                        // should change its base type argument (e.g., IMapper<A, B> -> IMapper<A, Task<B>>)
+                        if (interfaceMethod.IsReturnTypeParameter && interfaceMethod.ReturnTypeParameterIndex.HasValue)
+                        {
+                            // Record the base type transformation needed for this class
+                            var baseTypeTransformation = new BaseTypeTransformation
+                            {
+                                ContainingTypeName = currentMethod.ContainingType,
+                                InterfaceTypeName = interfaceMethod.ContainingType,
+                                TypeArgumentIndex = interfaceMethod.ReturnTypeParameterIndex.Value
+                            };
+
+                            if (!callGraph.BaseTypeTransformations.TryGetValue(currentMethod.ContainingType, out var transformations))
+                            {
+                                transformations = new List<BaseTypeTransformation>();
+                                callGraph.BaseTypeTransformations[currentMethod.ContainingType] = transformations;
+                            }
+
+                            // Avoid duplicates
+                            if (!transformations.Any(t => t.InterfaceTypeName == baseTypeTransformation.InterfaceTypeName))
+                            {
+                                transformations.Add(baseTypeTransformation);
+                            }
+
+                            // Don't mark the interface method or flood other implementations
+                            // The implementation class will handle its own base type transformation
+                            continue;
+                        }
+
                         if (!interfaceMethod.RequiresAsyncTransformation)
                         {
                             methodsToFlood.Add(interfaceMethodId);

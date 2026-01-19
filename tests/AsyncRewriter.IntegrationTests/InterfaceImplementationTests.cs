@@ -214,4 +214,106 @@ namespace InterfaceImplementation
         transformedSource.Should().Contain("void ProcessData(string data)");
         transformedSource.Should().NotContain("async Task ProcessData");
     }
+
+    [Fact]
+    public async Task GenericInterface_WithCovariantReturnType_TransformsBaseTypeArgumentNotInterface()
+    {
+        // Arrange - Generic interface with covariant (out) type parameter
+        var source = @"
+using System;
+
+namespace GenericInterfaceTest
+{
+    public interface IMapper<in TSource, out TResult>
+    {
+        TResult Map(TSource source);
+    }
+
+    public class A { public string Name { get; set; } }
+    public class B { public string Value { get; set; } }
+
+    public class ABMapper : IMapper<A, B>
+    {
+        public B Map(A source)
+        {
+            return CreateB(source);
+        }
+
+        private B CreateB(A source)
+        {
+            Console.WriteLine(""Creating B from A"");
+            return new B { Value = source.Name };
+        }
+    }
+
+    public class OtherMapper : IMapper<A, B>
+    {
+        public B Map(A source)
+        {
+            return new B { Value = ""other"" };
+        }
+    }
+}";
+
+        // Act
+        var callGraph = await _callGraphAnalyzer.AnalyzeSourceAsync(source);
+
+        // Mark CreateB as the async root (this should make ABMapper.Map async)
+        var createBMethod = callGraph.Methods.Values.FirstOrDefault(m => m.Name == "CreateB");
+        createBMethod.Should().NotBeNull();
+
+        var rootMethods = new HashSet<string> { createBMethod!.Id };
+        await _floodingAnalyzer.AnalyzeFloodingAsync(callGraph, rootMethods);
+
+        // Assert - The interface method should NOT be marked for transformation
+        var interfaceMapMethod = callGraph.Methods.Values
+            .FirstOrDefault(m => m.Name == "Map" && m.IsInterfaceMethod);
+        interfaceMapMethod.Should().NotBeNull();
+        interfaceMapMethod!.RequiresAsyncTransformation.Should().BeFalse(
+            "interface methods with covariant type parameter returns should not be transformed");
+        interfaceMapMethod.IsReturnTypeParameter.Should().BeTrue(
+            "return type should be detected as a type parameter");
+
+        // Assert - ABMapper.Map SHOULD be marked for transformation
+        var abMapperMapMethod = callGraph.Methods.Values
+            .FirstOrDefault(m => m.Name == "Map" && m.ContainingType.Contains("ABMapper"));
+        abMapperMapMethod.Should().NotBeNull();
+        abMapperMapMethod!.RequiresAsyncTransformation.Should().BeTrue();
+
+        // Assert - OtherMapper.Map should NOT be marked for transformation (it doesn't call async methods)
+        var otherMapperMapMethod = callGraph.Methods.Values
+            .FirstOrDefault(m => m.Name == "Map" && m.ContainingType.Contains("OtherMapper"));
+        otherMapperMapMethod.Should().NotBeNull();
+        otherMapperMapMethod!.RequiresAsyncTransformation.Should().BeFalse(
+            "OtherMapper.Map should not be flooded just because ABMapper.Map is async");
+
+        // Assert - Base type transformation should be recorded
+        callGraph.BaseTypeTransformations.Should().ContainKey("GenericInterfaceTest.ABMapper");
+        var transformation = callGraph.BaseTypeTransformations["GenericInterfaceTest.ABMapper"].First();
+        transformation.TypeArgumentIndex.Should().Be(1, "TResult is at index 1");
+
+        // Act - Transform the source
+        var transformations = await _floodingAnalyzer.GetTransformationInfoAsync(callGraph);
+        var transformedSource = await _transformer.TransformSourceAsync(
+            source,
+            transformations.ToList(),
+            null,
+            null,
+            callGraph.BaseTypeTransformations,
+            default);
+
+        // Assert - Interface should remain unchanged
+        transformedSource.Should().Contain("public interface IMapper<in TSource, out TResult>");
+        transformedSource.Should().Contain("TResult Map(TSource source);");
+
+        // Assert - ABMapper's base type should be transformed to use Task<B>
+        // Note: The rewriter may produce slightly different whitespace
+        transformedSource.Should().Match("*ABMapper : IMapper<A*Task<B>>*");
+
+        // Assert - ABMapper.Map should have Task<B> return type
+        transformedSource.Should().Contain("Task<B> Map(A source)");
+
+        // Assert - OtherMapper should remain unchanged
+        transformedSource.Should().Contain("OtherMapper : IMapper<A, B>");
+    }
 }

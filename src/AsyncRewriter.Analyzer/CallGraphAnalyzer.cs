@@ -404,6 +404,32 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
     {
         var lineSpan = methodDecl.GetLocation().GetLineSpan();
 
+        // Check if the return type is a covariant (out) type parameter of a generic interface
+        // Only covariant type parameters can be safely transformed by changing the type argument
+        var isReturnTypeParameter = false;
+        int? returnTypeParameterIndex = null;
+
+        if (methodSymbol.ReturnType is ITypeParameterSymbol typeParam &&
+            methodSymbol.ContainingType is INamedTypeSymbol containingInterface &&
+            containingInterface.IsGenericType)
+        {
+            // Find the index of this type parameter in the interface's type parameters
+            for (int i = 0; i < containingInterface.TypeParameters.Length; i++)
+            {
+                var interfaceTypeParam = containingInterface.TypeParameters[i];
+                if (SymbolEqualityComparer.Default.Equals(interfaceTypeParam, typeParam))
+                {
+                    // Only allow this optimization for covariant (out) type parameters
+                    if (interfaceTypeParam.Variance == VarianceKind.Out)
+                    {
+                        isReturnTypeParameter = true;
+                        returnTypeParameterIndex = i;
+                    }
+                    break;
+                }
+            }
+        }
+
         return new MethodNode
         {
             Id = GetMethodId(methodSymbol),
@@ -417,6 +443,8 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
             EndLine = lineSpan.EndLinePosition.Line + 1,
             IsAsync = false, // Interface methods cannot have async modifier
             IsInterfaceMethod = true,
+            IsReturnTypeParameter = isReturnTypeParameter,
+            ReturnTypeParameterIndex = returnTypeParameterIndex,
             Signature = GetMethodSignature(methodSymbol),
             SourceCode = methodDecl.ToFullString()
         };

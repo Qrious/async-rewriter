@@ -61,4 +61,17 @@ public class MethodNode
     /// Indicates if this method is declared in an interface
     /// </summary>
     public bool IsInterfaceMethod { get; set; }
+
+    /// <summary>
+    /// Indicates if the return type is a type parameter of a generic interface.
+    /// When true, the interface should not be modified - instead implementations
+    /// should change their base type argument (e.g., IMapper&lt;A, B&gt; becomes IMapper&lt;A, Task&lt;B&gt;&gt;)
+    /// </summary>
+    public bool IsReturnTypeParameter { get; set; }
+
+    /// <summary>
+    /// For interface methods with type parameter returns, this is the index of the
+    /// type parameter in the generic interface's type parameter list
+    /// </summary>
+    public int? ReturnTypeParameterIndex { get; set; }
 }

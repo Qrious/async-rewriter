@@ -32,6 +32,12 @@ public class CallGraph
     public HashSet<string> FloodedMethods { get; set; } = new();
 
     /// <summary>
+    /// Base type transformations needed when implementations of generic interfaces become async.
+    /// Key is the containing type name, value is the list of base type transformations needed.
+    /// </summary>
+    public Dictionary<string, List<BaseTypeTransformation>> BaseTypeTransformations { get; set; } = new();
+
+    /// <summary>
     /// Add a method to the graph
     /// </summary>
     public void AddMethod(MethodNode method)

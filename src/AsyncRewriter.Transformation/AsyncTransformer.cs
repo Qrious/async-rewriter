@@ -154,7 +154,8 @@ public class AsyncTransformer : IAsyncTransformer
                             semanticModel,
                             methodsToTransform,
                             allAsyncMethodIds,
-                            callGraph.SyncWrapperMethods);
+                            callGraph.SyncWrapperMethods,
+                            callGraph.BaseTypeTransformations);
 
                         var newRoot = rewriter.Visit(root);
 
@@ -264,12 +265,23 @@ public class AsyncTransformer : IAsyncTransformer
         return fileTransformation;
     }
 
-    public async Task<string> TransformSourceAsync(
+    public Task<string> TransformSourceAsync(
         string sourceCode,
         List<AsyncTransformationInfo> transformations,
         HashSet<string>? syncWrapperMethodIds = null,
         HashSet<string>? allAsyncMethodIds = null,
         CancellationToken cancellationToken = default)
+    {
+        return TransformSourceAsync(sourceCode, transformations, syncWrapperMethodIds, allAsyncMethodIds, null, cancellationToken);
+    }
+
+    public async Task<string> TransformSourceAsync(
+        string sourceCode,
+        List<AsyncTransformationInfo> transformations,
+        HashSet<string>? syncWrapperMethodIds,
+        HashSet<string>? allAsyncMethodIds,
+        Dictionary<string, List<BaseTypeTransformation>>? baseTypeTransformations,
+        CancellationToken cancellationToken)
     {
         var syntaxTree = CSharpSyntaxTree.ParseText(sourceCode, cancellationToken: cancellationToken);
 
@@ -306,7 +318,7 @@ public class AsyncTransformer : IAsyncTransformer
         }
 
         // Create rewriter with sync wrapper method IDs for unwrapping
-        var rewriter = new AsyncMethodRewriter(semanticModel, methodsToTransform, asyncMethodIds, syncWrapperMethodIds);
+        var rewriter = new AsyncMethodRewriter(semanticModel, methodsToTransform, asyncMethodIds, syncWrapperMethodIds, baseTypeTransformations);
 
         // Apply transformation
         var newRoot = rewriter.Visit(root);
