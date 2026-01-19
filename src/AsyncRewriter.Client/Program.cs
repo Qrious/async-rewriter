@@ -134,11 +134,46 @@ class Program
             await TransformProjectAsync(projectPath, callGraphId, applyChanges, pollInterval, externalSyncWrappers);
         }, baseUrlOption, transformProjectPath, transformCallGraphId, transformApplyOption, transformPollIntervalOption, externalSyncWrapperOption);
 
+        // Search command - search for methods in a call graph
+        var searchCommand = new Command("search", "Search for methods in a call graph");
+        var searchCallGraphIdArgument = new Argument<string>("call-graph-id", "The ID of the call graph to search");
+        var searchQueryArgument = new Argument<string>("query", "The search query (matches method name, type, or ID)");
+        var floodedOnlyOption = new Option<bool>(
+            aliases: new[] { "--flooded-only", "-f" },
+            description: "Only show methods that require async transformation",
+            getDefaultValue: () => false);
+
+        searchCommand.AddArgument(searchCallGraphIdArgument);
+        searchCommand.AddArgument(searchQueryArgument);
+        searchCommand.AddOption(floodedOnlyOption);
+
+        searchCommand.SetHandler(async (baseUrl, callGraphId, query, floodedOnly) =>
+        {
+            _baseUrl = baseUrl;
+            await SearchMethodsAsync(callGraphId, query, floodedOnly);
+        }, baseUrlOption, searchCallGraphIdArgument, searchQueryArgument, floodedOnlyOption);
+
+        // Explain command - explain why a method became async
+        var explainCommand = new Command("explain", "Explain why a method requires async transformation");
+        var explainCallGraphIdArgument = new Argument<string>("call-graph-id", "The ID of the call graph");
+        var explainMethodIdArgument = new Argument<string>("method-id", "The ID of the method to explain");
+
+        explainCommand.AddArgument(explainCallGraphIdArgument);
+        explainCommand.AddArgument(explainMethodIdArgument);
+
+        explainCommand.SetHandler(async (baseUrl, callGraphId, methodId) =>
+        {
+            _baseUrl = baseUrl;
+            await ExplainMethodAsync(callGraphId, methodId);
+        }, baseUrlOption, explainCallGraphIdArgument, explainMethodIdArgument);
+
         rootCommand.AddCommand(analyzeCommand);
         rootCommand.AddCommand(statusCommand);
         rootCommand.AddCommand(cancelCommand);
         rootCommand.AddCommand(findSyncWrappersCommand);
         rootCommand.AddCommand(transformCommand);
+        rootCommand.AddCommand(searchCommand);
+        rootCommand.AddCommand(explainCommand);
 
         return await rootCommand.InvokeAsync(args);
     }
@@ -781,6 +816,196 @@ class Program
         }
     }
 
+    static async Task SearchMethodsAsync(string callGraphId, string query, bool floodedOnly)
+    {
+        try
+        {
+            Console.WriteLine($"Searching for '{query}' in call graph {callGraphId}...");
+
+            var url = $"{_baseUrl}/api/asynctransformation/callgraph/{Uri.EscapeDataString(callGraphId)}/search?query={Uri.EscapeDataString(query)}&floodedOnly={floodedOnly}";
+            var response = await _httpClient.GetAsync(url);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadAsStringAsync();
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"Error: {error}");
+                Console.ResetColor();
+                return;
+            }
+
+            var results = await response.Content.ReadFromJsonAsync<List<MethodSearchResult>>();
+
+            if (results == null || results.Count == 0)
+            {
+                Console.WriteLine("No methods found matching the query.");
+                return;
+            }
+
+            Console.WriteLine($"\nFound {results.Count} method(s):\n");
+
+            foreach (var method in results)
+            {
+                var asyncMarker = method.RequiresAsyncTransformation ? "[NEEDS ASYNC]" :
+                                  method.IsAsync ? "[ASYNC]" :
+                                  method.IsSyncWrapper ? "[SYNC WRAPPER]" : "";
+
+                if (!string.IsNullOrEmpty(asyncMarker))
+                {
+                    Console.ForegroundColor = method.RequiresAsyncTransformation ? ConsoleColor.Yellow :
+                                              method.IsSyncWrapper ? ConsoleColor.Magenta : ConsoleColor.Green;
+                    Console.Write($"  {asyncMarker} ");
+                    Console.ResetColor();
+                }
+                else
+                {
+                    Console.Write("  ");
+                }
+
+                Console.WriteLine($"{method.ContainingType}.{method.MethodName}");
+                Console.ForegroundColor = ConsoleColor.DarkGray;
+                Console.WriteLine($"    ID: {method.MethodId}");
+                Console.WriteLine($"    {method.FilePath}:{method.StartLine}");
+                Console.ResetColor();
+                Console.WriteLine();
+            }
+
+            Console.WriteLine("Use 'explain <call-graph-id> <method-id>' to see why a method needs async.");
+        }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Error searching methods: {ex.Message}");
+            Console.ResetColor();
+        }
+    }
+
+    static async Task ExplainMethodAsync(string callGraphId, string methodId)
+    {
+        try
+        {
+            Console.WriteLine($"Explaining async requirement for method...\n");
+
+            var url = $"{_baseUrl}/api/asynctransformation/callgraph/{Uri.EscapeDataString(callGraphId)}/explain/{Uri.EscapeDataString(methodId)}";
+            var response = await _httpClient.GetAsync(url);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadAsStringAsync();
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"Error: {error}");
+                Console.ResetColor();
+                return;
+            }
+
+            var explanation = await response.Content.ReadFromJsonAsync<AsyncExplanationResponse>();
+
+            if (explanation == null)
+            {
+                Console.WriteLine("No explanation available.");
+                return;
+            }
+
+            // Print method info
+            Console.WriteLine($"Method: {explanation.ContainingType}.{explanation.MethodName}");
+            Console.WriteLine($"ID: {explanation.MethodId}");
+            Console.WriteLine();
+
+            // Print async status
+            if (explanation.RequiresAsync)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine("Status: REQUIRES ASYNC TRANSFORMATION");
+                Console.ResetColor();
+            }
+            else
+            {
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine("Status: Does not require async");
+                Console.ResetColor();
+            }
+            Console.WriteLine();
+
+            // Print reason
+            if (!string.IsNullOrEmpty(explanation.Reason))
+            {
+                Console.WriteLine($"Reason: {explanation.Reason}");
+                Console.WriteLine();
+            }
+
+            // Print call chain
+            if (explanation.CallChain.Count > 0)
+            {
+                Console.WriteLine("Call Chain (from this method to the sync wrapper):");
+                Console.WriteLine();
+
+                for (int i = 0; i < explanation.CallChain.Count; i++)
+                {
+                    var step = explanation.CallChain[i];
+                    var indent = new string(' ', i * 2);
+
+                    Console.Write($"{indent}");
+                    if (i == 0)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Cyan;
+                        Console.Write("[THIS METHOD] ");
+                        Console.ResetColor();
+                    }
+
+                    Console.WriteLine($"{step.ContainingType}.{step.MethodName}");
+                    Console.ForegroundColor = ConsoleColor.DarkGray;
+                    Console.WriteLine($"{indent}  {step.FilePath}:{step.LineNumber}");
+                    Console.ResetColor();
+
+                    if (i < explanation.CallChain.Count - 1)
+                    {
+                        Console.ForegroundColor = ConsoleColor.DarkYellow;
+                        Console.WriteLine($"{indent}  └── calls ──▶");
+                        Console.ResetColor();
+                    }
+                }
+
+                // Print the sync wrapper root
+                if (explanation.RootSyncWrapper != null)
+                {
+                    var indent = new string(' ', explanation.CallChain.Count * 2);
+                    Console.ForegroundColor = ConsoleColor.DarkYellow;
+                    Console.WriteLine($"{new string(' ', (explanation.CallChain.Count - 1) * 2)}  └── calls ──▶");
+                    Console.ResetColor();
+
+                    Console.Write($"{indent}");
+                    Console.ForegroundColor = ConsoleColor.Magenta;
+                    Console.Write("[SYNC WRAPPER ROOT] ");
+                    Console.ResetColor();
+                    Console.WriteLine($"{explanation.RootSyncWrapper.ContainingType}.{explanation.RootSyncWrapper.MethodName}");
+                    Console.ForegroundColor = ConsoleColor.DarkGray;
+                    Console.WriteLine($"{indent}  {explanation.RootSyncWrapper.FilePath}:{explanation.RootSyncWrapper.LineNumber}");
+                    if (!string.IsNullOrEmpty(explanation.RootSyncWrapper.PatternDescription))
+                    {
+                        Console.WriteLine($"{indent}  {explanation.RootSyncWrapper.PatternDescription}");
+                    }
+                    Console.ResetColor();
+                }
+            }
+            else if (explanation.RootSyncWrapper != null)
+            {
+                Console.WriteLine("This method directly uses a sync wrapper:");
+                Console.ForegroundColor = ConsoleColor.Magenta;
+                Console.WriteLine($"  {explanation.RootSyncWrapper.ContainingType}.{explanation.RootSyncWrapper.MethodName}");
+                Console.ResetColor();
+                Console.ForegroundColor = ConsoleColor.DarkGray;
+                Console.WriteLine($"  {explanation.RootSyncWrapper.FilePath}:{explanation.RootSyncWrapper.LineNumber}");
+                Console.ResetColor();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Error explaining method: {ex.Message}");
+            Console.ResetColor();
+        }
+    }
+
     static void PrintJobStatus(JobStatusResponse status)
     {
         Console.WriteLine("Job Status:");
@@ -993,4 +1218,47 @@ public class FileTransformation
     public string TransformedContent { get; set; } = string.Empty;
     public List<string> TransformedMethods { get; set; } = new();
     public List<int> AwaitLocations { get; set; } = new();
+}
+
+public class MethodSearchResult
+{
+    public string MethodId { get; set; } = string.Empty;
+    public string MethodName { get; set; } = string.Empty;
+    public string ContainingType { get; set; } = string.Empty;
+    public string? FilePath { get; set; }
+    public int StartLine { get; set; }
+    public bool RequiresAsyncTransformation { get; set; }
+    public bool IsAsync { get; set; }
+    public bool IsSyncWrapper { get; set; }
+}
+
+public class AsyncExplanationResponse
+{
+    public string MethodId { get; set; } = string.Empty;
+    public string MethodName { get; set; } = string.Empty;
+    public string ContainingType { get; set; } = string.Empty;
+    public bool RequiresAsync { get; set; }
+    public string? Reason { get; set; }
+    public List<AsyncExplanationStep> CallChain { get; set; } = new();
+    public SyncWrapperInfo? RootSyncWrapper { get; set; }
+}
+
+public class AsyncExplanationStep
+{
+    public string MethodId { get; set; } = string.Empty;
+    public string MethodName { get; set; } = string.Empty;
+    public string ContainingType { get; set; } = string.Empty;
+    public string? FilePath { get; set; }
+    public int? LineNumber { get; set; }
+    public string Relationship { get; set; } = string.Empty;
+}
+
+public class SyncWrapperInfo
+{
+    public string MethodId { get; set; } = string.Empty;
+    public string MethodName { get; set; } = string.Empty;
+    public string ContainingType { get; set; } = string.Empty;
+    public string? FilePath { get; set; }
+    public int? LineNumber { get; set; }
+    public string? PatternDescription { get; set; }
 }

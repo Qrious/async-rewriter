@@ -532,6 +532,174 @@ public class AsyncTransformationController : ControllerBase
     }
 
     /// <summary>
+    /// Explains why a specific method requires async transformation by showing the call chain
+    /// to the sync wrapper root that caused it
+    /// </summary>
+    [HttpGet("callgraph/{callGraphId}/explain/{methodId}")]
+    public async Task<ActionResult<AsyncExplanationResponse>> ExplainAsyncMethod(
+        string callGraphId,
+        string methodId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var callGraph = await _callGraphRepository.GetCallGraphAsync(callGraphId, cancellationToken);
+
+            if (callGraph == null)
+                return NotFound(new { error = "Call graph not found" });
+
+            if (!callGraph.Methods.TryGetValue(methodId, out var method))
+                return NotFound(new { error = "Method not found in call graph" });
+
+            var response = new AsyncExplanationResponse
+            {
+                MethodId = methodId,
+                MethodName = method.Name,
+                ContainingType = method.ContainingType,
+                RequiresAsync = method.RequiresAsyncTransformation || method.IsAsync
+            };
+
+            if (!response.RequiresAsync)
+            {
+                response.Reason = "This method does not require async transformation";
+                return Ok(response);
+            }
+
+            if (method.IsAsync)
+            {
+                response.Reason = "This method is already async";
+                return Ok(response);
+            }
+
+            // BFS to find the path from this method to a sync wrapper root
+            var queue = new Queue<(string MethodId, List<string> Path)>();
+            var visited = new HashSet<string>();
+            queue.Enqueue((methodId, new List<string> { methodId }));
+
+            while (queue.Count > 0)
+            {
+                var (currentId, path) = queue.Dequeue();
+
+                if (!visited.Add(currentId))
+                    continue;
+
+                // Check if this is a root sync wrapper
+                if (callGraph.SyncWrapperMethods.Contains(currentId) || callGraph.RootAsyncMethods.Contains(currentId))
+                {
+                    // Found the root! Build the explanation
+                    if (callGraph.Methods.TryGetValue(currentId, out var rootMethod))
+                    {
+                        response.RootSyncWrapper = new SyncWrapperInfo
+                        {
+                            MethodId = currentId,
+                            MethodName = rootMethod.Name,
+                            ContainingType = rootMethod.ContainingType,
+                            FilePath = rootMethod.FilePath,
+                            LineNumber = rootMethod.StartLine,
+                            PatternDescription = "Sync wrapper method (converts async to sync)"
+                        };
+                    }
+
+                    // Build the call chain
+                    for (int i = 0; i < path.Count - 1; i++)
+                    {
+                        var callerId = path[i];
+                        var calleeId = path[i + 1];
+
+                        if (callGraph.Methods.TryGetValue(callerId, out var callerMethod))
+                        {
+                            // Find the call to get line number
+                            var call = callGraph.Calls.FirstOrDefault(c => c.CallerId == callerId && c.CalleeId == calleeId);
+
+                            response.CallChain.Add(new AsyncExplanationStep
+                            {
+                                MethodId = callerId,
+                                MethodName = callerMethod.Name,
+                                ContainingType = callerMethod.ContainingType,
+                                FilePath = call?.FilePath ?? callerMethod.FilePath,
+                                LineNumber = call?.LineNumber ?? callerMethod.StartLine,
+                                Relationship = "calls"
+                            });
+                        }
+                    }
+
+                    response.Reason = $"This method calls (directly or indirectly) the sync wrapper '{response.RootSyncWrapper?.ContainingType}.{response.RootSyncWrapper?.MethodName}', which requires async propagation up the call chain";
+                    return Ok(response);
+                }
+
+                // Get all callees and add them to the queue
+                var callees = callGraph.Calls
+                    .Where(c => c.CallerId == currentId)
+                    .Select(c => c.CalleeId)
+                    .Distinct();
+
+                foreach (var calleeId in callees)
+                {
+                    if (!visited.Contains(calleeId))
+                    {
+                        var newPath = new List<string>(path) { calleeId };
+                        queue.Enqueue((calleeId, newPath));
+                    }
+                }
+            }
+
+            response.Reason = "Could not determine the reason for async transformation (sync wrapper root not found in call chain)";
+            return Ok(response);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to explain async method");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Searches for methods in a call graph by name pattern
+    /// </summary>
+    [HttpGet("callgraph/{callGraphId}/search")]
+    public async Task<ActionResult<List<MethodSearchResult>>> SearchMethods(
+        string callGraphId,
+        [FromQuery] string query,
+        [FromQuery] bool floodedOnly = false,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var callGraph = await _callGraphRepository.GetCallGraphAsync(callGraphId, cancellationToken);
+
+            if (callGraph == null)
+                return NotFound(new { error = "Call graph not found" });
+
+            var results = callGraph.Methods.Values
+                .Where(m =>
+                    (m.Name.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                     m.ContainingType.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                     m.Id.Contains(query, StringComparison.OrdinalIgnoreCase)) &&
+                    (!floodedOnly || m.RequiresAsyncTransformation))
+                .Take(50)
+                .Select(m => new MethodSearchResult
+                {
+                    MethodId = m.Id,
+                    MethodName = m.Name,
+                    ContainingType = m.ContainingType,
+                    FilePath = m.FilePath,
+                    StartLine = m.StartLine,
+                    RequiresAsyncTransformation = m.RequiresAsyncTransformation,
+                    IsAsync = m.IsAsync,
+                    IsSyncWrapper = callGraph.SyncWrapperMethods.Contains(m.Id)
+                })
+                .ToList();
+
+            return Ok(results);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to search methods");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
     /// Finds sync wrapper methods and automatically runs async flooding analysis from them
     /// </summary>
     [HttpPost("analyze/from-sync-wrappers")]

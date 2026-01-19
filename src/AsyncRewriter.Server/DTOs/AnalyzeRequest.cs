@@ -94,3 +94,58 @@ public enum JobStatus
     Failed,
     Cancelled
 }
+
+/// <summary>
+/// Explains why a method requires async transformation
+/// </summary>
+public class AsyncExplanationResponse
+{
+    public string MethodId { get; set; } = string.Empty;
+    public string MethodName { get; set; } = string.Empty;
+    public string ContainingType { get; set; } = string.Empty;
+    public bool RequiresAsync { get; set; }
+    public string? Reason { get; set; }
+    public List<AsyncExplanationStep> CallChain { get; set; } = new();
+    public SyncWrapperInfo? RootSyncWrapper { get; set; }
+}
+
+/// <summary>
+/// A step in the call chain explaining async propagation
+/// </summary>
+public class AsyncExplanationStep
+{
+    public string MethodId { get; set; } = string.Empty;
+    public string MethodName { get; set; } = string.Empty;
+    public string ContainingType { get; set; } = string.Empty;
+    public string? FilePath { get; set; }
+    public int? LineNumber { get; set; }
+    public string Relationship { get; set; } = string.Empty; // "calls" or "is called by"
+}
+
+/// <summary>
+/// Information about the sync wrapper that caused the async propagation
+/// </summary>
+public class SyncWrapperInfo
+{
+    public string MethodId { get; set; } = string.Empty;
+    public string MethodName { get; set; } = string.Empty;
+    public string ContainingType { get; set; } = string.Empty;
+    public string? FilePath { get; set; }
+    public int? LineNumber { get; set; }
+    public string? PatternDescription { get; set; }
+}
+
+/// <summary>
+/// Result of searching for methods in a call graph
+/// </summary>
+public class MethodSearchResult
+{
+    public string MethodId { get; set; } = string.Empty;
+    public string MethodName { get; set; } = string.Empty;
+    public string ContainingType { get; set; } = string.Empty;
+    public string? FilePath { get; set; }
+    public int StartLine { get; set; }
+    public bool RequiresAsyncTransformation { get; set; }
+    public bool IsAsync { get; set; }
+    public bool IsSyncWrapper { get; set; }
+}
