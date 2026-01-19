@@ -556,19 +556,25 @@ public class AsyncTransformationController : ControllerBase
                 MethodId = methodId,
                 MethodName = method.Name,
                 ContainingType = method.ContainingType,
-                RequiresAsync = method.RequiresAsyncTransformation || method.IsAsync
+                RequiresAsync = method.RequiresAsyncTransformation || method.IsAsync,
+                Reasons = new List<string>(method.AsyncPropagationReasons)
             };
 
             if (!response.RequiresAsync)
             {
-                response.Reason = "This method does not require async transformation";
+                response.Reasons.Add("This method does not require async transformation");
                 return Ok(response);
             }
 
             if (method.IsAsync)
             {
-                response.Reason = "This method is already async";
+                response.Reasons.Add("This method is already async");
                 return Ok(response);
+            }
+
+            if (response.Reasons.Count == 0)
+            {
+                response.Reasons.Add("Async propagation reason not recorded during analysis");
             }
 
             var interfacePropagation = FindInterfacePropagation(callGraph, methodId, response);
@@ -611,7 +617,7 @@ public class AsyncTransformationController : ControllerBase
                     }
 
                     BuildCallChain(callGraph, response, path);
-                    response.Reason = $"This method calls (directly or indirectly) the sync wrapper '{response.RootSyncWrapper?.ContainingType}.{response.RootSyncWrapper?.MethodName}', which requires async propagation up the call chain";
+                    response.Reasons.Add($"This method calls (directly or indirectly) the sync wrapper '{response.RootSyncWrapper?.ContainingType}.{response.RootSyncWrapper?.MethodName}', which requires async propagation up the call chain");
                     return Ok(response);
                 }
 
@@ -623,7 +629,7 @@ public class AsyncTransformationController : ControllerBase
                     }
 
                     BuildCallChain(callGraph, response, path);
-                    response.Reason = $"This method calls (directly or indirectly) the async root '{response.RootAsyncMethod?.ContainingType}.{response.RootAsyncMethod?.MethodName}', which requires async propagation up the call chain";
+                    response.Reasons.Add($"This method calls (directly or indirectly) the async root '{response.RootAsyncMethod?.ContainingType}.{response.RootAsyncMethod?.MethodName}', which requires async propagation up the call chain");
                     return Ok(response);
                 }
 
@@ -643,7 +649,7 @@ public class AsyncTransformationController : ControllerBase
                 }
             }
 
-            response.Reason = "This method requires async transformation, but no call path to a root async method was found";
+            response.Reasons.Add("This method requires async transformation, but no call path to a root async method was found");
             return Ok(response);
         }
         catch (Exception ex)
@@ -695,7 +701,7 @@ public class AsyncTransformationController : ControllerBase
             }
 
             response.InterfacePropagation.Add(interfaceInfo);
-            response.Reason = $"This method implements interface method '{interfaceMethod.ContainingType}.{interfaceMethod.Name}', which is async or requires async transformation";
+            response.Reasons.Add($"This method implements interface method '{interfaceMethod.ContainingType}.{interfaceMethod.Name}', which is async or requires async transformation");
             return (true, interfaceMethodId);
         }
 

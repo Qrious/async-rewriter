@@ -81,6 +81,16 @@ public class CallGraph
             }
         }
 
+        // If this method is an interface method, also get callers of its implementations
+        if (Methods.TryGetValue(methodId, out var interfaceMethod) && interfaceMethod.IsInterfaceMethod)
+        {
+            var implementationCallers = Methods.Values
+                .Where(m => m.ImplementsInterfaceMethods.Contains(methodId))
+                .SelectMany(m => GetCallers(m.Id));
+
+            directCallers = directCallers.Concat(implementationCallers);
+        }
+
         return directCallers.DistinctBy(m => m.Id);
     }
 

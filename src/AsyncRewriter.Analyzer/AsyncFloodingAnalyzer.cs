@@ -57,6 +57,11 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
             if (!callGraph.Methods.TryGetValue(currentMethodId, out var currentMethod))
                 continue;
 
+            if (currentMethod.AsyncPropagationReasons.Count == 0 && callGraph.RootAsyncMethods.Contains(currentMethodId))
+            {
+                AddPropagationReason(currentMethod, "Marked as a root async method");
+            }
+
             // Report progress with current method being analyzed
             var methodDisplayName = $"{currentMethod.ContainingType}.{currentMethod.Name}";
             progressCallback?.Invoke(methodDisplayName, processedCount, totalMethods);
@@ -79,6 +84,7 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                             methodsToFlood.Add(interfaceMethodId);
                             interfaceMethod.RequiresAsyncTransformation = true;
                             interfaceMethod.AsyncReturnType = DetermineAsyncReturnType(interfaceMethod.ReturnType);
+                            AddPropagationReason(interfaceMethod, $"Interface method implemented by '{currentMethod.ContainingType}.{currentMethod.Name}' requires async propagation");
 
                             // Find and mark ALL other implementations of this interface method
                             foreach (var method in callGraph.Methods.Values)
@@ -87,6 +93,7 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                                     !method.RequiresAsyncTransformation &&
                                     !method.IsAsync)
                                 {
+                                    AddPropagationReason(method, $"Implements async interface method '{interfaceMethod.ContainingType}.{interfaceMethod.Name}'");
                                     queue.Enqueue(method.Id);
                                 }
                             }
@@ -99,11 +106,30 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
             var callers = callGraph.GetCallersIncludingInterfaceCalls(currentMethodId);
             foreach (var caller in callers)
             {
+                if (callGraph.Calls.Any(c => c.CallerId == caller.Id && c.CalleeId == currentMethodId))
+                {
+                    AddPropagationReason(caller, $"Calls '{currentMethod.ContainingType}.{currentMethod.Name}', which requires async propagation");
+                }
+                else if (currentMethod.ImplementsInterfaceMethods.Count > 0)
+                {
+                    AddPropagationReason(caller, $"Calls interface method implemented by '{currentMethod.ContainingType}.{currentMethod.Name}', which requires async propagation");
+                }
+                else
+                {
+                    AddPropagationReason(caller, $"Calls async method '{currentMethod.ContainingType}.{currentMethod.Name}'");
+                }
+
+                if (!caller.RequiresAsyncTransformation && !caller.IsAsync)
+                {
+                    AddPropagationReason(caller, $"Await required because '{currentMethod.ContainingType}.{currentMethod.Name}' is async or flooded");
+                }
+
                 queue.Enqueue(caller.Id);
             }
         }
 
         callGraph.FloodedMethods = methodsToFlood;
+        EnsureFloodedMethodReasons(callGraph);
 
         progressCallback?.Invoke("Marking calls that require await", visited.Count, totalMethods);
 
@@ -181,5 +207,45 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
 
         // Otherwise wrap in Task<T>
         return $"Task<{originalReturnType}>";
+    }
+
+    private static void AddPropagationReason(MethodNode method, string reason)
+    {
+        if (method.AsyncPropagationReasons.Contains(reason))
+        {
+            return;
+        }
+
+        method.AsyncPropagationReasons.Add(reason);
+    }
+
+    private static void EnsureFloodedMethodReasons(CallGraph callGraph)
+    {
+        foreach (var methodId in callGraph.FloodedMethods)
+        {
+            if (!callGraph.Methods.TryGetValue(methodId, out var method))
+            {
+                continue;
+            }
+
+            if (method.AsyncPropagationReasons.Count > 0)
+            {
+                continue;
+            }
+
+            if (callGraph.RootAsyncMethods.Contains(methodId))
+            {
+                method.AsyncPropagationReasons.Add("Marked as a root async method");
+                continue;
+            }
+
+            if (method.ImplementsInterfaceMethods.Count > 0)
+            {
+                method.AsyncPropagationReasons.Add("Async propagation required to match interface contract");
+                continue;
+            }
+
+            method.AsyncPropagationReasons.Add("Async propagation required due to upstream async calls");
+        }
     }
 }

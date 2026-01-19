@@ -28,6 +28,11 @@ public class MethodNode
     public bool RequiresAsyncTransformation { get; set; }
 
     /// <summary>
+    /// Explanation for why this method requires async propagation
+    /// </summary>
+    public List<string> AsyncPropagationReasons { get; set; } = new();
+
+    /// <summary>
     /// Indicates this method is a sync wrapper around async code
     /// </summary>
     public bool IsSyncWrapper { get; set; }

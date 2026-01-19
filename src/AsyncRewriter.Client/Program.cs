@@ -926,12 +926,17 @@ class Program
             }
             Console.WriteLine();
 
-            // Print reason
-            if (!string.IsNullOrEmpty(explanation.Reason))
+            // Print reason(s)
+            if (explanation.Reasons.Count > 0)
             {
-                Console.WriteLine($"Reason: {explanation.Reason}");
+                Console.WriteLine("Reasons:");
+                foreach (var reason in explanation.Reasons)
+                {
+                    Console.WriteLine($"  - {reason}");
+                }
                 Console.WriteLine();
             }
+
 
             // Print call chain
             if (explanation.CallChain.Count > 0)
@@ -1290,7 +1295,7 @@ public class AsyncExplanationResponse
     public string MethodName { get; set; } = string.Empty;
     public string ContainingType { get; set; } = string.Empty;
     public bool RequiresAsync { get; set; }
-    public string? Reason { get; set; }
+    public List<string> Reasons { get; set; } = new();
     public List<AsyncExplanationStep> CallChain { get; set; } = new();
     public SyncWrapperInfo? RootSyncWrapper { get; set; }
     public MethodReference? RootAsyncMethod { get; set; }

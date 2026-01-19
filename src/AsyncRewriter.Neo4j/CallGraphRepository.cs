@@ -75,9 +75,10 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable
                           m.asyncReturnType = $asyncReturnType,
                           m.signature = $signature,
                           m.sourceCode = $sourceCode,
-                          m.isInterfaceMethod = $isInterfaceMethod
-                      MERGE (cg:CallGraph {id: $callGraphId})
-                      MERGE (cg)-[:CONTAINS]->(m)",
+                          m.isInterfaceMethod = $isInterfaceMethod,
+                          m.asyncPropagationReasons = $asyncPropagationReasons
+                       MERGE (cg:CallGraph {id: $callGraphId})
+                       MERGE (cg)-[:CONTAINS]->(m)",
                     new
                     {
                         id = method.Id,
@@ -95,8 +96,10 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable
                         signature = method.Signature,
                         sourceCode = method.SourceCode ?? "",
                         isInterfaceMethod = method.IsInterfaceMethod,
+                        asyncPropagationReasons = method.AsyncPropagationReasons,
                         callGraphId = callGraph.Id
                     });
+
 
                 methodsProcessed++;
                 if (methodsProcessed % 100 == 0 || methodsProcessed == totalMethods)
@@ -347,7 +350,10 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable
                 ? node.Properties["sourceCode"].As<string>()
                 : null,
             IsInterfaceMethod = node.Properties.ContainsKey("isInterfaceMethod")
-                && node.Properties["isInterfaceMethod"].As<bool>()
+                && node.Properties["isInterfaceMethod"].As<bool>(),
+            AsyncPropagationReasons = node.Properties.ContainsKey("asyncPropagationReasons")
+                ? node.Properties["asyncPropagationReasons"].As<List<string>>()
+                : new List<string>()
         };
     }
 

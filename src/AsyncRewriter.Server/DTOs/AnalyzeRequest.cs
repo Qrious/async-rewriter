@@ -104,7 +104,7 @@ public class AsyncExplanationResponse
     public string MethodName { get; set; } = string.Empty;
     public string ContainingType { get; set; } = string.Empty;
     public bool RequiresAsync { get; set; }
-    public string? Reason { get; set; }
+    public List<string> Reasons { get; set; } = new();
     public List<AsyncExplanationStep> CallChain { get; set; } = new();
     public SyncWrapperInfo? RootSyncWrapper { get; set; }
     public MethodReference? RootAsyncMethod { get; set; }
