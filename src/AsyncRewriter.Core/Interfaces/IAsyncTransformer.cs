@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,6 +17,15 @@ public interface IAsyncTransformer
     Task<TransformationResult> TransformProjectAsync(
         string projectPath,
         CallGraph callGraph,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Transforms a project from sync to async based on the call graph with progress reporting
+    /// </summary>
+    Task<TransformationResult> TransformProjectAsync(
+        string projectPath,
+        CallGraph callGraph,
+        Action<string, int, int> progressCallback,
         CancellationToken cancellationToken = default);
 
     /// <summary>

@@ -75,7 +75,7 @@ public class AsyncTransformationController : ControllerBase
         {
             var job = _jobService.GetJob(jobId);
 
-            if (job == null)
+            if (job == null || job.JobType == JobType.Transformation)
                 return NotFound(new { error = "Job not found" });
 
             return Ok(job.ToStatusResponse());
@@ -267,50 +267,53 @@ public class AsyncTransformationController : ControllerBase
     }
 
     /// <summary>
-    /// Transforms a project from sync to async
+    /// Transforms a project from sync to async (async job)
     /// </summary>
     [HttpPost("transform/project")]
-    public async Task<ActionResult<TransformationResult>> TransformProject(
-        [FromBody] TransformRequest request,
-        CancellationToken cancellationToken)
+    public ActionResult<TransformationJobResponse> TransformProject([FromBody] TransformRequest request)
     {
         try
         {
-            _logger.LogInformation("Transforming project: {ProjectPath}", request.ProjectPath);
+            _logger.LogInformation("Queueing transformation for project: {ProjectPath}", request.ProjectPath);
 
-            // Get the call graph
-            var callGraph = await _callGraphRepository.GetCallGraphAsync(
-                request.CallGraphId,
-                cancellationToken);
-
-            if (callGraph == null)
-                return NotFound(new { error = "Call graph not found" });
-
-            // Transform
-            var result = await _asyncTransformer.TransformProjectAsync(
+            var jobId = _jobService.CreateJob(
                 request.ProjectPath,
-                callGraph,
-                cancellationToken);
+                JobType.Transformation,
+                request.CallGraphId,
+                request.ApplyChanges);
 
-            // Apply changes if requested
-            if (request.ApplyChanges && result.Success)
+            return Ok(new TransformationJobResponse
             {
-                foreach (var fileTransformation in result.ModifiedFiles)
-                {
-                    await System.IO.File.WriteAllTextAsync(
-                        fileTransformation.FilePath,
-                        fileTransformation.TransformedContent,
-                        cancellationToken);
-                }
-
-                _logger.LogInformation("Applied changes to {FileCount} files", result.ModifiedFiles.Count);
-            }
-
-            return Ok(result);
+                JobId = jobId,
+                Status = JobStatus.Queued,
+                Message = "Transformation job has been queued and will be processed in the background"
+            });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to transform project");
+            _logger.LogError(ex, "Failed to queue transformation job");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Gets the status and progress of a transformation job
+    /// </summary>
+    [HttpGet("transform/project/{jobId}/status")]
+    public ActionResult<JobStatusResponse> GetTransformationJobStatus(string jobId)
+    {
+        try
+        {
+            var job = _jobService.GetJob(jobId);
+
+            if (job == null || job.JobType != JobType.Transformation)
+                return NotFound(new { error = "Transformation job not found" });
+
+            return Ok(job.ToStatusResponse());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to get transformation job status");
             return StatusCode(500, new { error = ex.Message });
         }
     }

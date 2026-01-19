@@ -34,6 +34,11 @@ class Program
             description: "Polling interval in milliseconds when waiting for completion",
             getDefaultValue: () => 2000);
 
+        var transformPollIntervalOption = new Option<int>(
+            aliases: new[] { "--transform-poll-interval", "-tp" },
+            description: "Polling interval in milliseconds when waiting for transformation",
+            getDefaultValue: () => 1000);
+
         analyzeCommand.AddArgument(projectPathArgument);
         analyzeCommand.AddOption(waitOption);
         analyzeCommand.AddOption(pollIntervalOption);
@@ -84,16 +89,22 @@ class Program
             description: "Polling interval in milliseconds when waiting for completion",
             getDefaultValue: () => 2000);
 
+        var syncWrapperTransformPollIntervalOption = new Option<int>(
+            aliases: new[] { "--transform-poll-interval", "-tp" },
+            description: "Polling interval in milliseconds when waiting for transformation",
+            getDefaultValue: () => 1000);
+
         findSyncWrappersCommand.AddArgument(syncWrapperProjectPath);
         findSyncWrappersCommand.AddOption(analyzeFromWrappersOption);
         findSyncWrappersCommand.AddOption(applyChangesOption);
         findSyncWrappersCommand.AddOption(syncWrapperPollIntervalOption);
+        findSyncWrappersCommand.AddOption(syncWrapperTransformPollIntervalOption);
 
-        findSyncWrappersCommand.SetHandler(async (baseUrl, projectPath, analyzeFromWrappers, applyChanges, pollInterval) =>
+        findSyncWrappersCommand.SetHandler(async (baseUrl, projectPath, analyzeFromWrappers, applyChanges, pollInterval, transformPollInterval) =>
         {
             _baseUrl = baseUrl;
-            await FindSyncWrappersAsync(projectPath, analyzeFromWrappers, applyChanges, pollInterval);
-        }, baseUrlOption, syncWrapperProjectPath, analyzeFromWrappersOption, applyChangesOption, syncWrapperPollIntervalOption);
+            await FindSyncWrappersAsync(projectPath, analyzeFromWrappers, applyChanges, pollInterval, transformPollInterval);
+        }, baseUrlOption, syncWrapperProjectPath, analyzeFromWrappersOption, applyChangesOption, syncWrapperPollIntervalOption, syncWrapperTransformPollIntervalOption);
 
         // Transform command
         var transformCommand = new Command("transform", "Transform a C# project from sync to async based on a call graph");
@@ -107,12 +118,13 @@ class Program
         transformCommand.AddArgument(transformProjectPath);
         transformCommand.AddArgument(transformCallGraphId);
         transformCommand.AddOption(transformApplyOption);
+        transformCommand.AddOption(transformPollIntervalOption);
 
-        transformCommand.SetHandler(async (baseUrl, projectPath, callGraphId, applyChanges) =>
+        transformCommand.SetHandler(async (baseUrl, projectPath, callGraphId, applyChanges, pollInterval) =>
         {
             _baseUrl = baseUrl;
-            await TransformProjectAsync(projectPath, callGraphId, applyChanges);
-        }, baseUrlOption, transformProjectPath, transformCallGraphId, transformApplyOption);
+            await TransformProjectAsync(projectPath, callGraphId, applyChanges, pollInterval);
+        }, baseUrlOption, transformProjectPath, transformCallGraphId, transformApplyOption, transformPollIntervalOption);
 
         rootCommand.AddCommand(analyzeCommand);
         rootCommand.AddCommand(statusCommand);
@@ -351,7 +363,98 @@ class Program
         }
     }
 
-    static async Task FindSyncWrappersAsync(string projectPath, bool analyzeFromWrappers, bool applyChanges, int pollInterval)
+    static async Task WaitForTransformationCompletionAsync(string jobId, int pollInterval, bool appliedChanges)
+    {
+        var lastProgress = -1;
+        var spinner = new[] { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
+        var spinnerIndex = 0;
+
+        while (true)
+        {
+            try
+            {
+                var response = await _httpClient.GetAsync($"{_baseUrl}/api/asynctransformation/transform/project/{jobId}/status");
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    Console.WriteLine();
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("Error retrieving transformation status");
+                    Console.ResetColor();
+                    return;
+                }
+
+                var status = await response.Content.ReadFromJsonAsync<JobStatusResponse>();
+                if (status == null)
+                {
+                    Console.WriteLine();
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("Error: Failed to deserialize status response");
+                    Console.ResetColor();
+                    return;
+                }
+
+                if (status.ProgressPercentage != lastProgress)
+                {
+                    var currentFileLabel = string.IsNullOrWhiteSpace(status.CurrentFile)
+                        ? ""
+                        : $" - {System.IO.Path.GetFileName(status.CurrentFile)}";
+
+                    var fileProgress = status.TotalFileCount.HasValue
+                        ? $" ({status.TransformedFileCount ?? 0}/{status.TotalFileCount})"
+                        : string.Empty;
+
+                    Console.Write("\r" + new string(' ', 120) + "\r");
+                    Console.Write($"{spinner[spinnerIndex]} {status.Status} - {status.ProgressPercentage}%{fileProgress} - {status.CurrentStep}{currentFileLabel}");
+                    lastProgress = status.ProgressPercentage;
+                    spinnerIndex = (spinnerIndex + 1) % spinner.Length;
+                }
+
+                if (status.Status == JobStatus.Completed)
+                {
+                    Console.WriteLine();
+                    Console.WriteLine();
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine($"✓ Transformation {(appliedChanges ? "applied" : "preview")} completed successfully!");
+                    Console.ResetColor();
+                    Console.WriteLine();
+                    PrintTransformationJobStatus(status, appliedChanges);
+                    return;
+                }
+                else if (status.Status == JobStatus.Failed)
+                {
+                    Console.WriteLine();
+                    Console.WriteLine();
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("✗ Transformation failed");
+                    Console.ResetColor();
+                    Console.WriteLine($"Error: {status.ErrorMessage}");
+                    return;
+                }
+                else if (status.Status == JobStatus.Cancelled)
+                {
+                    Console.WriteLine();
+                    Console.WriteLine();
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine("Transformation was cancelled");
+                    Console.ResetColor();
+                    return;
+                }
+
+                await Task.Delay(pollInterval);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine();
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"Error: {ex.Message}");
+                Console.ResetColor();
+                return;
+            }
+        }
+    }
+
+    static async Task FindSyncWrappersAsync(string projectPath, bool analyzeFromWrappers, bool applyChanges, int pollInterval, int transformPollInterval)
     {
         try
         {
@@ -419,7 +522,7 @@ class Program
                         Console.WriteLine($"Applying transformations to {status.FloodedMethodCount} method(s)...");
                         Console.ResetColor();
 
-                        await TransformProjectAsync(projectPath, status.CallGraphId!, true);
+                        await TransformProjectAsync(projectPath, status.CallGraphId!, true, transformPollInterval);
                     }
                 }
             }
@@ -463,7 +566,7 @@ class Program
         }
     }
 
-    static async Task TransformProjectAsync(string projectPath, string callGraphId, bool applyChanges)
+    static async Task TransformProjectAsync(string projectPath, string callGraphId, bool applyChanges, int pollInterval)
     {
         try
         {
@@ -484,16 +587,24 @@ class Program
                 return;
             }
 
-            var result = await response.Content.ReadFromJsonAsync<TransformationResult>();
-            if (result == null)
+            var jobResponse = await response.Content.ReadFromJsonAsync<TransformationJobResponse>();
+            if (jobResponse == null)
             {
                 Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("Error: Failed to deserialize transformation result");
+                Console.WriteLine("Error: Failed to deserialize transformation job response");
                 Console.ResetColor();
                 return;
             }
 
-            PrintTransformationResult(result, applyChanges);
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine("✓ Transformation job queued successfully!");
+            Console.ResetColor();
+            Console.WriteLine($"Job ID: {jobResponse.JobId}");
+            Console.WriteLine($"Status: {jobResponse.Status}");
+            Console.WriteLine($"Message: {jobResponse.Message}");
+            Console.WriteLine();
+
+            await WaitForTransformationCompletionAsync(jobResponse.JobId, pollInterval, applyChanges);
         }
         catch (HttpRequestException ex)
         {
@@ -705,10 +816,47 @@ class Program
             }
         }
     }
+
+    static void PrintTransformationJobStatus(JobStatusResponse status, bool appliedChanges)
+    {
+        Console.WriteLine("Transformation Status:");
+        Console.WriteLine($"  Job ID: {status.JobId}");
+        Console.WriteLine($"  Status: {status.Status}");
+        Console.WriteLine($"  Progress: {status.ProgressPercentage}%");
+        Console.WriteLine($"  Current Step: {status.CurrentStep}");
+
+        if (status.TotalFileCount.HasValue)
+        {
+            Console.WriteLine($"  Files: {status.TransformedFileCount ?? 0} / {status.TotalFileCount}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(status.CurrentFile))
+        {
+            Console.WriteLine($"  Current File: {status.CurrentFile}");
+        }
+
+        if (status.CompletedAt.HasValue)
+        {
+            Console.WriteLine($"  Completed At: {status.CompletedAt:yyyy-MM-dd HH:mm:ss} UTC");
+        }
+
+        Console.ForegroundColor = appliedChanges ? ConsoleColor.Green : ConsoleColor.Yellow;
+        Console.WriteLine(appliedChanges
+            ? "  Changes were applied to disk"
+            : "  Preview only (no files written)");
+        Console.ResetColor();
+    }
 }
 
 // DTOs matching the server
 public class AnalysisJobResponse
+{
+    public string JobId { get; set; } = string.Empty;
+    public JobStatus Status { get; set; }
+    public string Message { get; set; } = string.Empty;
+}
+
+public class TransformationJobResponse
 {
     public string JobId { get; set; } = string.Empty;
     public JobStatus Status { get; set; }
@@ -731,6 +879,9 @@ public class JobStatusResponse
     public int? MethodsRemaining { get; set; }
     public int? FloodedMethodCount { get; set; }
     public int? SyncWrapperCount { get; set; }
+    public string? CurrentFile { get; set; }
+    public int? TransformedFileCount { get; set; }
+    public int? TotalFileCount { get; set; }
     public List<SyncWrapperSummary>? SyncWrappers { get; set; }
     public string? PendingWorkSummary { get; set; }
     public object? Result { get; set; }

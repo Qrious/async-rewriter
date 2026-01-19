@@ -40,6 +40,13 @@ public class AnalysisJobResponse
     public string Message { get; set; } = string.Empty;
 }
 
+public class TransformationJobResponse
+{
+    public string JobId { get; set; } = string.Empty;
+    public JobStatus Status { get; set; }
+    public string Message { get; set; } = string.Empty;
+}
+
 public class JobStatusResponse
 {
     public string JobId { get; set; } = string.Empty;
@@ -56,6 +63,9 @@ public class JobStatusResponse
     public int? MethodsRemaining { get; set; }
     public int? FloodedMethodCount { get; set; }
     public int? SyncWrapperCount { get; set; }
+    public string? CurrentFile { get; set; }
+    public int? TransformedFileCount { get; set; }
+    public int? TotalFileCount { get; set; }
     public List<SyncWrapperSummary>? SyncWrappers { get; set; }
     public string? PendingWorkSummary { get; set; }
     public object? Result { get; set; }

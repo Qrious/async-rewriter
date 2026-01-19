@@ -25,9 +25,18 @@ public class AsyncTransformer : IAsyncTransformer
         _floodingAnalyzer = floodingAnalyzer;
     }
 
+    public Task<TransformationResult> TransformProjectAsync(
+        string projectPath,
+        CallGraph callGraph,
+        CancellationToken cancellationToken = default)
+    {
+        return TransformProjectAsync(projectPath, callGraph, (_, _, _) => { }, cancellationToken);
+    }
+
     public async Task<TransformationResult> TransformProjectAsync(
         string projectPath,
         CallGraph callGraph,
+        Action<string, int, int> progressCallback,
         CancellationToken cancellationToken = default)
     {
         var result = new TransformationResult
@@ -104,6 +113,8 @@ public class AsyncTransformer : IAsyncTransformer
                 }
             }
 
+            var orderedFilesToProcess = filesToProcess.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToList();
+
             // Build a lookup of documents by file path
             var documentsByPath = solution.Projects
                 .SelectMany(project => project.Documents)
@@ -111,8 +122,13 @@ public class AsyncTransformer : IAsyncTransformer
                 .GroupBy(d => d.FilePath!, StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
 
-            foreach (var filePath in filesToProcess)
+            var totalFiles = orderedFilesToProcess.Count;
+            var transformedFiles = 0;
+
+            foreach (var filePath in orderedFilesToProcess)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 var fileTransformations = transformations
                     .Where(t => callGraph.Methods.TryGetValue(t.MethodId, out var m) && m.FilePath == filePath)
                     .ToList();
@@ -198,6 +214,9 @@ public class AsyncTransformer : IAsyncTransformer
                 result.TotalMethodsTransformed += fileTransformation.MethodTransformations.Count;
                 result.TotalCallSitesTransformed += fileTransformation.MethodTransformations
                     .Sum(m => m.AwaitAddedAtLines.Count);
+
+                transformedFiles++;
+                progressCallback(filePath, transformedFiles, totalFiles);
             }
 
             result.Success = true;

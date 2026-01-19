@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using AsyncRewriter.Core.Models;
 using AsyncRewriter.Server.DTOs;
@@ -9,7 +10,8 @@ namespace AsyncRewriter.Server.Models;
 public enum JobType
 {
     Analysis,
-    SyncWrapperAnalysis
+    SyncWrapperAnalysis,
+    Transformation
 }
 
 public class AnalysisJob
@@ -26,10 +28,14 @@ public class AnalysisJob
 
     public string ProjectPath { get; set; } = string.Empty;
     public string? CallGraphId { get; set; }
+    public bool ApplyChanges { get; set; }
     public int? MethodCount { get; set; }
     public int? MethodsProcessed { get; set; }
     public int? FloodedMethodCount { get; set; }
     public int? SyncWrapperCount { get; set; }
+    public string? CurrentFile { get; set; }
+    public int? TransformedFileCount { get; set; }
+    public int? TotalFileCount { get; set; }
     public string? PendingWorkSummary { get; set; }
     public CallGraph? CallGraph { get; set; }
     public List<SyncWrapperMethod>? SyncWrappers { get; set; }
@@ -71,6 +77,9 @@ public class AnalysisJob
             MethodsRemaining = methodsRemaining,
             FloodedMethodCount = FloodedMethodCount,
             SyncWrapperCount = SyncWrapperCount,
+            CurrentFile = CurrentFile,
+            TransformedFileCount = TransformedFileCount,
+            TotalFileCount = TotalFileCount,
             SyncWrappers = SyncWrappers?.Select(wrapper => new SyncWrapperSummary
             {
                 MethodId = wrapper.MethodId,

@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using AsyncRewriter.Core.Interfaces;
+using AsyncRewriter.Core.Models;
 using AsyncRewriter.Server.DTOs;
 using AsyncRewriter.Server.Models;
 using Microsoft.Extensions.DependencyInjection;
@@ -57,6 +58,7 @@ public class AnalysisBackgroundService : BackgroundService
         var callGraphAnalyzer = scope.ServiceProvider.GetRequiredService<ICallGraphAnalyzer>();
         var callGraphRepository = scope.ServiceProvider.GetRequiredService<ICallGraphRepository>();
         var floodingAnalyzer = scope.ServiceProvider.GetRequiredService<IAsyncFloodingAnalyzer>();
+        var asyncTransformer = scope.ServiceProvider.GetRequiredService<IAsyncTransformer>();
 
         var queuedJobs = jobService.GetQueuedJobs().ToList();
 
@@ -70,6 +72,10 @@ public class AnalysisBackgroundService : BackgroundService
             if (job.JobType == JobType.SyncWrapperAnalysis)
             {
                 await ProcessSyncWrapperJobAsync(job, jobService, callGraphAnalyzer, callGraphRepository, floodingAnalyzer, stoppingToken);
+            }
+            else if (job.JobType == JobType.Transformation)
+            {
+                await ProcessTransformationJobAsync(job, jobService, callGraphRepository, asyncTransformer, stoppingToken);
             }
             else
             {
@@ -295,6 +301,138 @@ public class AnalysisBackgroundService : BackgroundService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Sync wrapper job {JobId} failed", job.JobId);
+            jobService.UpdateJob(job.JobId, j =>
+            {
+                j.Status = JobStatus.Failed;
+                j.CompletedAt = DateTime.UtcNow;
+                j.ErrorMessage = ex.Message;
+            });
+        }
+    }
+
+    private async Task ProcessTransformationJobAsync(
+        AnalysisJob job,
+        IJobService jobService,
+        ICallGraphRepository callGraphRepository,
+        IAsyncTransformer asyncTransformer,
+        CancellationToken stoppingToken)
+    {
+        var combinedToken = CancellationTokenSource.CreateLinkedTokenSource(
+            stoppingToken,
+            job.CancellationTokenSource.Token).Token;
+
+        try
+        {
+            _logger.LogInformation("Processing transformation job {JobId} for project {ProjectPath}", job.JobId, job.ProjectPath);
+
+            jobService.UpdateJob(job.JobId, j =>
+            {
+                j.Status = JobStatus.Processing;
+                j.StartedAt = DateTime.UtcNow;
+                j.CurrentStep = "Loading call graph";
+                j.ProgressPercentage = 0;
+                j.PendingWorkSummary = "Preparing transformation";
+            });
+
+            combinedToken.ThrowIfCancellationRequested();
+
+            if (string.IsNullOrWhiteSpace(job.CallGraphId))
+            {
+                jobService.UpdateJob(job.JobId, j =>
+                {
+                    j.Status = JobStatus.Failed;
+                    j.CompletedAt = DateTime.UtcNow;
+                    j.ErrorMessage = "Call graph ID is required for transformation";
+                });
+                return;
+            }
+
+            var callGraph = await callGraphRepository.GetCallGraphAsync(job.CallGraphId, combinedToken);
+            if (callGraph == null)
+            {
+                jobService.UpdateJob(job.JobId, j =>
+                {
+                    j.Status = JobStatus.Failed;
+                    j.CompletedAt = DateTime.UtcNow;
+                    j.ErrorMessage = "Call graph not found";
+                });
+                return;
+            }
+
+            jobService.UpdateJob(job.JobId, j =>
+            {
+                j.CurrentStep = "Transforming files";
+                j.ProgressPercentage = 10;
+                j.PendingWorkSummary = "Rewriting project files";
+                j.TotalFileCount = 0;
+                j.TransformedFileCount = 0;
+            });
+
+            TransformationResult result = await asyncTransformer.TransformProjectAsync(
+                job.ProjectPath,
+                callGraph,
+                (currentFile, transformedCount, totalCount) =>
+                {
+                    jobService.UpdateJob(job.JobId, update =>
+                    {
+                        update.CurrentFile = currentFile;
+                        update.TransformedFileCount = transformedCount;
+                        update.TotalFileCount = totalCount;
+                        update.ProgressPercentage = totalCount > 0
+                            ? Math.Min(90, 10 + (int)Math.Round((double)transformedCount / totalCount * 80))
+                            : 10;
+                    });
+                },
+                combinedToken);
+
+            if (job.ApplyChanges && result.Success)
+            {
+                jobService.UpdateJob(job.JobId, j =>
+                {
+                    j.CurrentStep = "Applying changes";
+                    j.ProgressPercentage = 95;
+                    j.PendingWorkSummary = "Writing transformed files";
+                });
+
+                foreach (var fileTransformation in result.ModifiedFiles)
+                {
+                    await System.IO.File.WriteAllTextAsync(
+                        fileTransformation.FilePath,
+                        fileTransformation.TransformedContent,
+                        combinedToken);
+                }
+            }
+
+            combinedToken.ThrowIfCancellationRequested();
+
+            jobService.UpdateJob(job.JobId, j =>
+            {
+                j.Status = JobStatus.Completed;
+                j.CompletedAt = DateTime.UtcNow;
+                j.CurrentStep = "Transformation complete";
+                j.ProgressPercentage = 100;
+                j.PendingWorkSummary = "Completed";
+                j.MethodCount = result.TotalMethodsTransformed;
+                j.MethodsProcessed = result.TotalMethodsTransformed;
+                j.TransformedFileCount = result.ModifiedFiles.Count;
+                j.TotalFileCount = result.ModifiedFiles.Count;
+            });
+
+            _logger.LogInformation("Transformation job {JobId} completed successfully", job.JobId);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("Transformation job {JobId} was cancelled", job.JobId);
+            jobService.UpdateJob(job.JobId, j =>
+            {
+                j.Status = JobStatus.Cancelled;
+                j.CompletedAt = DateTime.UtcNow;
+                j.ErrorMessage = "Job was cancelled";
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Transformation job {JobId} failed", job.JobId);
             jobService.UpdateJob(job.JobId, j =>
             {
                 j.Status = JobStatus.Failed;

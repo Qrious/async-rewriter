@@ -10,7 +10,7 @@ namespace AsyncRewriter.Server.Services;
 
 public interface IJobService
 {
-    string CreateJob(string projectPath, JobType jobType = JobType.Analysis);
+    string CreateJob(string projectPath, JobType jobType = JobType.Analysis, string? callGraphId = null, bool applyChanges = false);
     AnalysisJob? GetJob(string jobId);
     void UpdateJob(string jobId, Action<AnalysisJob> updateAction);
     IEnumerable<AnalysisJob> GetQueuedJobs();
@@ -28,14 +28,16 @@ public class JobService : IJobService
         _logger = logger;
     }
 
-    public string CreateJob(string projectPath, JobType jobType = JobType.Analysis)
+    public string CreateJob(string projectPath, JobType jobType = JobType.Analysis, string? callGraphId = null, bool applyChanges = false)
     {
         var job = new AnalysisJob
         {
             ProjectPath = projectPath,
             JobType = jobType,
             Status = JobStatus.Queued,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
+            CallGraphId = callGraphId,
+            ApplyChanges = applyChanges
         };
 
         _jobs[job.JobId] = job;
