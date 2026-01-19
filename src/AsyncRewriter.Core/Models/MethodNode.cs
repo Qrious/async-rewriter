@@ -28,6 +28,11 @@ public class MethodNode
     public bool RequiresAsyncTransformation { get; set; }
 
     /// <summary>
+    /// Indicates this method is a sync wrapper around async code
+    /// </summary>
+    public bool IsSyncWrapper { get; set; }
+
+    /// <summary>
     /// The new return type after async transformation (e.g., Task<T>)
     /// </summary>
     public string? AsyncReturnType { get; set; }

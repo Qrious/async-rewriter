@@ -6,12 +6,14 @@ namespace AsyncRewriter.Server.DTOs;
 public class AnalyzeProjectRequest
 {
     public string ProjectPath { get; set; } = string.Empty;
+    public List<string> ExternalSyncWrapperMethods { get; set; } = new();
 }
 
 public class AnalyzeSourceRequest
 {
     public string SourceCode { get; set; } = string.Empty;
     public string FileName { get; set; } = "source.cs";
+    public List<string> ExternalSyncWrapperMethods { get; set; } = new();
 }
 
 public class AnalyzeFloodingRequest
@@ -25,12 +27,14 @@ public class TransformRequest
     public string ProjectPath { get; set; } = string.Empty;
     public string CallGraphId { get; set; } = string.Empty;
     public bool ApplyChanges { get; set; } = false;
+    public List<string> ExternalSyncWrapperMethods { get; set; } = new();
 }
 
 public class TransformSourceRequest
 {
     public string SourceCode { get; set; } = string.Empty;
     public List<string> MethodsToTransform { get; set; } = new();
+    public List<string> ExternalSyncWrapperMethods { get; set; } = new();
 }
 
 public class AnalysisJobResponse

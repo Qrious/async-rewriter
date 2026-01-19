@@ -34,6 +34,11 @@ class Program
             description: "Polling interval in milliseconds when waiting for completion",
             getDefaultValue: () => 2000);
 
+        var externalSyncWrapperOption = new Option<string[]>(
+            aliases: new[] { "--external-sync-wrapper", "-esw" },
+            description: "Fully qualified method IDs to treat as sync wrappers (e.g. MyLib.AsyncHelper.RunTaskSynchronously(Func<Task<TResult>>))",
+            getDefaultValue: Array.Empty<string>);
+
         var transformPollIntervalOption = new Option<int>(
             aliases: new[] { "--transform-poll-interval", "-tp" },
             description: "Polling interval in milliseconds when waiting for transformation",
@@ -42,12 +47,13 @@ class Program
         analyzeCommand.AddArgument(projectPathArgument);
         analyzeCommand.AddOption(waitOption);
         analyzeCommand.AddOption(pollIntervalOption);
+        analyzeCommand.AddOption(externalSyncWrapperOption);
 
-        analyzeCommand.SetHandler(async (baseUrl, projectPath, wait, pollInterval) =>
+        analyzeCommand.SetHandler(async (baseUrl, projectPath, wait, pollInterval, externalSyncWrappers) =>
         {
             _baseUrl = baseUrl;
-            await AnalyzeProjectAsync(projectPath, wait, pollInterval);
-        }, baseUrlOption, projectPathArgument, waitOption, pollIntervalOption);
+            await AnalyzeProjectAsync(projectPath, wait, pollInterval, externalSyncWrappers);
+        }, baseUrlOption, projectPathArgument, waitOption, pollIntervalOption, externalSyncWrapperOption);
 
         // Status command
         var statusCommand = new Command("status", "Check the status of an analysis job");
@@ -99,12 +105,13 @@ class Program
         findSyncWrappersCommand.AddOption(applyChangesOption);
         findSyncWrappersCommand.AddOption(syncWrapperPollIntervalOption);
         findSyncWrappersCommand.AddOption(syncWrapperTransformPollIntervalOption);
+        findSyncWrappersCommand.AddOption(externalSyncWrapperOption);
 
-        findSyncWrappersCommand.SetHandler(async (baseUrl, projectPath, analyzeFromWrappers, applyChanges, pollInterval, transformPollInterval) =>
+        findSyncWrappersCommand.SetHandler(async (baseUrl, projectPath, analyzeFromWrappers, applyChanges, pollInterval, transformPollInterval, externalSyncWrappers) =>
         {
             _baseUrl = baseUrl;
-            await FindSyncWrappersAsync(projectPath, analyzeFromWrappers, applyChanges, pollInterval, transformPollInterval);
-        }, baseUrlOption, syncWrapperProjectPath, analyzeFromWrappersOption, applyChangesOption, syncWrapperPollIntervalOption, syncWrapperTransformPollIntervalOption);
+            await FindSyncWrappersAsync(projectPath, analyzeFromWrappers, applyChanges, pollInterval, transformPollInterval, externalSyncWrappers);
+        }, baseUrlOption, syncWrapperProjectPath, analyzeFromWrappersOption, applyChangesOption, syncWrapperPollIntervalOption, syncWrapperTransformPollIntervalOption, externalSyncWrapperOption);
 
         // Transform command
         var transformCommand = new Command("transform", "Transform a C# project from sync to async based on a call graph");
@@ -119,12 +126,13 @@ class Program
         transformCommand.AddArgument(transformCallGraphId);
         transformCommand.AddOption(transformApplyOption);
         transformCommand.AddOption(transformPollIntervalOption);
+        transformCommand.AddOption(externalSyncWrapperOption);
 
-        transformCommand.SetHandler(async (baseUrl, projectPath, callGraphId, applyChanges, pollInterval) =>
+        transformCommand.SetHandler(async (baseUrl, projectPath, callGraphId, applyChanges, pollInterval, externalSyncWrappers) =>
         {
             _baseUrl = baseUrl;
-            await TransformProjectAsync(projectPath, callGraphId, applyChanges, pollInterval);
-        }, baseUrlOption, transformProjectPath, transformCallGraphId, transformApplyOption, transformPollIntervalOption);
+            await TransformProjectAsync(projectPath, callGraphId, applyChanges, pollInterval, externalSyncWrappers);
+        }, baseUrlOption, transformProjectPath, transformCallGraphId, transformApplyOption, transformPollIntervalOption, externalSyncWrapperOption);
 
         rootCommand.AddCommand(analyzeCommand);
         rootCommand.AddCommand(statusCommand);
@@ -135,14 +143,14 @@ class Program
         return await rootCommand.InvokeAsync(args);
     }
 
-    static async Task AnalyzeProjectAsync(string projectPath, bool wait, int pollInterval)
+    static async Task AnalyzeProjectAsync(string projectPath, bool wait, int pollInterval, string[] externalSyncWrappers)
     {
         try
         {
             Console.WriteLine($"Starting analysis for project: {projectPath}");
             Console.WriteLine();
 
-            var request = new { projectPath };
+            var request = new { projectPath, externalSyncWrapperMethods = externalSyncWrappers };
             var response = await _httpClient.PostAsJsonAsync($"{_baseUrl}/api/asynctransformation/analyze/project/async", request);
 
             if (!response.IsSuccessStatusCode)
@@ -454,14 +462,20 @@ class Program
         }
     }
 
-    static async Task FindSyncWrappersAsync(string projectPath, bool analyzeFromWrappers, bool applyChanges, int pollInterval, int transformPollInterval)
+    static async Task FindSyncWrappersAsync(
+        string projectPath,
+        bool analyzeFromWrappers,
+        bool applyChanges,
+        int pollInterval,
+        int transformPollInterval,
+        string[] externalSyncWrappers)
     {
         try
         {
             Console.WriteLine($"Finding sync wrapper methods in project: {projectPath}");
             Console.WriteLine();
 
-            var request = new { projectPath };
+            var request = new { projectPath, externalSyncWrapperMethods = externalSyncWrappers };
 
             if (analyzeFromWrappers)
             {
@@ -522,7 +536,7 @@ class Program
                         Console.WriteLine($"Applying transformations to {status.FloodedMethodCount} method(s)...");
                         Console.ResetColor();
 
-                        await TransformProjectAsync(projectPath, status.CallGraphId!, true, transformPollInterval);
+                        await TransformProjectAsync(projectPath, status.CallGraphId!, true, transformPollInterval, externalSyncWrappers);
                     }
                 }
             }
@@ -566,7 +580,12 @@ class Program
         }
     }
 
-    static async Task TransformProjectAsync(string projectPath, string callGraphId, bool applyChanges, int pollInterval)
+    static async Task TransformProjectAsync(
+        string projectPath,
+        string callGraphId,
+        bool applyChanges,
+        int pollInterval,
+        string[] externalSyncWrappers)
     {
         try
         {
@@ -575,7 +594,7 @@ class Program
             Console.WriteLine($"Apply Changes: {applyChanges}");
             Console.WriteLine();
 
-            var request = new { projectPath, callGraphId, applyChanges };
+            var request = new { projectPath, callGraphId, applyChanges, externalSyncWrapperMethods = externalSyncWrappers };
             var response = await _httpClient.PostAsJsonAsync($"{_baseUrl}/api/asynctransformation/transform/project", request);
 
             if (!response.IsSuccessStatusCode)

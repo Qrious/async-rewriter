@@ -121,7 +121,10 @@ public class AnalysisBackgroundService : BackgroundService
 
             await Task.Delay(100, combinedToken);
 
-            var callGraph = await callGraphAnalyzer.AnalyzeProjectAsync(job.ProjectPath, combinedToken);
+            var callGraph = await callGraphAnalyzer.AnalyzeProjectAsync(
+                job.ProjectPath,
+                job.ExternalSyncWrapperMethods,
+                combinedToken);
 
             combinedToken.ThrowIfCancellationRequested();
 
@@ -215,6 +218,21 @@ public class AnalysisBackgroundService : BackgroundService
 
             var syncWrappers = await callGraphAnalyzer.FindSyncWrapperMethodsAsync(job.ProjectPath, combinedToken);
 
+            if (job.ExternalSyncWrapperMethods.Count > 0)
+            {
+                syncWrappers.AddRange(job.ExternalSyncWrapperMethods.Select(methodId => new SyncWrapperMethod
+                {
+                    MethodId = methodId,
+                    Name = string.Empty,
+                    ContainingType = string.Empty,
+                    FilePath = "external",
+                    StartLine = 0,
+                    ReturnType = string.Empty,
+                    Signature = methodId,
+                    PatternDescription = "External sync wrapper"
+                }));
+            }
+
             combinedToken.ThrowIfCancellationRequested();
 
             if (syncWrappers.Count == 0)
@@ -244,12 +262,15 @@ public class AnalysisBackgroundService : BackgroundService
 
             await Task.Delay(100, combinedToken);
 
-            var callGraph = await callGraphAnalyzer.AnalyzeProjectAsync(job.ProjectPath, combinedToken);
+            var callGraph = await callGraphAnalyzer.AnalyzeProjectAsync(
+                job.ProjectPath,
+                job.ExternalSyncWrapperMethods,
+                combinedToken);
 
             combinedToken.ThrowIfCancellationRequested();
 
             var rootMethodIds = new HashSet<string>(syncWrappers.Select(wrapper => wrapper.MethodId));
-            callGraph.SyncWrapperMethods = new HashSet<string>(rootMethodIds);
+            callGraph.SyncWrapperMethods.UnionWith(rootMethodIds);
 
             jobService.UpdateJob(job.JobId, j =>
             {
@@ -321,6 +342,8 @@ public class AnalysisBackgroundService : BackgroundService
             stoppingToken,
             job.CancellationTokenSource.Token).Token;
 
+        var externalSyncWrappers = job.ExternalSyncWrapperMethods;
+
         try
         {
             _logger.LogInformation("Processing transformation job {JobId} for project {ProjectPath}", job.JobId, job.ProjectPath);
@@ -358,6 +381,8 @@ public class AnalysisBackgroundService : BackgroundService
                 });
                 return;
             }
+
+            ApplyExternalSyncWrappers(callGraph, externalSyncWrappers);
 
             jobService.UpdateJob(job.JobId, j =>
             {
@@ -439,6 +464,30 @@ public class AnalysisBackgroundService : BackgroundService
                 j.CompletedAt = DateTime.UtcNow;
                 j.ErrorMessage = ex.Message;
             });
+        }
+    }
+
+    private void ApplyExternalSyncWrappers(CallGraph callGraph, IEnumerable<string>? externalSyncWrappers)
+    {
+        if (externalSyncWrappers == null)
+        {
+            return;
+        }
+
+        foreach (var wrapper in externalSyncWrappers)
+        {
+            if (string.IsNullOrWhiteSpace(wrapper))
+            {
+                continue;
+            }
+
+            var methodId = wrapper.Trim();
+            callGraph.SyncWrapperMethods.Add(methodId);
+
+            if (callGraph.Methods.TryGetValue(methodId, out var methodNode))
+            {
+                methodNode.IsSyncWrapper = true;
+            }
         }
     }
 }

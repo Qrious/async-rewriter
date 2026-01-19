@@ -10,7 +10,12 @@ namespace AsyncRewriter.Server.Services;
 
 public interface IJobService
 {
-    string CreateJob(string projectPath, JobType jobType = JobType.Analysis, string? callGraphId = null, bool applyChanges = false);
+    string CreateJob(
+        string projectPath,
+        JobType jobType = JobType.Analysis,
+        string? callGraphId = null,
+        bool applyChanges = false,
+        List<string>? externalSyncWrapperMethods = null);
     AnalysisJob? GetJob(string jobId);
     void UpdateJob(string jobId, Action<AnalysisJob> updateAction);
     IEnumerable<AnalysisJob> GetQueuedJobs();
@@ -28,7 +33,12 @@ public class JobService : IJobService
         _logger = logger;
     }
 
-    public string CreateJob(string projectPath, JobType jobType = JobType.Analysis, string? callGraphId = null, bool applyChanges = false)
+    public string CreateJob(
+        string projectPath,
+        JobType jobType = JobType.Analysis,
+        string? callGraphId = null,
+        bool applyChanges = false,
+        List<string>? externalSyncWrapperMethods = null)
     {
         var job = new AnalysisJob
         {
@@ -37,7 +47,8 @@ public class JobService : IJobService
             Status = JobStatus.Queued,
             CreatedAt = DateTime.UtcNow,
             CallGraphId = callGraphId,
-            ApplyChanges = applyChanges
+            ApplyChanges = applyChanges,
+            ExternalSyncWrapperMethods = externalSyncWrapperMethods ?? new List<string>()
         };
 
         _jobs[job.JobId] = job;

@@ -24,12 +24,20 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
         return await AnalyzeSourceAsync(sourceCode, filePath, cancellationToken);
     }
 
-    public async Task<CallGraph> AnalyzeProjectAsync(string projectPath, CancellationToken cancellationToken = default)
+    public Task<CallGraph> AnalyzeProjectAsync(string projectPath, CancellationToken cancellationToken = default)
+    {
+        return AnalyzeProjectAsync(projectPath, null, cancellationToken);
+    }
+
+    public async Task<CallGraph> AnalyzeProjectAsync(
+        string projectPath,
+        IEnumerable<string>? externalSyncWrapperMethods,
+        CancellationToken cancellationToken = default)
     {
         // If a solution file is provided, delegate to AnalyzeSolutionAsync
         if (projectPath.EndsWith(".sln", StringComparison.OrdinalIgnoreCase))
         {
-            return await AnalyzeSolutionAsync(projectPath, cancellationToken);
+            return await AnalyzeSolutionAsync(projectPath, externalSyncWrapperMethods, cancellationToken);
         }
 
         var workspace = MSBuildWorkspace.Create();
@@ -39,6 +47,8 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
         {
             ProjectName = project.Name
         };
+
+        ApplyExternalSyncWrapperMethods(callGraph, externalSyncWrapperMethods);
 
         var compilation = await project.GetCompilationAsync(cancellationToken);
         if (compilation == null)
@@ -65,7 +75,15 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
         return callGraph;
     }
 
-    public async Task<CallGraph> AnalyzeSolutionAsync(string solutionPath, CancellationToken cancellationToken = default)
+    public Task<CallGraph> AnalyzeSolutionAsync(string solutionPath, CancellationToken cancellationToken = default)
+    {
+        return AnalyzeSolutionAsync(solutionPath, null, cancellationToken);
+    }
+
+    public async Task<CallGraph> AnalyzeSolutionAsync(
+        string solutionPath,
+        IEnumerable<string>? externalSyncWrapperMethods,
+        CancellationToken cancellationToken = default)
     {
         var workspace = MSBuildWorkspace.Create();
         var solution = await workspace.OpenSolutionAsync(solutionPath, cancellationToken: cancellationToken);
@@ -74,6 +92,8 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
         {
             ProjectName = Path.GetFileNameWithoutExtension(solutionPath)
         };
+
+        ApplyExternalSyncWrapperMethods(callGraph, externalSyncWrapperMethods);
 
         // Process all projects in the solution
         foreach (var project in solution.Projects)
@@ -120,9 +140,10 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
             MetadataReference.CreateFromFile(typeof(Enumerable).Assembly.Location), // System.Linq
             MetadataReference.CreateFromFile(Path.Combine(runtimeDir, "System.Runtime.dll")),
             MetadataReference.CreateFromFile(Path.Combine(runtimeDir, "System.Collections.dll")),
+            MetadataReference.CreateFromFile(Path.Combine(runtimeDir, "System.Threading.Tasks.dll"))
         };
 
-        var compilation = CSharpCompilation.Create("TempAssembly")
+        var compilation = CSharpCompilation.Create("Analysis")
             .AddReferences(references)
             .AddSyntaxTrees(syntaxTree);
 
@@ -138,6 +159,42 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
 
         return callGraph;
     }
+
+    public async Task<CallGraph> AnalyzeSourceAsync(
+        string sourceCode,
+        IEnumerable<string>? externalSyncWrapperMethods,
+        string fileName = "source.cs",
+        CancellationToken cancellationToken = default)
+    {
+        var callGraph = await AnalyzeSourceAsync(sourceCode, fileName, cancellationToken);
+        ApplyExternalSyncWrapperMethods(callGraph, externalSyncWrapperMethods);
+        return callGraph;
+    }
+
+    private void ApplyExternalSyncWrapperMethods(CallGraph callGraph, IEnumerable<string>? externalSyncWrapperMethods)
+    {
+        if (externalSyncWrapperMethods == null)
+        {
+            return;
+        }
+
+        foreach (var method in externalSyncWrapperMethods)
+        {
+            if (string.IsNullOrWhiteSpace(method))
+            {
+                continue;
+            }
+
+            var methodId = method.Trim();
+            callGraph.SyncWrapperMethods.Add(methodId);
+
+            if (callGraph.Methods.TryGetValue(methodId, out var methodNode))
+            {
+                methodNode.IsSyncWrapper = true;
+            }
+        }
+    }
+
 
     private void AnalyzeSyntaxTree(SyntaxNode root, SemanticModel semanticModel, string filePath, CallGraph callGraph)
     {
@@ -208,6 +265,12 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
                     {
                         var calleeNode = CreateMethodNodeFromSymbol(invokedSymbol, "external");
                         callGraph.AddMethod(calleeNode);
+                    }
+
+                    if (callGraph.SyncWrapperMethods.Contains(calleeId) &&
+                        callGraph.Methods.TryGetValue(calleeId, out var wrapperMethod))
+                    {
+                        wrapperMethod.IsSyncWrapper = true;
                     }
 
                     var methodCall = new MethodCall

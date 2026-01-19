@@ -49,7 +49,10 @@ public class AsyncTransformationController : ControllerBase
         {
             _logger.LogInformation("Starting async analysis job for project: {ProjectPath}", request.ProjectPath);
 
-            var jobId = _jobService.CreateJob(request.ProjectPath, JobType.Analysis);
+            var jobId = _jobService.CreateJob(
+                request.ProjectPath,
+                JobType.Analysis,
+                externalSyncWrapperMethods: request.ExternalSyncWrapperMethods);
 
             return Ok(new AnalysisJobResponse
             {
@@ -123,6 +126,7 @@ public class AsyncTransformationController : ControllerBase
 
             var callGraph = await _callGraphAnalyzer.AnalyzeProjectAsync(
                 request.ProjectPath,
+                request.ExternalSyncWrapperMethods,
                 cancellationToken);
 
             // Store in Neo4j
@@ -156,6 +160,7 @@ public class AsyncTransformationController : ControllerBase
 
             var callGraph = await _callGraphAnalyzer.AnalyzeSourceAsync(
                 request.SourceCode,
+                request.ExternalSyncWrapperMethods,
                 request.FileName,
                 cancellationToken);
 
@@ -280,7 +285,8 @@ public class AsyncTransformationController : ControllerBase
                 request.ProjectPath,
                 JobType.Transformation,
                 request.CallGraphId,
-                request.ApplyChanges);
+                request.ApplyChanges,
+                request.ExternalSyncWrapperMethods);
 
             return Ok(new TransformationJobResponse
             {
@@ -333,6 +339,7 @@ public class AsyncTransformationController : ControllerBase
             // First analyze the source to get the call graph
             var callGraph = await _callGraphAnalyzer.AnalyzeSourceAsync(
                 request.SourceCode,
+                request.ExternalSyncWrapperMethods,
                 "source.cs",
                 cancellationToken);
 
@@ -426,6 +433,21 @@ public class AsyncTransformationController : ControllerBase
                 request.ProjectPath,
                 cancellationToken);
 
+            if (request.ExternalSyncWrapperMethods.Count > 0)
+            {
+                syncWrappers.AddRange(request.ExternalSyncWrapperMethods.Select(methodId => new SyncWrapperMethod
+                {
+                    MethodId = methodId,
+                    Name = string.Empty,
+                    ContainingType = string.Empty,
+                    FilePath = "external",
+                    StartLine = 0,
+                    ReturnType = string.Empty,
+                    Signature = methodId,
+                    PatternDescription = "External sync wrapper"
+                }));
+            }
+
             _logger.LogInformation("Found {Count} sync wrapper methods", syncWrappers.Count);
 
             return Ok(syncWrappers);
@@ -454,6 +476,21 @@ public class AsyncTransformationController : ControllerBase
                 request.FileName,
                 cancellationToken);
 
+            if (request.ExternalSyncWrapperMethods.Count > 0)
+            {
+                syncWrappers.AddRange(request.ExternalSyncWrapperMethods.Select(methodId => new SyncWrapperMethod
+                {
+                    MethodId = methodId,
+                    Name = string.Empty,
+                    ContainingType = string.Empty,
+                    FilePath = "external",
+                    StartLine = 0,
+                    ReturnType = string.Empty,
+                    Signature = methodId,
+                    PatternDescription = "External sync wrapper"
+                }));
+            }
+
             _logger.LogInformation("Found {Count} sync wrapper methods", syncWrappers.Count);
 
             return Ok(syncWrappers);
@@ -475,7 +512,10 @@ public class AsyncTransformationController : ControllerBase
         {
             _logger.LogInformation("Starting async sync wrapper analysis job for project: {ProjectPath}", request.ProjectPath);
 
-            var jobId = _jobService.CreateJob(request.ProjectPath, JobType.SyncWrapperAnalysis);
+            var jobId = _jobService.CreateJob(
+                request.ProjectPath,
+                JobType.SyncWrapperAnalysis,
+                externalSyncWrapperMethods: request.ExternalSyncWrapperMethods);
 
             return Ok(new AnalysisJobResponse
             {
