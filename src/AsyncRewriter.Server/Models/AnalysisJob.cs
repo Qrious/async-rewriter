@@ -35,6 +35,7 @@ public class AnalysisJob
     public int? FloodedMethodCount { get; set; }
     public int? SyncWrapperCount { get; set; }
     public string? CurrentFile { get; set; }
+    public string? CurrentMethod { get; set; }
     public int? TransformedFileCount { get; set; }
     public int? TotalFileCount { get; set; }
     public string? PendingWorkSummary { get; set; }
@@ -79,6 +80,7 @@ public class AnalysisJob
             FloodedMethodCount = FloodedMethodCount,
             SyncWrapperCount = SyncWrapperCount,
             CurrentFile = CurrentFile,
+            CurrentMethod = CurrentMethod,
             TransformedFileCount = TransformedFileCount,
             TotalFileCount = TotalFileCount,
             SyncWrappers = SyncWrappers?.Select(wrapper => new SyncWrapperSummary

@@ -68,6 +68,7 @@ public class JobStatusResponse
     public int? FloodedMethodCount { get; set; }
     public int? SyncWrapperCount { get; set; }
     public string? CurrentFile { get; set; }
+    public string? CurrentMethod { get; set; }
     public int? TransformedFileCount { get; set; }
     public int? TotalFileCount { get; set; }
     public List<SyncWrapperSummary>? SyncWrappers { get; set; }

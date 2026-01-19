@@ -32,7 +32,7 @@ class Program
         var pollIntervalOption = new Option<int>(
             aliases: new[] { "--poll-interval", "-p" },
             description: "Polling interval in milliseconds when waiting for completion",
-            getDefaultValue: () => 2000);
+            getDefaultValue: () => 1000);
 
         var externalSyncWrapperOption = new Option<string[]>(
             aliases: new[] { "--external-sync-wrapper", "-esw" },
@@ -93,7 +93,7 @@ class Program
         var syncWrapperPollIntervalOption = new Option<int>(
             aliases: new[] { "--poll-interval", "-p" },
             description: "Polling interval in milliseconds when waiting for completion",
-            getDefaultValue: () => 2000);
+            getDefaultValue: () => 1000);
 
         var syncWrapperTransformPollIntervalOption = new Option<int>(
             aliases: new[] { "--transform-poll-interval", "-tp" },
@@ -319,13 +319,23 @@ class Program
                     return;
                 }
 
-                if (status.ProgressPercentage != lastProgress)
-                {
-                    Console.Write("\r" + new string(' ', 100) + "\r");
-                    Console.Write($"{spinner[spinnerIndex]} {status.Status} - {status.ProgressPercentage}% - {status.CurrentStep}");
-                    lastProgress = status.ProgressPercentage;
-                    spinnerIndex = (spinnerIndex + 1) % spinner.Length;
-                }
+                // Always update the spinner and show current progress details
+                var currentFileLabel = !string.IsNullOrWhiteSpace(status.CurrentFile)
+                    ? $" - {System.IO.Path.GetFileName(status.CurrentFile)}"
+                    : string.Empty;
+
+                var currentMethodLabel = !string.IsNullOrWhiteSpace(status.CurrentMethod)
+                    ? $" - {status.CurrentMethod}"
+                    : string.Empty;
+
+                var fileProgress = status.MethodCount.HasValue && status.MethodCount > 0
+                    ? $" ({status.MethodsProcessed ?? 0}/{status.MethodCount})"
+                    : string.Empty;
+
+                Console.Write("\r" + new string(' ', 140) + "\r");
+                Console.Write($"{spinner[spinnerIndex]} {status.Status} - {status.ProgressPercentage}%{fileProgress} - {status.CurrentStep}{currentFileLabel}{currentMethodLabel}");
+                lastProgress = status.ProgressPercentage;
+                spinnerIndex = (spinnerIndex + 1) % spinner.Length;
 
                 if (status.Status == JobStatus.Completed)
                 {
@@ -899,6 +909,7 @@ public class JobStatusResponse
     public int? FloodedMethodCount { get; set; }
     public int? SyncWrapperCount { get; set; }
     public string? CurrentFile { get; set; }
+    public string? CurrentMethod { get; set; }
     public int? TransformedFileCount { get; set; }
     public int? TotalFileCount { get; set; }
     public List<SyncWrapperSummary>? SyncWrappers { get; set; }

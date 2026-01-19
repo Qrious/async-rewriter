@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -18,6 +19,15 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
         HashSet<string> rootMethodIds,
         CancellationToken cancellationToken = default)
     {
+        return AnalyzeFloodingAsync(callGraph, rootMethodIds, null, cancellationToken);
+    }
+
+    public Task<CallGraph> AnalyzeFloodingAsync(
+        CallGraph callGraph,
+        HashSet<string> rootMethodIds,
+        Action<string, int, int>? progressCallback,
+        CancellationToken cancellationToken = default)
+    {
         // Store root methods
         callGraph.RootAsyncMethods = new HashSet<string>(rootMethodIds);
 
@@ -27,17 +37,29 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
         // Queue for BFS traversal
         var queue = new Queue<string>(rootMethodIds);
         var visited = new HashSet<string>();
+        var totalMethods = callGraph.Methods.Count;
+        var processedCount = 0;
+
+        progressCallback?.Invoke("Starting flood from root methods", 0, totalMethods);
 
         // BFS to find all methods that need to become async
         while (queue.Count > 0)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var currentMethodId = queue.Dequeue();
 
             if (!visited.Add(currentMethodId))
                 continue;
 
+            processedCount++;
+
             if (!callGraph.Methods.TryGetValue(currentMethodId, out var currentMethod))
                 continue;
+
+            // Report progress with current method being analyzed
+            var methodDisplayName = $"{currentMethod.ContainingType}.{currentMethod.Name}";
+            progressCallback?.Invoke(methodDisplayName, processedCount, totalMethods);
 
             // If this method is not already async, mark it for transformation
             // Skip sync wrapper methods themselves - they'll be unwrapped, not transformed
@@ -83,6 +105,8 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
 
         callGraph.FloodedMethods = methodsToFlood;
 
+        progressCallback?.Invoke("Marking calls that require await", visited.Count, totalMethods);
+
         // Mark all calls that need await
         foreach (var call in callGraph.Calls)
         {
@@ -92,6 +116,8 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                 call.RequiresAwait = callee.IsAsync || callee.RequiresAsyncTransformation;
             }
         }
+
+        progressCallback?.Invoke("Flooding complete", visited.Count, totalMethods);
 
         return Task.FromResult(callGraph);
     }

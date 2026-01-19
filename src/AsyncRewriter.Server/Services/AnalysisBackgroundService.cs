@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -216,7 +217,24 @@ public class AnalysisBackgroundService : BackgroundService
 
             combinedToken.ThrowIfCancellationRequested();
 
-            var syncWrappers = await callGraphAnalyzer.FindSyncWrapperMethodsAsync(job.ProjectPath, combinedToken);
+            var syncWrappers = await callGraphAnalyzer.FindSyncWrapperMethodsAsync(
+                job.ProjectPath,
+                (currentFile, filesProcessed, totalFiles) =>
+                {
+                    jobService.UpdateJob(job.JobId, j =>
+                    {
+                        j.CurrentFile = currentFile;
+                        j.MethodsProcessed = filesProcessed;
+                        j.MethodCount = totalFiles;
+                        j.ProgressPercentage = totalFiles > 0
+                            ? Math.Min(25, (int)Math.Round((double)filesProcessed / totalFiles * 25))
+                            : 0;
+                        j.PendingWorkSummary = !string.IsNullOrEmpty(currentFile)
+                            ? $"Scanning {Path.GetFileName(currentFile)}"
+                            : "Scanning for sync wrapper patterns";
+                    });
+                },
+                combinedToken);
 
             if (job.ExternalSyncWrapperMethods.Count > 0)
             {
@@ -277,7 +295,8 @@ public class AnalysisBackgroundService : BackgroundService
                 j.CurrentStep = "Running flooding analysis";
                 j.ProgressPercentage = 70;
                 j.MethodCount = callGraph.Methods.Count;
-                j.MethodsProcessed = callGraph.Methods.Count;
+                j.MethodsProcessed = 0;
+                j.CurrentFile = null;
                 j.PendingWorkSummary = "Traversing call graph for async flooding";
             });
 
@@ -286,6 +305,19 @@ public class AnalysisBackgroundService : BackgroundService
             var updatedCallGraph = await floodingAnalyzer.AnalyzeFloodingAsync(
                 callGraph,
                 rootMethodIds,
+                (currentMethod, methodsProcessed, totalMethods) =>
+                {
+                    jobService.UpdateJob(job.JobId, j =>
+                    {
+                        j.CurrentMethod = currentMethod;
+                        j.MethodsProcessed = methodsProcessed;
+                        j.MethodCount = totalMethods;
+                        j.ProgressPercentage = totalMethods > 0
+                            ? Math.Min(95, 70 + (int)Math.Round((double)methodsProcessed / totalMethods * 25))
+                            : 70;
+                        j.PendingWorkSummary = $"Flooding: {currentMethod}";
+                    });
+                },
                 combinedToken);
 
             await callGraphRepository.StoreCallGraphAsync(updatedCallGraph, combinedToken);

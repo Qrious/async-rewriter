@@ -390,7 +390,15 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
         return $"{originalMethod.Name}({parameters})";
     }
 
-    public async Task<List<SyncWrapperMethod>> FindSyncWrapperMethodsAsync(string projectPath, CancellationToken cancellationToken = default)
+    public Task<List<SyncWrapperMethod>> FindSyncWrapperMethodsAsync(string projectPath, CancellationToken cancellationToken = default)
+    {
+        return FindSyncWrapperMethodsAsync(projectPath, null, cancellationToken);
+    }
+
+    public async Task<List<SyncWrapperMethod>> FindSyncWrapperMethodsAsync(
+        string projectPath,
+        Action<string, int, int>? progressCallback,
+        CancellationToken cancellationToken = default)
     {
         var results = new List<SyncWrapperMethod>();
         var workspace = MSBuildWorkspace.Create();
@@ -400,23 +408,39 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
         {
             var solution = await workspace.OpenSolutionAsync(projectPath, cancellationToken: cancellationToken);
 
+            // Collect all syntax trees first to get total count
+            var allTrees = new List<(Compilation compilation, SyntaxTree tree)>();
             foreach (var project in solution.Projects)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-
                 var compilation = await project.GetCompilationAsync(cancellationToken);
                 if (compilation == null) continue;
 
                 foreach (var syntaxTree in compilation.SyntaxTrees)
                 {
-                    var semanticModel = compilation.GetSemanticModel(syntaxTree);
-                    var root = await syntaxTree.GetRootAsync(cancellationToken);
-
-                    var syncWrappers = FindSyncWrappersInSyntaxTree(root, semanticModel, syntaxTree.FilePath);
-                    results.AddRange(syncWrappers);
+                    allTrees.Add((compilation, syntaxTree));
                 }
             }
 
+            var totalFiles = allTrees.Count;
+            var filesProcessed = 0;
+
+            foreach (var (compilation, syntaxTree) in allTrees)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                progressCallback?.Invoke(syntaxTree.FilePath, filesProcessed, totalFiles);
+
+                var semanticModel = compilation.GetSemanticModel(syntaxTree);
+                var root = await syntaxTree.GetRootAsync(cancellationToken);
+
+                var syncWrappers = FindSyncWrappersInSyntaxTree(root, semanticModel, syntaxTree.FilePath);
+                results.AddRange(syncWrappers);
+
+                filesProcessed++;
+            }
+
+            progressCallback?.Invoke(string.Empty, totalFiles, totalFiles);
             return results;
         }
 
@@ -429,15 +453,26 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
             throw new InvalidOperationException("Failed to get compilation");
         }
 
-        foreach (var syntaxTree in comp.SyntaxTrees)
+        var trees = comp.SyntaxTrees.ToList();
+        var total = trees.Count;
+        var processed = 0;
+
+        foreach (var syntaxTree in trees)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            progressCallback?.Invoke(syntaxTree.FilePath, processed, total);
+
             var semanticModel = comp.GetSemanticModel(syntaxTree);
             var root = await syntaxTree.GetRootAsync(cancellationToken);
 
             var syncWrappers = FindSyncWrappersInSyntaxTree(root, semanticModel, syntaxTree.FilePath);
             results.AddRange(syncWrappers);
+
+            processed++;
         }
 
+        progressCallback?.Invoke(string.Empty, total, total);
         return results;
     }
 

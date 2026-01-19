@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -63,6 +64,17 @@ public interface ICallGraphAnalyzer
     /// that return void or TResult respectively.
     /// </summary>
     Task<List<SyncWrapperMethod>> FindSyncWrapperMethodsAsync(string projectPath, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Finds methods that are sync wrappers around async operations with progress reporting.
+    /// </summary>
+    /// <param name="projectPath">Path to the project or solution</param>
+    /// <param name="progressCallback">Callback for progress updates (currentFile, filesProcessed, totalFiles)</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    Task<List<SyncWrapperMethod>> FindSyncWrapperMethodsAsync(
+        string projectPath,
+        Action<string, int, int>? progressCallback,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Finds sync wrapper methods in source code
