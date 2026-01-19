@@ -107,6 +107,24 @@ public class AsyncExplanationResponse
     public string? Reason { get; set; }
     public List<AsyncExplanationStep> CallChain { get; set; } = new();
     public SyncWrapperInfo? RootSyncWrapper { get; set; }
+    public MethodReference? RootAsyncMethod { get; set; }
+    public List<InterfacePropagationInfo> InterfacePropagation { get; set; } = new();
+}
+
+public class MethodReference
+{
+    public string MethodId { get; set; } = string.Empty;
+    public string MethodName { get; set; } = string.Empty;
+    public string ContainingType { get; set; } = string.Empty;
+    public string? FilePath { get; set; }
+    public int? LineNumber { get; set; }
+}
+
+public class InterfacePropagationInfo
+{
+    public MethodReference InterfaceMethod { get; set; } = new();
+    public List<MethodReference> Implementations { get; set; } = new();
+    public string Reason { get; set; } = string.Empty;
 }
 
 /// <summary>

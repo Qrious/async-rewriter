@@ -936,7 +936,8 @@ class Program
             // Print call chain
             if (explanation.CallChain.Count > 0)
             {
-                Console.WriteLine("Call Chain (from this method to the sync wrapper):");
+                var rootLabel = explanation.RootSyncWrapper != null ? "sync wrapper" : "async root";
+                Console.WriteLine($"Call Chain (from this method to the {rootLabel}):");
                 Console.WriteLine();
 
                 for (int i = 0; i < explanation.CallChain.Count; i++)
@@ -986,6 +987,23 @@ class Program
                     }
                     Console.ResetColor();
                 }
+
+                if (explanation.RootAsyncMethod != null)
+                {
+                    var indent = new string(' ', explanation.CallChain.Count * 2);
+                    Console.ForegroundColor = ConsoleColor.DarkYellow;
+                    Console.WriteLine($"{new string(' ', (explanation.CallChain.Count - 1) * 2)}  └── calls ──▶");
+                    Console.ResetColor();
+
+                    Console.Write($"{indent}");
+                    Console.ForegroundColor = ConsoleColor.Blue;
+                    Console.Write("[ASYNC ROOT] ");
+                    Console.ResetColor();
+                    Console.WriteLine($"{explanation.RootAsyncMethod.ContainingType}.{explanation.RootAsyncMethod.MethodName}");
+                    Console.ForegroundColor = ConsoleColor.DarkGray;
+                    Console.WriteLine($"{indent}  {explanation.RootAsyncMethod.FilePath}:{explanation.RootAsyncMethod.LineNumber}");
+                    Console.ResetColor();
+                }
             }
             else if (explanation.RootSyncWrapper != null)
             {
@@ -996,6 +1014,40 @@ class Program
                 Console.ForegroundColor = ConsoleColor.DarkGray;
                 Console.WriteLine($"  {explanation.RootSyncWrapper.FilePath}:{explanation.RootSyncWrapper.LineNumber}");
                 Console.ResetColor();
+            }
+            else if (explanation.RootAsyncMethod != null)
+            {
+                Console.WriteLine("This method directly calls an async root:");
+                Console.ForegroundColor = ConsoleColor.Blue;
+                Console.WriteLine($"  {explanation.RootAsyncMethod.ContainingType}.{explanation.RootAsyncMethod.MethodName}");
+                Console.ResetColor();
+                Console.ForegroundColor = ConsoleColor.DarkGray;
+                Console.WriteLine($"  {explanation.RootAsyncMethod.FilePath}:{explanation.RootAsyncMethod.LineNumber}");
+                Console.ResetColor();
+            }
+
+            if (explanation.InterfacePropagation.Count > 0)
+            {
+                Console.WriteLine();
+                Console.WriteLine("Interface Propagation:");
+
+                foreach (var interfaceInfo in explanation.InterfacePropagation)
+                {
+                    Console.ForegroundColor = ConsoleColor.DarkYellow;
+                    Console.WriteLine($"  Interface: {interfaceInfo.InterfaceMethod.ContainingType}.{interfaceInfo.InterfaceMethod.MethodName}");
+                    Console.ResetColor();
+
+                    if (!string.IsNullOrEmpty(interfaceInfo.Reason))
+                    {
+                        Console.WriteLine($"    Reason: {interfaceInfo.Reason}");
+                    }
+
+                    Console.WriteLine("    Implementations:");
+                    foreach (var implementation in interfaceInfo.Implementations)
+                    {
+                        Console.WriteLine($"      - {implementation.ContainingType}.{implementation.MethodName}");
+                    }
+                }
             }
         }
         catch (Exception ex)
@@ -1241,6 +1293,24 @@ public class AsyncExplanationResponse
     public string? Reason { get; set; }
     public List<AsyncExplanationStep> CallChain { get; set; } = new();
     public SyncWrapperInfo? RootSyncWrapper { get; set; }
+    public MethodReference? RootAsyncMethod { get; set; }
+    public List<InterfacePropagationInfo> InterfacePropagation { get; set; } = new();
+}
+
+public class MethodReference
+{
+    public string MethodId { get; set; } = string.Empty;
+    public string MethodName { get; set; } = string.Empty;
+    public string ContainingType { get; set; } = string.Empty;
+    public string? FilePath { get; set; }
+    public int? LineNumber { get; set; }
+}
+
+public class InterfacePropagationInfo
+{
+    public MethodReference InterfaceMethod { get; set; } = new();
+    public List<MethodReference> Implementations { get; set; } = new();
+    public string Reason { get; set; } = string.Empty;
 }
 
 public class AsyncExplanationStep

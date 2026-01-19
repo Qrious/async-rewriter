@@ -571,7 +571,19 @@ public class AsyncTransformationController : ControllerBase
                 return Ok(response);
             }
 
-            // BFS to find the path from this method to a sync wrapper root
+            var interfacePropagation = FindInterfacePropagation(callGraph, methodId, response);
+            if (interfacePropagation.Handled)
+            {
+                var interfaceCallChain = FindCallChainToMethod(callGraph, methodId, interfacePropagation.InterfaceMethodId);
+                if (interfaceCallChain.Count > 0)
+                {
+                    BuildCallChain(callGraph, response, interfaceCallChain);
+                }
+
+                return Ok(response);
+            }
+
+            // BFS to find the path from this method to a sync wrapper or root async method
             var queue = new Queue<(string MethodId, List<string> Path)>();
             var visited = new HashSet<string>();
             queue.Enqueue((methodId, new List<string> { methodId }));
@@ -583,10 +595,8 @@ public class AsyncTransformationController : ControllerBase
                 if (!visited.Add(currentId))
                     continue;
 
-                // Check if this is a root sync wrapper
-                if (callGraph.SyncWrapperMethods.Contains(currentId) || callGraph.RootAsyncMethods.Contains(currentId))
+                if (callGraph.SyncWrapperMethods.Contains(currentId))
                 {
-                    // Found the root! Build the explanation
                     if (callGraph.Methods.TryGetValue(currentId, out var rootMethod))
                     {
                         response.RootSyncWrapper = new SyncWrapperInfo
@@ -600,30 +610,20 @@ public class AsyncTransformationController : ControllerBase
                         };
                     }
 
-                    // Build the call chain
-                    for (int i = 0; i < path.Count - 1; i++)
+                    BuildCallChain(callGraph, response, path);
+                    response.Reason = $"This method calls (directly or indirectly) the sync wrapper '{response.RootSyncWrapper?.ContainingType}.{response.RootSyncWrapper?.MethodName}', which requires async propagation up the call chain";
+                    return Ok(response);
+                }
+
+                if (callGraph.RootAsyncMethods.Contains(currentId))
+                {
+                    if (callGraph.Methods.TryGetValue(currentId, out var rootMethod))
                     {
-                        var callerId = path[i];
-                        var calleeId = path[i + 1];
-
-                        if (callGraph.Methods.TryGetValue(callerId, out var callerMethod))
-                        {
-                            // Find the call to get line number
-                            var call = callGraph.Calls.FirstOrDefault(c => c.CallerId == callerId && c.CalleeId == calleeId);
-
-                            response.CallChain.Add(new AsyncExplanationStep
-                            {
-                                MethodId = callerId,
-                                MethodName = callerMethod.Name,
-                                ContainingType = callerMethod.ContainingType,
-                                FilePath = call?.FilePath ?? callerMethod.FilePath,
-                                LineNumber = call?.LineNumber ?? callerMethod.StartLine,
-                                Relationship = "calls"
-                            });
-                        }
+                        response.RootAsyncMethod = ToMethodReference(rootMethod);
                     }
 
-                    response.Reason = $"This method calls (directly or indirectly) the sync wrapper '{response.RootSyncWrapper?.ContainingType}.{response.RootSyncWrapper?.MethodName}', which requires async propagation up the call chain";
+                    BuildCallChain(callGraph, response, path);
+                    response.Reason = $"This method calls (directly or indirectly) the async root '{response.RootAsyncMethod?.ContainingType}.{response.RootAsyncMethod?.MethodName}', which requires async propagation up the call chain";
                     return Ok(response);
                 }
 
@@ -643,7 +643,7 @@ public class AsyncTransformationController : ControllerBase
                 }
             }
 
-            response.Reason = "Could not determine the reason for async transformation (sync wrapper root not found in call chain)";
+            response.Reason = "This method requires async transformation, but no call path to a root async method was found";
             return Ok(response);
         }
         catch (Exception ex)
@@ -651,6 +651,134 @@ public class AsyncTransformationController : ControllerBase
             _logger.LogError(ex, "Failed to explain async method");
             return StatusCode(500, new { error = ex.Message });
         }
+    }
+
+    private (bool Handled, string? InterfaceMethodId) FindInterfacePropagation(CallGraph callGraph, string methodId, AsyncExplanationResponse response)
+    {
+        if (!callGraph.Methods.TryGetValue(methodId, out var method))
+        {
+            return (false, null);
+        }
+
+        if (method.ImplementsInterfaceMethods.Count == 0)
+        {
+            return (false, null);
+        }
+
+        foreach (var interfaceMethodId in method.ImplementsInterfaceMethods)
+        {
+            if (!callGraph.Methods.TryGetValue(interfaceMethodId, out var interfaceMethod))
+            {
+                continue;
+            }
+
+            if (!interfaceMethod.RequiresAsyncTransformation && !interfaceMethod.IsAsync)
+            {
+                continue;
+            }
+
+            var otherImplementations = callGraph.Methods.Values
+                .Where(m => m.Id != methodId && m.ImplementsInterfaceMethods.Contains(interfaceMethodId))
+                .ToList();
+
+            var interfaceInfo = new InterfacePropagationInfo
+            {
+                InterfaceMethod = ToMethodReference(interfaceMethod),
+                Reason = "This method must remain compatible with the async interface contract"
+            };
+
+            interfaceInfo.Implementations.Add(ToMethodReference(method));
+
+            foreach (var implementation in otherImplementations)
+            {
+                interfaceInfo.Implementations.Add(ToMethodReference(implementation));
+            }
+
+            response.InterfacePropagation.Add(interfaceInfo);
+            response.Reason = $"This method implements interface method '{interfaceMethod.ContainingType}.{interfaceMethod.Name}', which is async or requires async transformation";
+            return (true, interfaceMethodId);
+        }
+
+        return (false, null);
+    }
+
+    private void BuildCallChain(CallGraph callGraph, AsyncExplanationResponse response, List<string> path)
+    {
+        for (int i = 0; i < path.Count - 1; i++)
+        {
+            var callerId = path[i];
+            var calleeId = path[i + 1];
+
+            if (callGraph.Methods.TryGetValue(callerId, out var callerMethod))
+            {
+                var call = callGraph.Calls.FirstOrDefault(c => c.CallerId == callerId && c.CalleeId == calleeId);
+
+                response.CallChain.Add(new AsyncExplanationStep
+                {
+                    MethodId = callerId,
+                    MethodName = callerMethod.Name,
+                    ContainingType = callerMethod.ContainingType,
+                    FilePath = call?.FilePath ?? callerMethod.FilePath,
+                    LineNumber = call?.LineNumber ?? callerMethod.StartLine,
+                    Relationship = "calls"
+                });
+            }
+        }
+    }
+
+    private static MethodReference ToMethodReference(MethodNode method)
+    {
+        return new MethodReference
+        {
+            MethodId = method.Id,
+            MethodName = method.Name,
+            ContainingType = method.ContainingType,
+            FilePath = method.FilePath,
+            LineNumber = method.StartLine
+        };
+    }
+
+    private static List<string> FindCallChainToMethod(CallGraph callGraph, string startMethodId, string? targetMethodId)
+    {
+        if (string.IsNullOrWhiteSpace(targetMethodId))
+        {
+            return new List<string>();
+        }
+
+        var queue = new Queue<(string MethodId, List<string> Path)>();
+        var visited = new HashSet<string>();
+        queue.Enqueue((startMethodId, new List<string> { startMethodId }));
+
+        while (queue.Count > 0)
+        {
+            var (currentId, path) = queue.Dequeue();
+
+            if (!visited.Add(currentId))
+            {
+                continue;
+            }
+
+            if (currentId == targetMethodId)
+            {
+                return path;
+            }
+
+            var callees = callGraph.Calls
+                .Where(c => c.CallerId == currentId)
+                .Select(c => c.CalleeId)
+                .Distinct();
+
+            foreach (var calleeId in callees)
+            {
+                if (!visited.Contains(calleeId))
+                {
+                    var newPath = new List<string>(path) { calleeId };
+                    queue.Enqueue((calleeId, newPath));
+                }
+            }
+        }
+
+        return new List<string>();
     }
 
     /// <summary>
