@@ -57,10 +57,6 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
             if (!callGraph.Methods.TryGetValue(currentMethodId, out var currentMethod))
                 continue;
 
-            if (currentMethod.AsyncPropagationReasons.Count == 0 && callGraph.RootAsyncMethods.Contains(currentMethodId))
-            {
-                AddPropagationReason(currentMethod, "Marked as a root async method");
-            }
 
             // Report progress with current method being analyzed
             var methodDisplayName = $"{currentMethod.ContainingType}.{currentMethod.Name}";
@@ -84,7 +80,7 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                             methodsToFlood.Add(interfaceMethodId);
                             interfaceMethod.RequiresAsyncTransformation = true;
                             interfaceMethod.AsyncReturnType = DetermineAsyncReturnType(interfaceMethod.ReturnType);
-                            AddPropagationReason(interfaceMethod, $"Interface method implemented by '{currentMethod.ContainingType}.{currentMethod.Name}' requires async propagation");
+                            SetPropagationSource(interfaceMethod, currentMethodId);
 
                             // Find and mark ALL other implementations of this interface method
                             foreach (var method in callGraph.Methods.Values)
@@ -93,7 +89,7 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                                     !method.RequiresAsyncTransformation &&
                                     !method.IsAsync)
                                 {
-                                    AddPropagationReason(method, $"Implements async interface method '{interfaceMethod.ContainingType}.{interfaceMethod.Name}'");
+                                    SetPropagationSource(method, interfaceMethodId);
                                     queue.Enqueue(method.Id);
                                 }
                             }
@@ -106,24 +102,7 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
             var callers = callGraph.GetCallersIncludingInterfaceCalls(currentMethodId);
             foreach (var caller in callers)
             {
-                if (callGraph.Calls.Any(c => c.CallerId == caller.Id && c.CalleeId == currentMethodId))
-                {
-                    AddPropagationReason(caller, $"Calls '{currentMethod.ContainingType}.{currentMethod.Name}', which requires async propagation");
-                }
-                else if (currentMethod.ImplementsInterfaceMethods.Count > 0)
-                {
-                    AddPropagationReason(caller, $"Calls interface method implemented by '{currentMethod.ContainingType}.{currentMethod.Name}', which requires async propagation");
-                }
-                else
-                {
-                    AddPropagationReason(caller, $"Calls async method '{currentMethod.ContainingType}.{currentMethod.Name}'");
-                }
-
-                if (!caller.RequiresAsyncTransformation && !caller.IsAsync)
-                {
-                    AddPropagationReason(caller, $"Await required because '{currentMethod.ContainingType}.{currentMethod.Name}' is async or flooded");
-                }
-
+                SetPropagationSource(caller, currentMethodId);
                 queue.Enqueue(caller.Id);
             }
         }
@@ -209,16 +188,6 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
         return $"Task<{originalReturnType}>";
     }
 
-    private static void AddPropagationReason(MethodNode method, string reason)
-    {
-        if (method.AsyncPropagationReasons.Contains(reason))
-        {
-            return;
-        }
-
-        method.AsyncPropagationReasons.Add(reason);
-    }
-
     private static void EnsureFloodedMethodReasons(CallGraph callGraph)
     {
         foreach (var methodId in callGraph.FloodedMethods)
@@ -228,24 +197,36 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                 continue;
             }
 
-            if (method.AsyncPropagationReasons.Count > 0)
+            if (!string.IsNullOrEmpty(method.AsyncPropagationSourceMethodId))
             {
                 continue;
             }
 
             if (callGraph.RootAsyncMethods.Contains(methodId))
             {
-                method.AsyncPropagationReasons.Add("Marked as a root async method");
+                method.AsyncPropagationSourceMethodId = methodId;
                 continue;
             }
 
             if (method.ImplementsInterfaceMethods.Count > 0)
             {
-                method.AsyncPropagationReasons.Add("Async propagation required to match interface contract");
+                method.AsyncPropagationSourceMethodId = method.ImplementsInterfaceMethods[0];
                 continue;
             }
 
-            method.AsyncPropagationReasons.Add("Async propagation required due to upstream async calls");
+            var fallbackCaller = callGraph.GetCallersIncludingInterfaceCalls(methodId).FirstOrDefault();
+            if (fallbackCaller != null)
+            {
+                method.AsyncPropagationSourceMethodId = fallbackCaller.Id;
+            }
+        }
+    }
+
+    private static void SetPropagationSource(MethodNode method, string sourceMethodId)
+    {
+        if (string.IsNullOrWhiteSpace(method.AsyncPropagationSourceMethodId))
+        {
+            method.AsyncPropagationSourceMethodId = sourceMethodId;
         }
     }
 }

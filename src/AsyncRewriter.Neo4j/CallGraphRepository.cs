@@ -75,10 +75,11 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable
                           m.asyncReturnType = $asyncReturnType,
                           m.signature = $signature,
                           m.sourceCode = $sourceCode,
-                          m.isInterfaceMethod = $isInterfaceMethod,
-                          m.asyncPropagationReasons = $asyncPropagationReasons
+                           m.isInterfaceMethod = $isInterfaceMethod,
+                           m.asyncPropagationSourceMethodId = $asyncPropagationSourceMethodId
                        MERGE (cg:CallGraph {id: $callGraphId})
                        MERGE (cg)-[:CONTAINS]->(m)",
+
                     new
                     {
                         id = method.Id,
@@ -96,7 +97,7 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable
                         signature = method.Signature,
                         sourceCode = method.SourceCode ?? "",
                         isInterfaceMethod = method.IsInterfaceMethod,
-                        asyncPropagationReasons = method.AsyncPropagationReasons,
+                        asyncPropagationSourceMethodId = method.AsyncPropagationSourceMethodId ?? string.Empty,
                         callGraphId = callGraph.Id
                     });
 
@@ -351,9 +352,9 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable
                 : null,
             IsInterfaceMethod = node.Properties.ContainsKey("isInterfaceMethod")
                 && node.Properties["isInterfaceMethod"].As<bool>(),
-            AsyncPropagationReasons = node.Properties.ContainsKey("asyncPropagationReasons")
-                ? node.Properties["asyncPropagationReasons"].As<List<string>>()
-                : new List<string>()
+            AsyncPropagationSourceMethodId = node.Properties.ContainsKey("asyncPropagationSourceMethodId")
+                ? node.Properties["asyncPropagationSourceMethodId"].As<string>()
+                : null
         };
     }
 

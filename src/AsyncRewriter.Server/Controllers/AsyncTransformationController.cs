@@ -556,8 +556,7 @@ public class AsyncTransformationController : ControllerBase
                 MethodId = methodId,
                 MethodName = method.Name,
                 ContainingType = method.ContainingType,
-                RequiresAsync = method.RequiresAsyncTransformation || method.IsAsync,
-                Reasons = new List<string>(method.AsyncPropagationReasons)
+                RequiresAsync = method.RequiresAsyncTransformation || method.IsAsync
             };
 
             if (!response.RequiresAsync)
@@ -572,7 +571,12 @@ public class AsyncTransformationController : ControllerBase
                 return Ok(response);
             }
 
-            if (response.Reasons.Count == 0)
+            var propagationReasons = BuildPropagationReasons(callGraph, methodId);
+            if (propagationReasons.Count > 0)
+            {
+                response.Reasons.AddRange(propagationReasons);
+            }
+            else
             {
                 response.Reasons.Add("Async propagation reason not recorded during analysis");
             }
@@ -742,6 +746,51 @@ public class AsyncTransformationController : ControllerBase
             FilePath = method.FilePath,
             LineNumber = method.StartLine
         };
+    }
+
+    private static List<string> BuildPropagationReasons(CallGraph callGraph, string methodId)
+    {
+        var reasons = new List<string>();
+        var visited = new HashSet<string>();
+        var currentId = methodId;
+
+        while (!string.IsNullOrWhiteSpace(currentId) && visited.Add(currentId))
+        {
+            if (!callGraph.Methods.TryGetValue(currentId, out var method))
+            {
+                break;
+            }
+
+            if (callGraph.RootAsyncMethods.Contains(currentId))
+            {
+                reasons.Add($"Marked as async root '{method.ContainingType}.{method.Name}'");
+                break;
+            }
+
+            if (method.ImplementsInterfaceMethods.Count > 0)
+            {
+                var interfaceId = method.ImplementsInterfaceMethods[0];
+                if (callGraph.Methods.TryGetValue(interfaceId, out var interfaceMethod))
+                {
+                    reasons.Add($"Implements interface method '{interfaceMethod.ContainingType}.{interfaceMethod.Name}'");
+                }
+            }
+
+            var sourceId = method.AsyncPropagationSourceMethodId;
+            if (string.IsNullOrWhiteSpace(sourceId) || sourceId == currentId)
+            {
+                break;
+            }
+
+            if (callGraph.Methods.TryGetValue(sourceId, out var sourceMethod))
+            {
+                reasons.Add($"Calls '{sourceMethod.ContainingType}.{sourceMethod.Name}', which requires async propagation");
+            }
+
+            currentId = sourceId;
+        }
+
+        return reasons;
     }
 
     private static List<string> FindCallChainToMethod(CallGraph callGraph, string startMethodId, string? targetMethodId)
