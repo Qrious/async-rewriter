@@ -107,6 +107,16 @@ dotnet run -- find-sync-wrappers /path/to/your/project.csproj --analyze --apply
 
 **Warning:** The `--apply` flag will modify your source files. Make sure you have committed your changes or have a backup before using this option.
 
+##### Interface Mappings
+
+Specify interface mappings to replace synchronous interfaces with asynchronous versions:
+
+```bash
+dotnet run -- find-sync-wrappers /path/to/your/project.csproj --analyze --interface-mapping IRepository=IRepositoryAsync --interface-mapping IDataService=IDataServiceAsync
+```
+
+This option is useful when you want to map methods implementing synchronous interfaces to asynchronous interface equivalents during transformation. Multiple mappings can be specified using multiple `--interface-mapping` (or `-im`) flags.
+
 #### Transform a Project
 
 Transform a project from sync to async based on a previously analyzed call graph:
