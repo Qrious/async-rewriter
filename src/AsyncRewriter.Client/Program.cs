@@ -100,18 +100,24 @@ class Program
             description: "Polling interval in milliseconds when waiting for transformation",
             getDefaultValue: () => 1000);
 
+        var interfaceMappingOption = new Option<string[]>(
+            aliases: new[] { "--interface-mapping", "-im" },
+            description: "Interface mappings in format 'SyncInterface=AsyncInterface' (e.g. IRepository=IRepositoryAsync)",
+            getDefaultValue: Array.Empty<string>);
+
         findSyncWrappersCommand.AddArgument(syncWrapperProjectPath);
         findSyncWrappersCommand.AddOption(analyzeFromWrappersOption);
         findSyncWrappersCommand.AddOption(applyChangesOption);
         findSyncWrappersCommand.AddOption(syncWrapperPollIntervalOption);
         findSyncWrappersCommand.AddOption(syncWrapperTransformPollIntervalOption);
         findSyncWrappersCommand.AddOption(externalSyncWrapperOption);
+        findSyncWrappersCommand.AddOption(interfaceMappingOption);
 
-        findSyncWrappersCommand.SetHandler(async (baseUrl, projectPath, analyzeFromWrappers, applyChanges, pollInterval, transformPollInterval, externalSyncWrappers) =>
+        findSyncWrappersCommand.SetHandler(async (baseUrl, projectPath, analyzeFromWrappers, applyChanges, pollInterval, transformPollInterval, externalSyncWrappers, interfaceMappings) =>
         {
             _baseUrl = baseUrl;
-            await FindSyncWrappersAsync(projectPath, analyzeFromWrappers, applyChanges, pollInterval, transformPollInterval, externalSyncWrappers);
-        }, baseUrlOption, syncWrapperProjectPath, analyzeFromWrappersOption, applyChangesOption, syncWrapperPollIntervalOption, syncWrapperTransformPollIntervalOption, externalSyncWrapperOption);
+            await FindSyncWrappersAsync(projectPath, analyzeFromWrappers, applyChanges, pollInterval, transformPollInterval, externalSyncWrappers, interfaceMappings);
+        }, baseUrlOption, syncWrapperProjectPath, analyzeFromWrappersOption, applyChangesOption, syncWrapperPollIntervalOption, syncWrapperTransformPollIntervalOption, externalSyncWrapperOption, interfaceMappingOption);
 
         // Transform command
         var transformCommand = new Command("transform", "Transform a C# project from sync to async based on a call graph");
@@ -513,14 +519,42 @@ class Program
         bool applyChanges,
         int pollInterval,
         int transformPollInterval,
-        string[] externalSyncWrappers)
+        string[] externalSyncWrappers,
+        string[] interfaceMappings)
     {
         try
         {
             Console.WriteLine($"Finding sync wrapper methods in project: {projectPath}");
             Console.WriteLine();
 
-            var request = new { projectPath, externalSyncWrapperMethods = externalSyncWrappers };
+            // Parse interface mappings from "SyncInterface=AsyncInterface" format
+            var interfaceMappingsDict = new Dictionary<string, string>();
+            foreach (var mapping in interfaceMappings)
+            {
+                var parts = mapping.Split('=', 2);
+                if (parts.Length == 2)
+                {
+                    interfaceMappingsDict[parts[0].Trim()] = parts[1].Trim();
+                }
+                else
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine($"Warning: Invalid interface mapping format '{mapping}'. Expected 'SyncInterface=AsyncInterface'");
+                    Console.ResetColor();
+                }
+            }
+
+            if (interfaceMappingsDict.Count > 0)
+            {
+                Console.WriteLine("Interface mappings:");
+                foreach (var kvp in interfaceMappingsDict)
+                {
+                    Console.WriteLine($"  {kvp.Key} → {kvp.Value}");
+                }
+                Console.WriteLine();
+            }
+
+            var request = new { projectPath, externalSyncWrapperMethods = externalSyncWrappers, interfaceMappings = interfaceMappingsDict };
 
             if (analyzeFromWrappers)
             {
@@ -581,7 +615,7 @@ class Program
                         Console.WriteLine($"Applying transformations to {status.FloodedMethodCount} method(s)...");
                         Console.ResetColor();
 
-                        await TransformProjectAsync(projectPath, status.CallGraphId!, true, transformPollInterval, externalSyncWrappers);
+                        await TransformProjectAsync(projectPath, status.CallGraphId!, true, transformPollInterval, externalSyncWrappers, interfaceMappings);
                     }
                 }
             }
@@ -630,7 +664,8 @@ class Program
         string callGraphId,
         bool applyChanges,
         int pollInterval,
-        string[] externalSyncWrappers)
+        string[] externalSyncWrappers,
+        string[]? interfaceMappings = null)
     {
         try
         {
@@ -639,7 +674,21 @@ class Program
             Console.WriteLine($"Apply Changes: {applyChanges}");
             Console.WriteLine();
 
-            var request = new { projectPath, callGraphId, applyChanges, externalSyncWrapperMethods = externalSyncWrappers };
+            // Parse interface mappings from "SyncInterface=AsyncInterface" format
+            var interfaceMappingsDict = new Dictionary<string, string>();
+            if (interfaceMappings != null)
+            {
+                foreach (var mapping in interfaceMappings)
+                {
+                    var parts = mapping.Split('=', 2);
+                    if (parts.Length == 2)
+                    {
+                        interfaceMappingsDict[parts[0].Trim()] = parts[1].Trim();
+                    }
+                }
+            }
+
+            var request = new { projectPath, callGraphId, applyChanges, externalSyncWrapperMethods = externalSyncWrappers, interfaceMappings = interfaceMappingsDict };
             var response = await _httpClient.PostAsJsonAsync($"{_baseUrl}/api/asynctransformation/transform/project", request);
 
             if (!response.IsSuccessStatusCode)
