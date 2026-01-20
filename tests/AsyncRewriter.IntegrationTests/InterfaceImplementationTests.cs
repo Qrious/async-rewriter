@@ -320,7 +320,7 @@ namespace GenericInterfaceTest
     [Fact]
     public async Task InterfaceMapping_SyncInterfaceReplacedWithAsyncInterface()
     {
-        // Arrange - A sync interface and its async counterpart
+        // Arrange - A sync interface, its async counterpart, and multiple implementations
         var source = @"
 using System;
 using System.Threading.Tasks;
@@ -362,6 +362,19 @@ namespace InterfaceMappingTest
             Console.WriteLine($""Writing {data}..."");
         }
     }
+
+    public class OtherRepository : IRepository
+    {
+        public string GetData()
+        {
+            return ""cached data"";
+        }
+
+        public void SaveData(string data)
+        {
+            Console.WriteLine($""Saving {data} to cache"");
+        }
+    }
 }";
 
         // Act
@@ -370,7 +383,7 @@ namespace InterfaceMappingTest
         // Add interface mapping: IRepository -> IRepositoryAsync
         callGraph.InterfaceMappings["InterfaceMappingTest.IRepository"] = "IRepositoryAsync";
 
-        // Mark FetchFromDatabase as async root
+        // Mark FetchFromDatabase as async root (only Repository calls this)
         var fetchMethod = callGraph.Methods.Values.FirstOrDefault(m => m.Name == "FetchFromDatabase");
         fetchMethod.Should().NotBeNull();
 
@@ -384,11 +397,20 @@ namespace InterfaceMappingTest
         syncInterfaceGetMethod!.RequiresAsyncTransformation.Should().BeFalse(
             "sync interface should not be transformed when a mapping exists");
 
-        // Assert - Repository.GetData SHOULD be marked for transformation
+        // Assert - Repository.GetData SHOULD be marked for transformation (calls async method)
         var repoGetMethod = callGraph.Methods.Values
-            .FirstOrDefault(m => m.Name == "GetData" && m.ContainingType.Contains("Repository") && !m.IsInterfaceMethod);
+            .FirstOrDefault(m => m.Name == "GetData" && m.ContainingType.Contains("Repository") &&
+                                 !m.ContainingType.Contains("Other") && !m.IsInterfaceMethod);
         repoGetMethod.Should().NotBeNull();
         repoGetMethod!.RequiresAsyncTransformation.Should().BeTrue();
+
+        // Assert - OtherRepository.GetData should NOT be marked for transformation
+        // (it doesn't call async methods, even though it implements the same interface)
+        var otherRepoGetMethod = callGraph.Methods.Values
+            .FirstOrDefault(m => m.Name == "GetData" && m.ContainingType.Contains("OtherRepository"));
+        otherRepoGetMethod.Should().NotBeNull();
+        otherRepoGetMethod!.RequiresAsyncTransformation.Should().BeFalse(
+            "other implementations should not be flooded just because one implementation needs async");
 
         // Act - Transform the source
         var transformations = await _floodingAnalyzer.GetTransformationInfoAsync(callGraph);
@@ -411,10 +433,15 @@ namespace InterfaceMappingTest
 
         // Assert - Repository should implement IRepositoryAsync instead of IRepository
         transformedSource.Should().Contain("Repository : IRepositoryAsync");
-        transformedSource.Should().NotContain("Repository : IRepository");
+        transformedSource.Should().NotContain("Repository : IRepository\r\n");
+        transformedSource.Should().NotContain("Repository : IRepository\n");
 
         // Assert - Repository.GetData should be transformed
         transformedSource.Should().Contain("Task<string> GetData()");
+
+        // Assert - OtherRepository should remain unchanged (still implements IRepository)
+        transformedSource.Should().Contain("OtherRepository : IRepository");
+        transformedSource.Should().NotContain("OtherRepository : IRepositoryAsync");
 
         // Assert - Repository.SaveData should NOT be transformed (doesn't call async methods)
         transformedSource.Should().Contain("void SaveData(string data)");

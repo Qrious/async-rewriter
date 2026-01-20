@@ -106,22 +106,15 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                         }
 
                         // Check if this interface has a mapping to an async interface
-                        // If so, don't transform the interface itself - implementations will reference the async interface instead
+                        // If so, don't transform the interface itself - the current implementation
+                        // will be transformed to reference the async interface instead
                         var interfaceTypeName = interfaceMethod.ContainingType;
                         if (callGraph.InterfaceMappings.ContainsKey(interfaceTypeName))
                         {
                             // Don't mark the sync interface for transformation
-                            // But still mark all implementations so they get transformed to reference the async interface
-                            foreach (var method in callGraph.Methods.Values)
-                            {
-                                if (method.ImplementsInterfaceMethods.Contains(interfaceMethodId) &&
-                                    !method.RequiresAsyncTransformation &&
-                                    !method.IsAsync)
-                                {
-                                    SetPropagationSource(method, interfaceMethodId);
-                                    queue.Enqueue(method.Id);
-                                }
-                            }
+                            // Don't flood to other implementations - they should only become async
+                            // if they independently need to (e.g., they call async methods themselves)
+                            // The current implementation (currentMethod) is already being processed
                             continue;
                         }
 
