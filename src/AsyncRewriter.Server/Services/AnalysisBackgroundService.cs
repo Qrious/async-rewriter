@@ -127,6 +127,15 @@ public class AnalysisBackgroundService : BackgroundService
                 job.ExternalSyncWrapperMethods,
                 combinedToken);
 
+            // Add interface mappings to the call graph
+            if (job.InterfaceMappings.Count > 0)
+            {
+                foreach (var mapping in job.InterfaceMappings)
+                {
+                    callGraph.InterfaceMappings[mapping.Key] = mapping.Value;
+                }
+            }
+
             combinedToken.ThrowIfCancellationRequested();
 
             jobService.UpdateJob(job.JobId, j =>
@@ -466,6 +475,15 @@ public class AnalysisBackgroundService : BackgroundService
             }
 
             ApplyExternalSyncWrappers(callGraph, externalSyncWrappers);
+
+            // Apply interface mappings if provided in the job
+            if (job.InterfaceMappings.Count > 0)
+            {
+                foreach (var mapping in job.InterfaceMappings)
+                {
+                    callGraph.InterfaceMappings[mapping.Key] = mapping.Value;
+                }
+            }
 
             jobService.UpdateJob(job.JobId, j =>
             {

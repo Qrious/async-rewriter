@@ -52,7 +52,8 @@ public class AsyncTransformationController : ControllerBase
             var jobId = _jobService.CreateJob(
                 request.ProjectPath,
                 JobType.Analysis,
-                externalSyncWrapperMethods: request.ExternalSyncWrapperMethods);
+                externalSyncWrapperMethods: request.ExternalSyncWrapperMethods,
+                interfaceMappings: request.InterfaceMappings);
 
             return Ok(new AnalysisJobResponse
             {
@@ -128,6 +129,15 @@ public class AsyncTransformationController : ControllerBase
                 request.ProjectPath,
                 request.ExternalSyncWrapperMethods,
                 cancellationToken);
+
+            // Add interface mappings to the call graph
+            if (request.InterfaceMappings.Count > 0)
+            {
+                foreach (var mapping in request.InterfaceMappings)
+                {
+                    callGraph.InterfaceMappings[mapping.Key] = mapping.Value;
+                }
+            }
 
             // Store in Neo4j
             await _callGraphRepository.StoreCallGraphAsync(callGraph, cancellationToken);
@@ -286,7 +296,8 @@ public class AsyncTransformationController : ControllerBase
                 JobType.Transformation,
                 request.CallGraphId,
                 request.ApplyChanges,
-                request.ExternalSyncWrapperMethods);
+                request.ExternalSyncWrapperMethods,
+                request.InterfaceMappings);
 
             return Ok(new TransformationJobResponse
             {

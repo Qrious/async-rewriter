@@ -30,6 +30,7 @@ public class AnalysisJob
     public string? CallGraphId { get; set; }
     public bool ApplyChanges { get; set; }
     public List<string> ExternalSyncWrapperMethods { get; set; } = new();
+    public Dictionary<string, string> InterfaceMappings { get; set; } = new();
     public int? MethodCount { get; set; }
     public int? MethodsProcessed { get; set; }
     public int? FloodedMethodCount { get; set; }

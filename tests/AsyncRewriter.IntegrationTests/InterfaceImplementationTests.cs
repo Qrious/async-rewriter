@@ -316,4 +316,108 @@ namespace GenericInterfaceTest
         // Assert - OtherMapper should remain unchanged
         transformedSource.Should().Contain("OtherMapper : IMapper<A, B>");
     }
+
+    [Fact]
+    public async Task InterfaceMapping_SyncInterfaceReplacedWithAsyncInterface()
+    {
+        // Arrange - A sync interface and its async counterpart
+        var source = @"
+using System;
+using System.Threading.Tasks;
+
+namespace InterfaceMappingTest
+{
+    public interface IRepository
+    {
+        string GetData();
+        void SaveData(string data);
+    }
+
+    public interface IRepositoryAsync
+    {
+        Task<string> GetDataAsync();
+        Task SaveDataAsync(string data);
+    }
+
+    public class Repository : IRepository
+    {
+        public string GetData()
+        {
+            return FetchFromDatabase();
+        }
+
+        public void SaveData(string data)
+        {
+            WriteToDatabase(data);
+        }
+
+        private string FetchFromDatabase()
+        {
+            Console.WriteLine(""Fetching..."");
+            return ""data"";
+        }
+
+        private void WriteToDatabase(string data)
+        {
+            Console.WriteLine($""Writing {data}..."");
+        }
+    }
+}";
+
+        // Act
+        var callGraph = await _callGraphAnalyzer.AnalyzeSourceAsync(source);
+
+        // Add interface mapping: IRepository -> IRepositoryAsync
+        callGraph.InterfaceMappings["InterfaceMappingTest.IRepository"] = "IRepositoryAsync";
+
+        // Mark FetchFromDatabase as async root
+        var fetchMethod = callGraph.Methods.Values.FirstOrDefault(m => m.Name == "FetchFromDatabase");
+        fetchMethod.Should().NotBeNull();
+
+        var rootMethods = new HashSet<string> { fetchMethod!.Id };
+        await _floodingAnalyzer.AnalyzeFloodingAsync(callGraph, rootMethods);
+
+        // Assert - The sync interface should NOT be marked for transformation
+        var syncInterfaceGetMethod = callGraph.Methods.Values
+            .FirstOrDefault(m => m.Name == "GetData" && m.IsInterfaceMethod);
+        syncInterfaceGetMethod.Should().NotBeNull();
+        syncInterfaceGetMethod!.RequiresAsyncTransformation.Should().BeFalse(
+            "sync interface should not be transformed when a mapping exists");
+
+        // Assert - Repository.GetData SHOULD be marked for transformation
+        var repoGetMethod = callGraph.Methods.Values
+            .FirstOrDefault(m => m.Name == "GetData" && m.ContainingType.Contains("Repository") && !m.IsInterfaceMethod);
+        repoGetMethod.Should().NotBeNull();
+        repoGetMethod!.RequiresAsyncTransformation.Should().BeTrue();
+
+        // Act - Transform the source
+        var transformations = await _floodingAnalyzer.GetTransformationInfoAsync(callGraph);
+        var transformedSource = await _transformer.TransformSourceAsync(
+            source,
+            transformations.ToList(),
+            null,
+            null,
+            callGraph.BaseTypeTransformations,
+            default);
+
+        // Assert - Sync interface IRepository should remain unchanged
+        transformedSource.Should().Contain("public interface IRepository");
+        transformedSource.Should().Contain("string GetData();");
+        transformedSource.Should().Contain("void SaveData(string data);");
+
+        // Assert - Async interface IRepositoryAsync should remain unchanged
+        transformedSource.Should().Contain("public interface IRepositoryAsync");
+        transformedSource.Should().Contain("Task<string> GetDataAsync();");
+
+        // Assert - Repository should implement IRepositoryAsync instead of IRepository
+        transformedSource.Should().Contain("Repository : IRepositoryAsync");
+        transformedSource.Should().NotContain("Repository : IRepository");
+
+        // Assert - Repository.GetData should be transformed
+        transformedSource.Should().Contain("Task<string> GetData()");
+
+        // Assert - Repository.SaveData should NOT be transformed (doesn't call async methods)
+        transformedSource.Should().Contain("void SaveData(string data)");
+        transformedSource.Should().NotContain("Task SaveData");
+    }
 }
