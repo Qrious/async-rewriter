@@ -155,7 +155,8 @@ public class AsyncTransformer : IAsyncTransformer
                             methodsToTransform,
                             allAsyncMethodIds,
                             callGraph.SyncWrapperMethods,
-                            callGraph.BaseTypeTransformations);
+                            callGraph.BaseTypeTransformations,
+                            callGraph.InterfaceMappings);
 
                         var newRoot = rewriter.Visit(root);
 
@@ -318,7 +319,9 @@ public class AsyncTransformer : IAsyncTransformer
         }
 
         // Create rewriter with sync wrapper method IDs for unwrapping
-        var rewriter = new AsyncMethodRewriter(semanticModel, methodsToTransform, asyncMethodIds, syncWrapperMethodIds, baseTypeTransformations);
+        // Note: This method doesn't have access to interface mappings from callGraph, so we pass null
+        // Interface mappings are primarily used through the project-based transformation path
+        var rewriter = new AsyncMethodRewriter(semanticModel, methodsToTransform, asyncMethodIds, syncWrapperMethodIds, baseTypeTransformations, interfaceMappings: null);
 
         // Apply transformation
         var newRoot = rewriter.Visit(root);

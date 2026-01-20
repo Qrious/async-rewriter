@@ -38,6 +38,13 @@ public class CallGraph
     public Dictionary<string, List<BaseTypeTransformation>> BaseTypeTransformations { get; set; } = new();
 
     /// <summary>
+    /// Mappings from sync interfaces to their async equivalents.
+    /// When a sync interface needs to be made async, it will be replaced with the async interface instead.
+    /// Key is the sync interface name, value is the async interface name.
+    /// </summary>
+    public Dictionary<string, string> InterfaceMappings { get; set; } = new();
+
+    /// <summary>
     /// Add a method to the graph
     /// </summary>
     public void AddMethod(MethodNode method)

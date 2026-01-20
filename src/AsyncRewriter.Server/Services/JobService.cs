@@ -15,7 +15,8 @@ public interface IJobService
         JobType jobType = JobType.Analysis,
         string? callGraphId = null,
         bool applyChanges = false,
-        List<string>? externalSyncWrapperMethods = null);
+        List<string>? externalSyncWrapperMethods = null,
+        Dictionary<string, string>? interfaceMappings = null);
     AnalysisJob? GetJob(string jobId);
     void UpdateJob(string jobId, Action<AnalysisJob> updateAction);
     IEnumerable<AnalysisJob> GetQueuedJobs();
@@ -38,7 +39,8 @@ public class JobService : IJobService
         JobType jobType = JobType.Analysis,
         string? callGraphId = null,
         bool applyChanges = false,
-        List<string>? externalSyncWrapperMethods = null)
+        List<string>? externalSyncWrapperMethods = null,
+        Dictionary<string, string>? interfaceMappings = null)
     {
         var job = new AnalysisJob
         {
@@ -48,7 +50,8 @@ public class JobService : IJobService
             CreatedAt = DateTime.UtcNow,
             CallGraphId = callGraphId,
             ApplyChanges = applyChanges,
-            ExternalSyncWrapperMethods = externalSyncWrapperMethods ?? new List<string>()
+            ExternalSyncWrapperMethods = externalSyncWrapperMethods ?? new List<string>(),
+            InterfaceMappings = interfaceMappings ?? new Dictionary<string, string>()
         };
 
         _jobs[job.JobId] = job;

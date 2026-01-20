@@ -18,6 +18,7 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
     private readonly HashSet<string> _asyncMethodIds;
     private readonly HashSet<string> _syncWrapperMethodIds;
     private readonly Dictionary<string, List<BaseTypeTransformation>> _baseTypeTransformations;
+    private readonly Dictionary<string, string> _interfaceMappings;
     private readonly List<int> _awaitAddedLines = new();
 
     public IReadOnlyList<int> AwaitAddedLines => _awaitAddedLines;
@@ -27,13 +28,15 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         HashSet<string> methodsToTransform,
         HashSet<string> asyncMethodIds,
         HashSet<string>? syncWrapperMethodIds = null,
-        Dictionary<string, List<BaseTypeTransformation>>? baseTypeTransformations = null)
+        Dictionary<string, List<BaseTypeTransformation>>? baseTypeTransformations = null,
+        Dictionary<string, string>? interfaceMappings = null)
     {
         _semanticModel = semanticModel;
         _methodsToTransform = methodsToTransform;
         _asyncMethodIds = asyncMethodIds;
         _syncWrapperMethodIds = syncWrapperMethodIds ?? new HashSet<string>();
         _baseTypeTransformations = baseTypeTransformations ?? new Dictionary<string, List<BaseTypeTransformation>>();
+        _interfaceMappings = interfaceMappings ?? new Dictionary<string, string>();
     }
 
     public override SyntaxNode? VisitClassDeclaration(ClassDeclarationSyntax node)
@@ -83,8 +86,13 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         // Now visit all children (including methods)
         var visited = (ClassDeclarationSyntax)base.VisitClassDeclaration(node)!;
 
-        // Apply base type transformations if needed
-        if (transformations == null || baseTypeIndexToTransformationIndex == null || baseTypeIndexToTransformationIndex.Count == 0)
+        // Check if we need to apply base type transformations or interface mappings
+        var needsBaseTypeTransformation = transformations != null &&
+                                          baseTypeIndexToTransformationIndex != null &&
+                                          baseTypeIndexToTransformationIndex.Count > 0;
+        var needsInterfaceMappings = _interfaceMappings.Count > 0 && visited.BaseList != null;
+
+        if (!needsBaseTypeTransformation && !needsInterfaceMappings)
             return visited;
 
         if (visited.BaseList == null)
@@ -98,10 +106,37 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
             var baseType = visited.BaseList.Types[baseIdx];
             var newBaseType = baseType;
 
-            if (baseTypeIndexToTransformationIndex.TryGetValue(baseIdx, out var transIdx) &&
+            // First check for interface mappings
+            if (needsInterfaceMappings)
+            {
+                var originalBaseType = node.BaseList!.Types[baseIdx];
+                var typeInfo = _semanticModel.GetTypeInfo(originalBaseType.Type);
+
+                if (typeInfo.Type is INamedTypeSymbol namedType)
+                {
+                    var fullTypeName = namedType.ToDisplayString();
+
+                    if (_interfaceMappings.TryGetValue(fullTypeName, out var asyncInterfaceName))
+                    {
+                        // Replace the sync interface with the async interface
+                        var asyncInterfaceType = SyntaxFactory.ParseTypeName(asyncInterfaceName)
+                            .WithLeadingTrivia(baseType.Type.GetLeadingTrivia())
+                            .WithTrailingTrivia(baseType.Type.GetTrailingTrivia());
+
+                        newBaseType = baseType.WithType(asyncInterfaceType);
+                        modified = true;
+                        newBaseTypes.Add(newBaseType);
+                        continue;
+                    }
+                }
+            }
+
+            // Then apply base type transformations for generic interfaces
+            if (needsBaseTypeTransformation &&
+                baseTypeIndexToTransformationIndex!.TryGetValue(baseIdx, out var transIdx) &&
                 baseType.Type is GenericNameSyntax genericName)
             {
-                var transformation = transformations[transIdx];
+                var transformation = transformations![transIdx];
                 var typeArguments = genericName.TypeArgumentList.Arguments;
 
                 if (transformation.TypeArgumentIndex < typeArguments.Count)
