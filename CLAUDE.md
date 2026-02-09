@@ -20,21 +20,15 @@ dotnet test tests/AsyncRewriter.IntegrationTests
 # Run a single test by name
 dotnet test --filter "FullyQualifiedName~TestMethodName"
 
-# Run the server
-dotnet run --project src/AsyncRewriter.Server
+# Run the console tool
+dotnet run --project src/AsyncRewriter.Console -- <command>
 
-# Run the CLI client
-dotnet run --project src/AsyncRewriter.Client -- <command>
+# Example: Analyze a project
+dotnet run --project src/AsyncRewriter.Console -- analyze MyProject.csproj
+
+# Example: Find sync wrappers and transform
+dotnet run --project src/AsyncRewriter.Console -- find-sync-wrappers MyProject.csproj --analyze --apply
 ```
-
-## Infrastructure
-
-Neo4j is required for the server. Start it with Docker:
-```bash
-docker-compose up neo4j -d
-```
-
-Neo4j Browser: http://localhost:7474 (neo4j/password)
 
 ## Architecture
 
@@ -42,17 +36,15 @@ This is a Roslyn-based tool for transforming synchronous C# methods to async by 
 
 ### Projects
 
-- **AsyncRewriter.Core**: Domain models (`CallGraph`, `MethodNode`, `MethodCall`) and interfaces (`ICallGraphAnalyzer`, `IAsyncFloodingAnalyzer`, `IAsyncTransformer`, `ICallGraphRepository`)
+- **AsyncRewriter.Core**: Domain models (`CallGraph`, `MethodNode`, `MethodCall`) and interfaces (`ICallGraphAnalyzer`, `IAsyncFloodingAnalyzer`, `IAsyncTransformer`)
 - **AsyncRewriter.Analyzer**: Roslyn-based implementation. `CallGraphAnalyzer` builds method call graphs from C# projects. `AsyncFloodingAnalyzer` uses BFS to determine which methods need async transformation starting from root methods.
-- **AsyncRewriter.Neo4j**: `CallGraphRepository` stores/queries call graphs in Neo4j
 - **AsyncRewriter.Transformation**: `AsyncTransformer` and `AsyncMethodRewriter` (CSharpSyntaxRewriter) handle code transformation - adding async keywords, transforming return types (T → Task<T>, void → Task), and inserting await
-- **AsyncRewriter.Server**: ASP.NET Core API with background job processing via `AnalysisBackgroundService` and `JobService`
-- **AsyncRewriter.Client**: CLI for interacting with the API
+- **AsyncRewriter.Console**: Command-line interface that directly uses the analyzer and transformation services
 
 ### Data Flow
 
 1. **Analysis**: `CallGraphAnalyzer` parses a .csproj, extracts method declarations and invocations using Roslyn
-2. **Storage**: Call graph stored in Neo4j as Method nodes with CALLS relationships
+2. **Storage**: Call graph stored as JSON file for persistence between commands
 3. **Flooding**: Given root methods (methods that should be async), `AsyncFloodingAnalyzer` traverses callers via BFS, marking all upstream methods as needing transformation
 4. **Transformation**: `AsyncTransformer` rewrites the syntax tree to add async/await keywords and transform return types
 

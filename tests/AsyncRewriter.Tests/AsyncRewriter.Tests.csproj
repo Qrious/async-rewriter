@@ -21,7 +21,6 @@
     <ProjectReference Include="..\..\src\AsyncRewriter.Core\AsyncRewriter.Core.csproj" />
     <ProjectReference Include="..\..\src\AsyncRewriter.Analyzer\AsyncRewriter.Analyzer.csproj" />
     <ProjectReference Include="..\..\src\AsyncRewriter.Transformation\AsyncRewriter.Transformation.csproj" />
-    <ProjectReference Include="..\..\src\AsyncRewriter.Server\AsyncRewriter.Server.csproj" />
   </ItemGroup>
 
   <ItemGroup>
