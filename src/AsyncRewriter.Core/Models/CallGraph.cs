@@ -10,11 +10,11 @@ namespace AsyncRewriter.Core.Models;
 /// </summary>
 public class CallGraph
 {
-    public string Id { get; set; } = Guid.NewGuid().ToString();
-    public string ProjectName { get; set; } = string.Empty;
-    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
-    public ConcurrentDictionary<string, MethodNode> Methods { get; set; } = new();
-    public ConcurrentBag<MethodCall> Calls { get; set; } = new();
+    public string Id { get; init; } = Guid.NewGuid().ToString();
+    public string ProjectName { get; init; } = string.Empty;
+    public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
+    public ConcurrentDictionary<string, MethodNode> Methods { get; init; } = new();
+    public ConcurrentBag<MethodCall> Calls { get; init; } = new();
 
     /// <summary>
     /// Root methods that were marked for async transformation
@@ -43,22 +43,6 @@ public class CallGraph
     /// Key is the sync interface name, value is the async interface name.
     /// </summary>
     public Dictionary<string, string> InterfaceMappings { get; set; } = new();
-
-    /// <summary>
-    /// Add a method to the graph
-    /// </summary>
-    public void AddMethod(MethodNode method)
-    {
-        Methods.AddOrUpdate(method.Id, method, (key, existing) => method);
-    }
-
-    /// <summary>
-    /// Add a call relationship
-    /// </summary>
-    public void AddCall(MethodCall call)
-    {
-        Calls.Add(call);
-    }
 
     /// <summary>
     /// Get all methods that call the specified method

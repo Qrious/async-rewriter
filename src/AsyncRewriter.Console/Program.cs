@@ -11,7 +11,7 @@ namespace AsyncRewriter.Console;
 
 class Program
 {
-    private static readonly ICallGraphAnalyzer _analyzer = new CallGraphAnalyzer();
+    private static readonly ICallGraphBuilder _analyzer = new CallGraphBuilder();
     private static readonly IAsyncFloodingAnalyzer _floodingAnalyzer = new AsyncFloodingAnalyzer();
     private static readonly JsonSerializerOptions _jsonOptions = new()
     {
@@ -155,10 +155,10 @@ class Program
             System.Console.WriteLine($"Analyzing project: {projectPath}");
             System.Console.WriteLine();
 
-            var progress = new Progress<string>(step =>
+            Action<string, int, int> progress = (step, current, total) =>
             {
                 System.Console.WriteLine($"  {step}");
-            });
+            };
 
             var callGraph = await _analyzer.AnalyzeProjectAsync(
                 projectPath,
@@ -205,7 +205,7 @@ class Program
 
             var interfaceMappingsDict = ParseInterfaceMappings(interfaceMappings);
 
-            var syncWrappers = await _analyzer.FindSyncWrapperMethodsAsync(projectPath, externalSyncWrappers.ToList());
+            var syncWrappers = await _analyzer.FindSyncWrapperMethodsAsync(projectPath);
 
             if (syncWrappers.Count == 0)
             {
@@ -223,10 +223,10 @@ class Program
                 System.Console.WriteLine("Running async flooding analysis from sync wrappers...");
                 System.Console.WriteLine();
 
-                var progress = new Progress<string>(step =>
+                Action<string, int, int> progress = (step, current, total) =>
                 {
                     System.Console.WriteLine($"  {step}");
-                });
+                };
 
                 var callGraph = await _analyzer.AnalyzeProjectAsync(
                     projectPath,
@@ -234,7 +234,7 @@ class Program
                     progress);
 
                 // Set sync wrapper methods as root methods
-                var rootMethodIds = syncWrappers.Select(sw => sw.MethodId).ToList();
+                var rootMethodIds = syncWrappers.Select(sw => sw.MethodId).ToHashSet();
                 callGraph.RootAsyncMethods = rootMethodIds;
                 callGraph.SyncWrapperMethods = rootMethodIds;
 
@@ -344,14 +344,26 @@ class Program
                 callGraph.InterfaceMappings[mapping.Key] = mapping.Value;
             }
 
-            var transformer = new AsyncTransformer(externalSyncWrappers.ToList());
+            var transformer = new AsyncTransformer(_floodingAnalyzer);
 
-            var progress = new Progress<string>(step =>
+            Action<string, int, int> progress = (step, current, total) =>
             {
                 System.Console.WriteLine($"  {step}");
-            });
+            };
 
-            var result = await transformer.TransformProjectAsync(projectPath, callGraph, applyChanges, progress);
+            var result = await transformer.TransformProjectAsync(projectPath, callGraph, progress);
+
+            // Write transformed files to disk if applying changes
+            if (applyChanges && result.Success)
+            {
+                foreach (var file in result.ModifiedFiles)
+                {
+                    if (file.TransformedContent != file.OriginalContent)
+                    {
+                        await File.WriteAllTextAsync(file.FilePath, file.TransformedContent);
+                    }
+                }
+            }
 
             System.Console.WriteLine();
             PrintTransformationResult(result, applyChanges);
@@ -624,15 +636,15 @@ class Program
                 System.Console.ForegroundColor = ConsoleColor.Cyan;
                 System.Console.WriteLine($"  {file.FilePath}");
                 System.Console.ResetColor();
-                System.Console.WriteLine($"    Methods transformed: {file.TransformedMethods.Count}");
-                System.Console.WriteLine($"    Await keywords added: {file.AwaitLocations.Count}");
+                System.Console.WriteLine($"    Methods transformed: {file.MethodTransformations.Count}");
+                System.Console.WriteLine($"    Await keywords added: {file.MethodTransformations.Sum(m => m.AwaitAddedAtLines.Count)}");
 
-                if (file.TransformedMethods.Count > 0)
+                if (file.MethodTransformations.Count > 0)
                 {
                     System.Console.WriteLine("    Transformed methods:");
-                    foreach (var method in file.TransformedMethods)
+                    foreach (var method in file.MethodTransformations)
                     {
-                        System.Console.WriteLine($"      - {method}");
+                        System.Console.WriteLine($"      - {method.MethodName}");
                     }
                 }
                 System.Console.WriteLine();

@@ -8,12 +8,12 @@ namespace AsyncRewriter.Core.Models;
 public class TransformationResult
 {
     public bool Success { get; set; }
-    public List<string> Errors { get; set; } = new();
-    public List<string> Warnings { get; set; } = new();
-    public List<FileTransformation> ModifiedFiles { get; set; } = new();
+    public List<string> Errors { get; init; } = new();
+    public List<string> Warnings { get; init; } = new();
+    public List<FileTransformation> ModifiedFiles { get; init; } = new();
     public int TotalMethodsTransformed { get; set; }
     public int TotalCallSitesTransformed { get; set; }
-    public CallGraph? CallGraph { get; set; }
+    public CallGraph? CallGraph { get; init; }
 }
 
 /// <summary>
@@ -21,10 +21,10 @@ public class TransformationResult
 /// </summary>
 public class FileTransformation
 {
-    public string FilePath { get; set; } = string.Empty;
-    public string OriginalContent { get; set; } = string.Empty;
-    public string TransformedContent { get; set; } = string.Empty;
-    public List<MethodTransformation> MethodTransformations { get; set; } = new();
+    public string FilePath { get; init; } = string.Empty;
+    public string OriginalContent { get; init; } = string.Empty;
+    public string TransformedContent { get; init; } = string.Empty;
+    public List<MethodTransformation> MethodTransformations { get; init; } = new();
 }
 
 /// <summary>
@@ -32,11 +32,11 @@ public class FileTransformation
 /// </summary>
 public class MethodTransformation
 {
-    public string MethodName { get; set; } = string.Empty;
-    public string MethodSignature { get; set; } = string.Empty;
-    public int StartLine { get; set; }
-    public int EndLine { get; set; }
-    public string OriginalReturnType { get; set; } = string.Empty;
-    public string NewReturnType { get; set; } = string.Empty;
-    public List<int> AwaitAddedAtLines { get; set; } = new();
+    public string MethodName { get; init; } = string.Empty;
+    public string MethodSignature { get; init; } = string.Empty;
+    public int StartLine { get; init; }
+    public int EndLine { get; init; }
+    public string OriginalReturnType { get; init; } = string.Empty;
+    public string NewReturnType { get; init; } = string.Empty;
+    public List<int> AwaitAddedAtLines { get; init; } = new();
 }

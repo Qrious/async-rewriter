@@ -11,16 +11,16 @@ public class BaseTypeTransformation
     /// <summary>
     /// The full name of the class that needs its base type transformed
     /// </summary>
-    public string ContainingTypeName { get; set; } = string.Empty;
+    public string ContainingTypeName { get; init; } = string.Empty;
 
     /// <summary>
     /// The full name of the generic interface being implemented
     /// Example: "IMapper&lt;A, B&gt;"
     /// </summary>
-    public string InterfaceTypeName { get; set; } = string.Empty;
+    public string InterfaceTypeName { get; init; } = string.Empty;
 
     /// <summary>
     /// The index of the type argument that should be wrapped in Task&lt;&gt;
     /// </summary>
-    public int TypeArgumentIndex { get; set; }
+    public int TypeArgumentIndex { get; init; }
 }

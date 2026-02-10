@@ -26,7 +26,7 @@ public class AsyncFloodingAnalyzerTests
             ReturnType = "void",
             IsAsync = false
         };
-        callGraph.AddMethod(method);
+        callGraph.Methods.TryAdd(method.Id, method);
 
         var rootMethods = new HashSet<string> { method.Id };
 
@@ -51,7 +51,7 @@ public class AsyncFloodingAnalyzerTests
             ReturnType = "Task",
             IsAsync = true
         };
-        callGraph.AddMethod(method);
+        callGraph.Methods.TryAdd(method.Id, method);
 
         var rootMethods = new HashSet<string> { method.Id };
 
@@ -93,12 +93,12 @@ public class AsyncFloodingAnalyzerTests
             IsAsync = false
         };
 
-        callGraph.AddMethod(method1);
-        callGraph.AddMethod(method2);
-        callGraph.AddMethod(method3);
+        callGraph.Methods.TryAdd(method1.Id, method1);
+        callGraph.Methods.TryAdd(method2.Id, method2);
+        callGraph.Methods.TryAdd(method3.Id, method3);
 
         // Method1 -> Method2 -> Method3
-        callGraph.AddCall(new MethodCall
+        callGraph.Calls.Add(new MethodCall
         {
             CallerId = method1.Id,
             CalleeId = method2.Id,
@@ -106,7 +106,7 @@ public class AsyncFloodingAnalyzerTests
             CalleeSignature = "Method2()"
         });
 
-        callGraph.AddCall(new MethodCall
+        callGraph.Calls.Add(new MethodCall
         {
             CallerId = method2.Id,
             CalleeId = method3.Id,
@@ -161,13 +161,13 @@ public class AsyncFloodingAnalyzerTests
             IsAsync = false
         };
 
-        callGraph.AddMethod(caller);
-        callGraph.AddMethod(root1);
-        callGraph.AddMethod(root2);
+        callGraph.Methods.TryAdd(caller.Id, caller);
+        callGraph.Methods.TryAdd(root1.Id, root1);
+        callGraph.Methods.TryAdd(root2.Id, root2);
 
         // Caller -> Root1
         // Caller -> Root2
-        callGraph.AddCall(new MethodCall
+        callGraph.Calls.Add(new MethodCall
         {
             CallerId = caller.Id,
             CalleeId = root1.Id,
@@ -175,7 +175,7 @@ public class AsyncFloodingAnalyzerTests
             CalleeSignature = "Root1()"
         });
 
-        callGraph.AddCall(new MethodCall
+        callGraph.Calls.Add(new MethodCall
         {
             CallerId = caller.Id,
             CalleeId = root2.Id,
@@ -205,7 +205,7 @@ public class AsyncFloodingAnalyzerTests
             ReturnType = "void",
             IsAsync = false
         };
-        callGraph.AddMethod(method);
+        callGraph.Methods.TryAdd(method.Id, method);
 
         var rootMethods = new HashSet<string> { method.Id };
 
@@ -228,7 +228,7 @@ public class AsyncFloodingAnalyzerTests
             ReturnType = "int",
             IsAsync = false
         };
-        callGraph.AddMethod(method);
+        callGraph.Methods.TryAdd(method.Id, method);
 
         var rootMethods = new HashSet<string> { method.Id };
 
@@ -251,7 +251,7 @@ public class AsyncFloodingAnalyzerTests
             ReturnType = "Task",
             IsAsync = false
         };
-        callGraph.AddMethod(method);
+        callGraph.Methods.TryAdd(method.Id, method);
 
         var rootMethods = new HashSet<string> { method.Id };
 
@@ -274,7 +274,7 @@ public class AsyncFloodingAnalyzerTests
             ReturnType = "Task<string>",
             IsAsync = false
         };
-        callGraph.AddMethod(method);
+        callGraph.Methods.TryAdd(method.Id, method);
 
         var rootMethods = new HashSet<string> { method.Id };
 
@@ -307,8 +307,8 @@ public class AsyncFloodingAnalyzerTests
             IsAsync = false
         };
 
-        callGraph.AddMethod(caller);
-        callGraph.AddMethod(callee);
+        callGraph.Methods.TryAdd(caller.Id, caller);
+        callGraph.Methods.TryAdd(callee.Id, callee);
 
         var call = new MethodCall
         {
@@ -317,7 +317,7 @@ public class AsyncFloodingAnalyzerTests
             CallerSignature = "Caller()",
             CalleeSignature = "Callee()"
         };
-        callGraph.AddCall(call);
+        callGraph.Calls.Add(call);
 
         var rootMethods = new HashSet<string> { callee.Id };
 
@@ -353,8 +353,8 @@ public class AsyncFloodingAnalyzerTests
             RequiresAsyncTransformation = true
         };
 
-        callGraph.AddMethod(caller);
-        callGraph.AddMethod(callee);
+        callGraph.Methods.TryAdd(caller.Id, caller);
+        callGraph.Methods.TryAdd(callee.Id, callee);
 
         var call = new MethodCall
         {
@@ -366,7 +366,7 @@ public class AsyncFloodingAnalyzerTests
             FilePath = "test.cs",
             LineNumber = 10
         };
-        callGraph.AddCall(call);
+        callGraph.Calls.Add(call);
 
         callGraph.FloodedMethods = new HashSet<string> { caller.Id, callee.Id };
 
@@ -400,7 +400,7 @@ public class AsyncFloodingAnalyzerTests
             ReturnType = "List<string>",
             IsAsync = false
         };
-        callGraph.AddMethod(method);
+        callGraph.Methods.TryAdd(method.Id, method);
 
         var rootMethods = new HashSet<string> { method.Id };
 
@@ -423,7 +423,7 @@ public class AsyncFloodingAnalyzerTests
             ReturnType = "void",
             IsAsync = false
         };
-        callGraph.AddMethod(method);
+        callGraph.Methods.TryAdd(method.Id, method);
 
         var rootMethods = new HashSet<string>();
 
@@ -446,16 +446,16 @@ public class AsyncFloodingAnalyzerTests
         var right = new MethodNode { Id = "Right()", Name = "Right", ReturnType = "void", IsAsync = false };
         var bottom = new MethodNode { Id = "Bottom()", Name = "Bottom", ReturnType = "void", IsAsync = false };
 
-        callGraph.AddMethod(top);
-        callGraph.AddMethod(left);
-        callGraph.AddMethod(right);
-        callGraph.AddMethod(bottom);
+        callGraph.Methods.TryAdd(top.Id, top);
+        callGraph.Methods.TryAdd(left.Id, left);
+        callGraph.Methods.TryAdd(right.Id, right);
+        callGraph.Methods.TryAdd(bottom.Id, bottom);
 
         // Diamond: Top -> Left -> Bottom, Top -> Right -> Bottom
-        callGraph.AddCall(new MethodCall { CallerId = top.Id, CalleeId = left.Id, CallerSignature = "Top()", CalleeSignature = "Left()" });
-        callGraph.AddCall(new MethodCall { CallerId = top.Id, CalleeId = right.Id, CallerSignature = "Top()", CalleeSignature = "Right()" });
-        callGraph.AddCall(new MethodCall { CallerId = left.Id, CalleeId = bottom.Id, CallerSignature = "Left()", CalleeSignature = "Bottom()" });
-        callGraph.AddCall(new MethodCall { CallerId = right.Id, CalleeId = bottom.Id, CallerSignature = "Right()", CalleeSignature = "Bottom()" });
+        callGraph.Calls.Add(new MethodCall { CallerId = top.Id, CalleeId = left.Id, CallerSignature = "Top()", CalleeSignature = "Left()" });
+        callGraph.Calls.Add(new MethodCall { CallerId = top.Id, CalleeId = right.Id, CallerSignature = "Top()", CalleeSignature = "Right()" });
+        callGraph.Calls.Add(new MethodCall { CallerId = left.Id, CalleeId = bottom.Id, CallerSignature = "Left()", CalleeSignature = "Bottom()" });
+        callGraph.Calls.Add(new MethodCall { CallerId = right.Id, CalleeId = bottom.Id, CallerSignature = "Right()", CalleeSignature = "Bottom()" });
 
         var rootMethods = new HashSet<string> { bottom.Id };
 

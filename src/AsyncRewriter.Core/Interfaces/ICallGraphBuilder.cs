@@ -7,9 +7,9 @@ using AsyncRewriter.Core.Models;
 namespace AsyncRewriter.Core.Interfaces;
 
 /// <summary>
-/// Analyzes C# code to build a method call graph
+/// Builds a method call graph from C# code
 /// </summary>
-public interface ICallGraphAnalyzer
+public interface ICallGraphBuilder
 {
     /// <summary>
     /// Analyzes a single C# file and builds a call graph

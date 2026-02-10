@@ -13,16 +13,16 @@ public class InterfaceMapping
     /// The full name of the synchronous interface to be replaced
     /// Example: "MyNamespace.IRepository"
     /// </summary>
-    public string SyncInterfaceName { get; set; } = string.Empty;
+    public string SyncInterfaceName { get; init; } = string.Empty;
 
     /// <summary>
     /// The full name of the async interface to use as replacement
     /// Example: "MyNamespace.IRepositoryAsync"
     /// </summary>
-    public string AsyncInterfaceName { get; set; } = string.Empty;
+    public string AsyncInterfaceName { get; init; } = string.Empty;
 
     /// <summary>
     /// Optional: Additional namespaces that might need to be added when using the async interface
     /// </summary>
-    public List<string> RequiredNamespaces { get; set; } = new();
+    public List<string> RequiredNamespaces { get; init; } = new();
 }

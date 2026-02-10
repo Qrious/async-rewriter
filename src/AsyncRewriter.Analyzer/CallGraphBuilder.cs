@@ -14,10 +14,24 @@ using Microsoft.CodeAnalysis.MSBuild;
 namespace AsyncRewriter.Analyzer;
 
 /// <summary>
-/// Analyzes C# code using Roslyn to build a method call graph
+/// Builds a method call graph from C# code using Roslyn
 /// </summary>
-public class CallGraphAnalyzer : ICallGraphAnalyzer
+public class CallGraphBuilder : ICallGraphBuilder
 {
+    private readonly IMethodsResolver _methodsResolver;
+    private readonly IMethodCallsResolver _methodCallsResolver;
+
+    public CallGraphBuilder()
+        : this(new MethodsResolver(), new MethodCallsResolver())
+    {
+    }
+
+    public CallGraphBuilder(IMethodsResolver methodsResolver, IMethodCallsResolver methodCallsResolver)
+    {
+        _methodsResolver = methodsResolver;
+        _methodCallsResolver = methodCallsResolver;
+    }
+
     public async Task<CallGraph> AnalyzeFileAsync(string filePath, CancellationToken cancellationToken = default)
     {
         var sourceCode = await File.ReadAllTextAsync(filePath, cancellationToken);
@@ -88,7 +102,7 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
                 var semanticModel = compilation.GetSemanticModel(syntaxTree);
                 var root = await syntaxTree.GetRootAsync(ct);
 
-                AnalyzeSyntaxTree(root, semanticModel, syntaxTree.FilePath, callGraph);
+                await AnalyzeSyntaxTreeAsync(root, semanticModel, syntaxTree.FilePath, callGraph, ct);
 
                 var current = Interlocked.Increment(ref processed);
                 progressCallback?.Invoke(syntaxTree.FilePath, current, total);
@@ -164,7 +178,7 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
                     var semanticModel = compilation.GetSemanticModel(syntaxTree);
                     var root = await syntaxTree.GetRootAsync(ct);
 
-                    AnalyzeSyntaxTree(root, semanticModel, syntaxTree.FilePath, callGraph);
+                    await AnalyzeSyntaxTreeAsync(root, semanticModel, syntaxTree.FilePath, callGraph, ct);
 
                     var current = Interlocked.Increment(ref processed);
                     progressCallback?.Invoke(syntaxTree.FilePath, current, total);
@@ -203,7 +217,7 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
             ProjectName = "InlineAnalysis"
         };
 
-        AnalyzeSyntaxTree(root, semanticModel, fileName, callGraph);
+        await AnalyzeSyntaxTreeAsync(root, semanticModel, fileName, callGraph, cancellationToken);
 
         return callGraph;
     }
@@ -243,227 +257,37 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
         }
     }
 
-
-    private void AnalyzeSyntaxTree(SyntaxNode root, SemanticModel semanticModel, string filePath, CallGraph callGraph)
+    private async Task AnalyzeSyntaxTreeAsync(SyntaxNode root, SemanticModel semanticModel, string filePath, CallGraph callGraph, CancellationToken cancellationToken = default)
     {
-        // First pass: collect all method declarations
-        var methodDeclarations = root.DescendantNodes()
-            .OfType<MethodDeclarationSyntax>()
-            .ToList();
+        // First pass: resolve all method declarations
+        var methods = await _methodsResolver.ResolveMethodsAsync(root, semanticModel, filePath, cancellationToken);
 
-        // Process method declarations in parallel
-        Parallel.ForEach(
-            methodDeclarations,
-            new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
-            methodDecl =>
-            {
-                var methodSymbol = semanticModel.GetDeclaredSymbol(methodDecl);
-                if (methodSymbol == null) return;
-
-                var methodNode = CreateMethodNode(methodDecl, methodSymbol, filePath);
-                callGraph.AddMethod(methodNode);
-            });
-
-        // Collect interface method declarations
-        var interfaceDeclarations = root.DescendantNodes()
-            .OfType<InterfaceDeclarationSyntax>()
-            .ToList();
-
-        foreach (var interfaceDecl in interfaceDeclarations)
+        foreach (var (id, method) in methods)
         {
-            var interfaceSymbol = semanticModel.GetDeclaredSymbol(interfaceDecl);
-            if (interfaceSymbol == null) continue;
-
-            foreach (var member in interfaceDecl.Members.OfType<MethodDeclarationSyntax>())
-            {
-                var methodSymbol = semanticModel.GetDeclaredSymbol(member);
-                if (methodSymbol == null) continue;
-
-                var methodNode = CreateInterfaceMethodNode(member, methodSymbol, filePath);
-                callGraph.AddMethod(methodNode);
-            }
+            callGraph.Methods.AddOrUpdate(id, method, (key, existing) => method);
         }
 
-        // Second pass: analyze method calls in parallel
-        Parallel.ForEach(
-            methodDeclarations,
-            new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
-            methodDecl =>
-            {
-                var methodSymbol = semanticModel.GetDeclaredSymbol(methodDecl);
-                if (methodSymbol == null) return;
+        // Second pass: resolve all method calls
+        var calls = await _methodCallsResolver.ResolveCallsAsync(root, semanticModel, filePath, callGraph.Methods, cancellationToken);
 
-                var callerId = GetMethodId(methodSymbol);
-
-                // Find all invocation expressions in this method
-                var invocations = methodDecl.DescendantNodes()
-                    .OfType<InvocationExpressionSyntax>()
-                    .ToList();
-
-                foreach (var invocation in invocations)
-                {
-                    var invokedSymbol = semanticModel.GetSymbolInfo(invocation).Symbol as IMethodSymbol;
-                    if (invokedSymbol == null) continue;
-
-                    var calleeId = GetMethodId(invokedSymbol);
-
-                    // Create a method node for the callee if it doesn't exist
-                    // (this handles external method calls)
-                    if (!callGraph.Methods.ContainsKey(calleeId))
-                    {
-                        var calleeNode = CreateMethodNodeFromSymbol(invokedSymbol, "external");
-                        callGraph.AddMethod(calleeNode);
-                    }
-
-                    if (callGraph.SyncWrapperMethods.Contains(calleeId) &&
-                        callGraph.Methods.TryGetValue(calleeId, out var wrapperMethod))
-                    {
-                        wrapperMethod.IsSyncWrapper = true;
-                    }
-
-                    var methodCall = new MethodCall
-                    {
-                        CallerId = callerId,
-                        CalleeId = calleeId,
-                        CallerSignature = GetMethodSignature(methodSymbol),
-                        CalleeSignature = GetMethodSignature(invokedSymbol),
-                        LineNumber = invocation.GetLocation().GetLineSpan().StartLinePosition.Line + 1,
-                        FilePath = filePath
-                    };
-
-                    callGraph.AddCall(methodCall);
-                }
-            });
-    }
-
-    private MethodNode CreateMethodNode(MethodDeclarationSyntax methodDecl, IMethodSymbol methodSymbol, string filePath)
-    {
-        var lineSpan = methodDecl.GetLocation().GetLineSpan();
-
-        // Find interface methods that this method implements
-        var implementedInterfaces = new List<string>();
-
-        // Add explicit interface implementations
-        foreach (var explicitImpl in methodSymbol.ExplicitInterfaceImplementations)
+        // Add discovered external methods
+        if (_methodCallsResolver is MethodCallsResolver resolver)
         {
-            implementedInterfaces.Add(GetMethodId(explicitImpl));
-        }
-
-        // Check for implicit interface implementations
-        var containingType = methodSymbol.ContainingType;
-        if (containingType != null)
-        {
-            foreach (var iface in containingType.AllInterfaces)
+            foreach (var (id, method) in resolver.DiscoveredExternalMethods)
             {
-                foreach (var interfaceMember in iface.GetMembers().OfType<IMethodSymbol>())
+                callGraph.Methods.TryAdd(id, method);
+
+                if (callGraph.SyncWrapperMethods.Contains(id))
                 {
-                    var implementation = containingType.FindImplementationForInterfaceMember(interfaceMember);
-                    if (SymbolEqualityComparer.Default.Equals(implementation, methodSymbol))
-                    {
-                        implementedInterfaces.Add(GetMethodId(interfaceMember));
-                    }
+                    method.IsSyncWrapper = true;
                 }
             }
         }
 
-        return new MethodNode
+        foreach (var call in calls)
         {
-            Id = GetMethodId(methodSymbol),
-            Name = methodSymbol.Name,
-            ContainingType = methodSymbol.ContainingType?.ToDisplayString() ?? "",
-            ContainingNamespace = methodSymbol.ContainingNamespace?.ToDisplayString() ?? "",
-            ReturnType = methodSymbol.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-            Parameters = methodSymbol.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
-            FilePath = filePath,
-            StartLine = lineSpan.StartLinePosition.Line + 1,
-            EndLine = lineSpan.EndLinePosition.Line + 1,
-            IsAsync = methodSymbol.IsAsync,
-            Signature = GetMethodSignature(methodSymbol),
-            SourceCode = methodDecl.ToFullString(),
-            ImplementsInterfaceMethods = implementedInterfaces
-        };
-    }
-
-    private MethodNode CreateMethodNodeFromSymbol(IMethodSymbol methodSymbol, string filePath)
-    {
-        return new MethodNode
-        {
-            Id = GetMethodId(methodSymbol),
-            Name = methodSymbol.Name,
-            ContainingType = methodSymbol.ContainingType?.ToDisplayString() ?? "",
-            ContainingNamespace = methodSymbol.ContainingNamespace?.ToDisplayString() ?? "",
-            ReturnType = methodSymbol.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-            Parameters = methodSymbol.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
-            FilePath = filePath,
-            IsAsync = methodSymbol.IsAsync,
-            Signature = GetMethodSignature(methodSymbol)
-        };
-    }
-
-    private MethodNode CreateInterfaceMethodNode(MethodDeclarationSyntax methodDecl, IMethodSymbol methodSymbol, string filePath)
-    {
-        var lineSpan = methodDecl.GetLocation().GetLineSpan();
-
-        // Check if the return type is a covariant (out) type parameter of a generic interface
-        // Only covariant type parameters can be safely transformed by changing the type argument
-        var isReturnTypeParameter = false;
-        int? returnTypeParameterIndex = null;
-
-        if (methodSymbol.ReturnType is ITypeParameterSymbol typeParam &&
-            methodSymbol.ContainingType is INamedTypeSymbol containingInterface &&
-            containingInterface.IsGenericType)
-        {
-            // Find the index of this type parameter in the interface's type parameters
-            for (int i = 0; i < containingInterface.TypeParameters.Length; i++)
-            {
-                var interfaceTypeParam = containingInterface.TypeParameters[i];
-                if (SymbolEqualityComparer.Default.Equals(interfaceTypeParam, typeParam))
-                {
-                    // Only allow this optimization for covariant (out) type parameters
-                    if (interfaceTypeParam.Variance == VarianceKind.Out)
-                    {
-                        isReturnTypeParameter = true;
-                        returnTypeParameterIndex = i;
-                    }
-                    break;
-                }
-            }
+            callGraph.Calls.Add(call);
         }
-
-        return new MethodNode
-        {
-            Id = GetMethodId(methodSymbol),
-            Name = methodSymbol.Name,
-            ContainingType = methodSymbol.ContainingType?.ToDisplayString() ?? "",
-            ContainingNamespace = methodSymbol.ContainingNamespace?.ToDisplayString() ?? "",
-            ReturnType = methodSymbol.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-            Parameters = methodSymbol.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
-            FilePath = filePath,
-            StartLine = lineSpan.StartLinePosition.Line + 1,
-            EndLine = lineSpan.EndLinePosition.Line + 1,
-            IsAsync = false, // Interface methods cannot have async modifier
-            IsInterfaceMethod = true,
-            IsReturnTypeParameter = isReturnTypeParameter,
-            ReturnTypeParameterIndex = returnTypeParameterIndex,
-            Signature = GetMethodSignature(methodSymbol),
-            SourceCode = methodDecl.ToFullString()
-        };
-    }
-
-    private string GetMethodId(IMethodSymbol methodSymbol)
-    {
-        // Use OriginalDefinition to get the uninstantiated generic method
-        // This ensures Query<User> and Query<T> have the same ID
-        var originalMethod = methodSymbol.OriginalDefinition;
-        return $"{originalMethod.ContainingType?.ToDisplayString()}.{GetMethodSignature(originalMethod)}";
-    }
-
-    private string GetMethodSignature(IMethodSymbol methodSymbol)
-    {
-        // Use OriginalDefinition to get uninstantiated parameter types
-        var originalMethod = methodSymbol.OriginalDefinition;
-        var parameters = string.Join(", ", originalMethod.Parameters.Select(p => p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)));
-        return $"{originalMethod.Name}({parameters})";
     }
 
     public Task<List<SyncWrapperMethod>> FindSyncWrapperMethodsAsync(string projectPath, CancellationToken cancellationToken = default)
@@ -606,13 +430,13 @@ public class CallGraphAnalyzer : ICallGraphAnalyzer
                 var lineSpan = methodDecl.GetLocation().GetLineSpan();
                 results.Add(new SyncWrapperMethod
                 {
-                    MethodId = GetMethodId(methodSymbol),
+                    MethodId = MethodsResolver.GetMethodId(methodSymbol),
                     Name = methodSymbol.Name,
                     ContainingType = methodSymbol.ContainingType?.ToDisplayString() ?? "",
                     FilePath = filePath,
                     StartLine = lineSpan.StartLinePosition.Line + 1,
                     ReturnType = methodSymbol.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-                    Signature = GetMethodSignature(methodSymbol),
+                    Signature = MethodsResolver.GetMethodSignature(methodSymbol),
                     PatternDescription = syncWrapperInfo
                 });
             }

@@ -7,16 +7,16 @@ namespace AsyncRewriter.Core.Models;
 /// </summary>
 public class AsyncTransformationInfo
 {
-    public string MethodId { get; set; } = string.Empty;
-    public string OriginalReturnType { get; set; } = string.Empty;
-    public string NewReturnType { get; set; } = string.Empty;
-    public bool NeedsAsyncKeyword { get; set; }
-    public List<CallSiteTransformation> CallSitesToTransform { get; set; } = new();
+    public string MethodId { get; init; } = string.Empty;
+    public string OriginalReturnType { get; init; } = string.Empty;
+    public string NewReturnType { get; init; } = string.Empty;
+    public bool NeedsAsyncKeyword { get; init; }
+    public List<CallSiteTransformation> CallSitesToTransform { get; init; } = new();
 
     /// <summary>
     /// Interface method IDs that this method implements (for adding await to interface calls)
     /// </summary>
-    public List<string> ImplementsInterfaceMethods { get; set; } = new();
+    public List<string> ImplementsInterfaceMethods { get; init; } = new();
 }
 
 /// <summary>
@@ -24,9 +24,9 @@ public class AsyncTransformationInfo
 /// </summary>
 public class CallSiteTransformation
 {
-    public string FilePath { get; set; } = string.Empty;
-    public int LineNumber { get; set; }
-    public string OriginalCallExpression { get; set; } = string.Empty;
-    public string NewCallExpression { get; set; } = string.Empty;
-    public string CalledMethodSignature { get; set; } = string.Empty;
+    public string FilePath { get; init; } = string.Empty;
+    public int LineNumber { get; init; }
+    public string OriginalCallExpression { get; init; } = string.Empty;
+    public string NewCallExpression { get; init; } = string.Empty;
+    public string CalledMethodSignature { get; init; } = string.Empty;
 }

@@ -7,13 +7,13 @@ namespace AsyncRewriter.IntegrationTests;
 
 public class InterfaceImplementationTests
 {
-    private readonly CallGraphAnalyzer _callGraphAnalyzer;
+    private readonly CallGraphBuilder _callGraphAnalyzer;
     private readonly AsyncFloodingAnalyzer _floodingAnalyzer;
     private readonly AsyncTransformer _transformer;
 
     public InterfaceImplementationTests()
     {
-        _callGraphAnalyzer = new CallGraphAnalyzer();
+        _callGraphAnalyzer = new CallGraphBuilder();
         _floodingAnalyzer = new AsyncFloodingAnalyzer();
         _transformer = new AsyncTransformer(_floodingAnalyzer);
     }

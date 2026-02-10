@@ -181,15 +181,6 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
             if (!callGraph.Methods.TryGetValue(methodId, out var method))
                 continue;
 
-            var transformation = new AsyncTransformationInfo
-            {
-                MethodId = methodId,
-                OriginalReturnType = method.ReturnType,
-                NewReturnType = method.AsyncReturnType ?? DetermineAsyncReturnType(method.ReturnType),
-                NeedsAsyncKeyword = true,
-                ImplementsInterfaceMethods = new List<string>(method.ImplementsInterfaceMethods)
-            };
-
             // Find all call sites in this method that need await
             var callSites = callGraph.Calls
                 .Where(c => c.CallerId == methodId && c.RequiresAwait)
@@ -203,7 +194,16 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                 })
                 .ToList();
 
-            transformation.CallSitesToTransform = callSites;
+            var transformation = new AsyncTransformationInfo
+            {
+                MethodId = methodId,
+                OriginalReturnType = method.ReturnType,
+                NewReturnType = method.AsyncReturnType ?? DetermineAsyncReturnType(method.ReturnType),
+                NeedsAsyncKeyword = true,
+                ImplementsInterfaceMethods = new List<string>(method.ImplementsInterfaceMethods),
+                CallSitesToTransform = callSites
+            };
+
             transformations.Add(transformation);
         }
 

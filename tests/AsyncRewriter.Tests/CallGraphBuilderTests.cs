@@ -5,13 +5,13 @@ using Xunit;
 
 namespace AsyncRewriter.Tests;
 
-public class CallGraphAnalyzerTests
+public class CallGraphBuilderTests
 {
-    private readonly CallGraphAnalyzer _analyzer;
+    private readonly CallGraphBuilder _analyzer;
 
-    public CallGraphAnalyzerTests()
+    public CallGraphBuilderTests()
     {
-        _analyzer = new CallGraphAnalyzer();
+        _analyzer = new CallGraphBuilder();
     }
 
     [Fact]

@@ -7,13 +7,13 @@ namespace AsyncRewriter.Core.Models;
 /// </summary>
 public class MethodCall
 {
-    public string Id { get; set; } = Guid.NewGuid().ToString();
-    public string CallerId { get; set; } = string.Empty;
-    public string CalleeId { get; set; } = string.Empty;
-    public string CallerSignature { get; set; } = string.Empty;
-    public string CalleeSignature { get; set; } = string.Empty;
-    public int LineNumber { get; set; }
-    public string FilePath { get; set; } = string.Empty;
+    public string Id { get; init; } = Guid.NewGuid().ToString();
+    public string CallerId { get; init; } = string.Empty;
+    public string CalleeId { get; init; } = string.Empty;
+    public string CallerSignature { get; init; } = string.Empty;
+    public string CalleeSignature { get; init; } = string.Empty;
+    public int LineNumber { get; init; }
+    public string FilePath { get; init; } = string.Empty;
 
     /// <summary>
     /// Indicates if this call needs await keyword after transformation
