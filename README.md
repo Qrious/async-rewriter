@@ -27,9 +27,11 @@ The solution is divided into several projects:
 
 ## Prerequisites
 
-- .NET 8.0 SDK
+- .NET 10.0 SDK
 - Neo4j 5.15.0 or later
 - Docker and Docker Compose (optional, for running Neo4j)
+
+**New to the project?** See [COPILOT_SETUP.md](COPILOT_SETUP.md) for comprehensive setup instructions including .NET 10 installation, Docker setup, IDE configuration, and GitHub Copilot integration.
 
 ## Getting Started
 
