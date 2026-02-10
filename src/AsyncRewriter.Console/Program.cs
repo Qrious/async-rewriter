@@ -5,6 +5,7 @@ using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
 using AsyncRewriter.Analyzer;
 using AsyncRewriter.Transformation;
+using AsyncRewriter.Neo4j;
 using Microsoft.Build.Locator;
 
 namespace AsyncRewriter.Console;
@@ -139,11 +140,38 @@ class Program
             await ExplainMethodAsync(callGraphPath, methodId);
         }, explainCallGraphPathArgument, explainMethodIdArgument);
 
+        // Store-neo4j command
+        var storeNeo4jCommand = new Command("store-neo4j", "Store a call graph JSON file into Neo4j for visual inspection");
+        var neo4jCallGraphPathArgument = new Argument<string>("call-graph-path", "The path to the call graph JSON file");
+        var neo4jUriOption = new Option<string>(
+            aliases: new[] { "--uri", "-u" },
+            description: "Neo4j Bolt URI",
+            getDefaultValue: () => "bolt://localhost:7687");
+        var neo4jUserOption = new Option<string>(
+            aliases: new[] { "--neo4j-user" },
+            description: "Neo4j username",
+            getDefaultValue: () => "neo4j");
+        var neo4jPasswordOption = new Option<string>(
+            aliases: new[] { "--neo4j-password" },
+            description: "Neo4j password",
+            getDefaultValue: () => "asyncrewriter");
+
+        storeNeo4jCommand.AddArgument(neo4jCallGraphPathArgument);
+        storeNeo4jCommand.AddOption(neo4jUriOption);
+        storeNeo4jCommand.AddOption(neo4jUserOption);
+        storeNeo4jCommand.AddOption(neo4jPasswordOption);
+
+        storeNeo4jCommand.SetHandler(async (callGraphPath, uri, user, password) =>
+        {
+            await StoreInNeo4jAsync(callGraphPath, uri, user, password);
+        }, neo4jCallGraphPathArgument, neo4jUriOption, neo4jUserOption, neo4jPasswordOption);
+
         rootCommand.AddCommand(analyzeCommand);
         rootCommand.AddCommand(findSyncWrappersCommand);
         rootCommand.AddCommand(transformCommand);
         rootCommand.AddCommand(searchCommand);
         rootCommand.AddCommand(explainCommand);
+        rootCommand.AddCommand(storeNeo4jCommand);
 
         return await rootCommand.InvokeAsync(args);
     }
@@ -531,6 +559,74 @@ class Program
         {
             System.Console.ForegroundColor = ConsoleColor.Red;
             System.Console.WriteLine($"Error explaining method: {ex.Message}");
+            System.Console.ResetColor();
+        }
+    }
+
+    static async Task StoreInNeo4jAsync(string callGraphPath, string uri, string user, string password)
+    {
+        try
+        {
+            if (!File.Exists(callGraphPath))
+            {
+                System.Console.ForegroundColor = ConsoleColor.Red;
+                System.Console.WriteLine($"Error: Call graph file not found: {callGraphPath}");
+                System.Console.ResetColor();
+                return;
+            }
+
+            System.Console.WriteLine($"Loading call graph from: {callGraphPath}");
+
+            var json = await File.ReadAllTextAsync(callGraphPath);
+            var callGraph = JsonSerializer.Deserialize<CallGraph>(json);
+
+            if (callGraph == null)
+            {
+                System.Console.ForegroundColor = ConsoleColor.Red;
+                System.Console.WriteLine("Error: Failed to deserialize call graph");
+                System.Console.ResetColor();
+                return;
+            }
+
+            System.Console.WriteLine($"Connecting to Neo4j at {uri}...");
+
+            await using var repository = new CallGraphRepository(uri, user, password);
+
+            System.Console.WriteLine("Ensuring indexes...");
+            await repository.EnsureIndexesAsync();
+
+            System.Console.WriteLine($"Storing call graph ({callGraph.Methods.Count} methods, {callGraph.Calls.Count} calls)...");
+            System.Console.WriteLine();
+
+            await repository.StoreCallGraphAsync(callGraph, (phase, current, total) =>
+            {
+                System.Console.WriteLine($"  {phase}: {current}/{total}");
+            });
+
+            System.Console.WriteLine();
+            System.Console.ForegroundColor = ConsoleColor.Green;
+            System.Console.WriteLine($"✓ Call graph stored in Neo4j successfully!");
+            System.Console.WriteLine();
+            System.Console.WriteLine("Open the Neo4j Browser to visualize:");
+            System.Console.WriteLine("  http://localhost:7474");
+            System.Console.WriteLine();
+            System.Console.WriteLine("Example Cypher queries:");
+            System.Console.WriteLine("  // Show all methods and calls");
+            System.Console.WriteLine("  MATCH (m:Method)-[r:CALLS]->(n:Method) RETURN m, r, n LIMIT 100");
+            System.Console.WriteLine();
+            System.Console.WriteLine("  // Methods requiring async transformation");
+            System.Console.WriteLine("  MATCH (m:Method {requiresAsyncTransformation: true}) RETURN m");
+            System.Console.WriteLine();
+            System.Console.WriteLine("  // Call chain from a specific method");
+            System.Console.WriteLine("  MATCH path = (m:Method)-[:CALLS*]->(n:Method)");
+            System.Console.WriteLine("  WHERE m.name = 'YourMethod' RETURN path LIMIT 25");
+            System.Console.ResetColor();
+        }
+        catch (Exception ex)
+        {
+            System.Console.ForegroundColor = ConsoleColor.Red;
+            System.Console.WriteLine($"Error: {ex.Message}");
+            System.Console.WriteLine(ex.StackTrace);
             System.Console.ResetColor();
         }
     }
