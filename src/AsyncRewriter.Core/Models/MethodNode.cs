@@ -5,7 +5,7 @@ namespace AsyncRewriter.Core.Models;
 /// <summary>
 /// Represents a method node in the call graph
 /// </summary>
-public class MethodNode
+public record MethodNode
 {
     public string Id { get; init; } = string.Empty;
     public string Name { get; init; } = string.Empty;
@@ -25,22 +25,22 @@ public class MethodNode
     /// <summary>
     /// Indicates if this method needs to be converted to async
     /// </summary>
-    public bool RequiresAsyncTransformation { get; set; }
+    public bool RequiresAsyncTransformation { get; init; }
 
     /// <summary>
     /// Method that caused this method to require async propagation
     /// </summary>
-    public string? AsyncPropagationSourceMethodId { get; set; }
+    public string? AsyncPropagationSourceMethodId { get; init; }
 
     /// <summary>
     /// Indicates this method is a sync wrapper around async code
     /// </summary>
-    public bool IsSyncWrapper { get; set; }
+    public bool IsSyncWrapper { get; init; }
 
     /// <summary>
     /// The new return type after async transformation (e.g., Task<T>)
     /// </summary>
-    public string? AsyncReturnType { get; set; }
+    public string? AsyncReturnType { get; init; }
 
     /// <summary>
     /// Full method signature

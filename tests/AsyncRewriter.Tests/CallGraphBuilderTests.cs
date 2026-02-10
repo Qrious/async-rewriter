@@ -130,9 +130,9 @@ namespace TestNamespace
 
         // Assert
         callGraph.Methods.Should().HaveCount(2);
-        callGraph.Calls.Should().ContainSingle();
+        callGraph.Calls.Values.Should().ContainSingle();
 
-        var call = callGraph.Calls.First();
+        var call = callGraph.Calls.Values.First();
         call.CallerSignature.Should().Be("CallerMethod()");
         call.CalleeSignature.Should().Be("CalleeMethod()");
     }
@@ -169,13 +169,13 @@ namespace TestNamespace
 
         // Assert
         callGraph.Methods.Should().HaveCount(3);
-        callGraph.Calls.Should().HaveCount(2);
+        callGraph.Calls.Values.Should().HaveCount(2);
 
-        var call1 = callGraph.Calls.FirstOrDefault(c => c.CallerSignature == "Method1()");
+        var call1 = callGraph.Calls.Values.FirstOrDefault(c => c.CallerSignature == "Method1()");
         call1.Should().NotBeNull();
         call1!.CalleeSignature.Should().Be("Method2()");
 
-        var call2 = callGraph.Calls.FirstOrDefault(c => c.CallerSignature == "Method2()");
+        var call2 = callGraph.Calls.Values.FirstOrDefault(c => c.CallerSignature == "Method2()");
         call2.Should().NotBeNull();
         call2!.CalleeSignature.Should().Be("Method3()");
     }
@@ -209,9 +209,9 @@ namespace TestNamespace
 
         // Assert
         callGraph.Methods.Should().HaveCount(4);
-        callGraph.Calls.Should().HaveCount(3);
+        callGraph.Calls.Values.Should().HaveCount(3);
 
-        var callsFromCaller = callGraph.Calls.Where(c => c.CallerSignature == "CallerMethod()");
+        var callsFromCaller = callGraph.Calls.Values.Where(c => c.CallerSignature == "CallerMethod()");
         callsFromCaller.Should().HaveCount(3);
     }
 
@@ -275,7 +275,7 @@ namespace TestNamespace
         method1!.StartLine.Should().BeGreaterThan(0);
         method1.EndLine.Should().BeGreaterOrEqualTo(method1.StartLine);
 
-        var call = callGraph.Calls.First();
+        var call = callGraph.Calls.Values.First();
         call.LineNumber.Should().BeGreaterThan(0);
     }
 
@@ -362,9 +362,9 @@ namespace TestNamespace
         var callGraph = await _analyzer.AnalyzeSourceAsync(sourceCode);
 
         // Assert
-        callGraph.Calls.Should().ContainSingle();
+        callGraph.Calls.Values.Should().ContainSingle();
 
-        var call = callGraph.Calls.First();
+        var call = callGraph.Calls.Values.First();
         call.CalleeSignature.Should().Be("CalleeMethod(int, string)");
     }
 
@@ -390,9 +390,9 @@ namespace TestNamespace
 
         // Assert
         callGraph.Methods.Should().ContainSingle();
-        callGraph.Calls.Should().ContainSingle();
+        callGraph.Calls.Values.Should().ContainSingle();
 
-        var call = callGraph.Calls.First();
+        var call = callGraph.Calls.Values.First();
         call.CallerSignature.Should().Be(call.CalleeSignature);
         call.CalleeSignature.Should().Be("Factorial(int)");
     }
@@ -415,6 +415,6 @@ namespace TestNamespace
         // Assert
         callGraph.Should().NotBeNull();
         callGraph.Methods.Should().BeEmpty();
-        callGraph.Calls.Should().BeEmpty();
+        callGraph.Calls.Values.Should().BeEmpty();
     }
 }

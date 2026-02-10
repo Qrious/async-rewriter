@@ -35,8 +35,9 @@ public class AsyncFloodingAnalyzerTests
 
         // Assert
         result.FloodedMethods.Should().Contain(method.Id);
-        method.RequiresAsyncTransformation.Should().BeTrue();
-        method.AsyncReturnType.Should().Be("Task");
+        var updatedMethod = result.Methods[method.Id];
+        updatedMethod.RequiresAsyncTransformation.Should().BeTrue();
+        updatedMethod.AsyncReturnType.Should().Be("Task");
     }
 
     [Fact]
@@ -60,7 +61,8 @@ public class AsyncFloodingAnalyzerTests
 
         // Assert
         result.FloodedMethods.Should().NotContain(method.Id);
-        method.RequiresAsyncTransformation.Should().BeFalse();
+        var updatedMethod = result.Methods[method.Id];
+        updatedMethod.RequiresAsyncTransformation.Should().BeFalse();
     }
 
     [Fact]
@@ -98,21 +100,23 @@ public class AsyncFloodingAnalyzerTests
         callGraph.Methods.TryAdd(method3.Id, method3);
 
         // Method1 -> Method2 -> Method3
-        callGraph.Calls.Add(new MethodCall
+        var call1 = new MethodCall
         {
             CallerId = method1.Id,
             CalleeId = method2.Id,
             CallerSignature = "Method1()",
             CalleeSignature = "Method2()"
-        });
+        };
+        callGraph.Calls[call1.Id] = call1;
 
-        callGraph.Calls.Add(new MethodCall
+        var call2 = new MethodCall
         {
             CallerId = method2.Id,
             CalleeId = method3.Id,
             CallerSignature = "Method2()",
             CalleeSignature = "Method3()"
-        });
+        };
+        callGraph.Calls[call2.Id] = call2;
 
         // Root is Method3 (leaf)
         var rootMethods = new HashSet<string> { method3.Id };
@@ -126,9 +130,9 @@ public class AsyncFloodingAnalyzerTests
         result.FloodedMethods.Should().Contain(method2.Id);
         result.FloodedMethods.Should().Contain(method3.Id);
 
-        method1.RequiresAsyncTransformation.Should().BeTrue();
-        method2.RequiresAsyncTransformation.Should().BeTrue();
-        method3.RequiresAsyncTransformation.Should().BeTrue();
+        result.Methods[method1.Id].RequiresAsyncTransformation.Should().BeTrue();
+        result.Methods[method2.Id].RequiresAsyncTransformation.Should().BeTrue();
+        result.Methods[method3.Id].RequiresAsyncTransformation.Should().BeTrue();
     }
 
     [Fact]
@@ -167,21 +171,23 @@ public class AsyncFloodingAnalyzerTests
 
         // Caller -> Root1
         // Caller -> Root2
-        callGraph.Calls.Add(new MethodCall
+        var call1 = new MethodCall
         {
             CallerId = caller.Id,
             CalleeId = root1.Id,
             CallerSignature = "Caller()",
             CalleeSignature = "Root1()"
-        });
+        };
+        callGraph.Calls[call1.Id] = call1;
 
-        callGraph.Calls.Add(new MethodCall
+        var call2 = new MethodCall
         {
             CallerId = caller.Id,
             CalleeId = root2.Id,
             CallerSignature = "Caller()",
             CalleeSignature = "Root2()"
-        });
+        };
+        callGraph.Calls[call2.Id] = call2;
 
         var rootMethods = new HashSet<string> { root1.Id, root2.Id };
 
@@ -190,7 +196,7 @@ public class AsyncFloodingAnalyzerTests
 
         // Assert
         result.FloodedMethods.Should().HaveCount(3);
-        caller.RequiresAsyncTransformation.Should().BeTrue();
+        result.Methods[caller.Id].RequiresAsyncTransformation.Should().BeTrue();
     }
 
     [Fact]
@@ -210,10 +216,10 @@ public class AsyncFloodingAnalyzerTests
         var rootMethods = new HashSet<string> { method.Id };
 
         // Act
-        await _analyzer.AnalyzeFloodingAsync(callGraph, rootMethods);
+        var result = await _analyzer.AnalyzeFloodingAsync(callGraph, rootMethods);
 
         // Assert
-        method.AsyncReturnType.Should().Be("Task");
+        result.Methods[method.Id].AsyncReturnType.Should().Be("Task");
     }
 
     [Fact]
@@ -233,10 +239,10 @@ public class AsyncFloodingAnalyzerTests
         var rootMethods = new HashSet<string> { method.Id };
 
         // Act
-        await _analyzer.AnalyzeFloodingAsync(callGraph, rootMethods);
+        var result = await _analyzer.AnalyzeFloodingAsync(callGraph, rootMethods);
 
         // Assert
-        method.AsyncReturnType.Should().Be("Task<int>");
+        result.Methods[method.Id].AsyncReturnType.Should().Be("Task<int>");
     }
 
     [Fact]
@@ -256,10 +262,10 @@ public class AsyncFloodingAnalyzerTests
         var rootMethods = new HashSet<string> { method.Id };
 
         // Act
-        await _analyzer.AnalyzeFloodingAsync(callGraph, rootMethods);
+        var result = await _analyzer.AnalyzeFloodingAsync(callGraph, rootMethods);
 
         // Assert
-        method.AsyncReturnType.Should().Be("Task");
+        result.Methods[method.Id].AsyncReturnType.Should().Be("Task");
     }
 
     [Fact]
@@ -279,10 +285,10 @@ public class AsyncFloodingAnalyzerTests
         var rootMethods = new HashSet<string> { method.Id };
 
         // Act
-        await _analyzer.AnalyzeFloodingAsync(callGraph, rootMethods);
+        var result = await _analyzer.AnalyzeFloodingAsync(callGraph, rootMethods);
 
         // Assert
-        method.AsyncReturnType.Should().Be("Task<string>");
+        result.Methods[method.Id].AsyncReturnType.Should().Be("Task<string>");
     }
 
     [Fact]
@@ -317,15 +323,15 @@ public class AsyncFloodingAnalyzerTests
             CallerSignature = "Caller()",
             CalleeSignature = "Callee()"
         };
-        callGraph.Calls.Add(call);
+        callGraph.Calls[call.Id] = call;
 
         var rootMethods = new HashSet<string> { callee.Id };
 
         // Act
-        await _analyzer.AnalyzeFloodingAsync(callGraph, rootMethods);
+        var result = await _analyzer.AnalyzeFloodingAsync(callGraph, rootMethods);
 
         // Assert
-        call.RequiresAwait.Should().BeTrue();
+        result.Calls[call.Id].RequiresAwait.Should().BeTrue();
     }
 
     [Fact]
@@ -366,9 +372,9 @@ public class AsyncFloodingAnalyzerTests
             FilePath = "test.cs",
             LineNumber = 10
         };
-        callGraph.Calls.Add(call);
+        callGraph.Calls[call.Id] = call;
 
-        callGraph.FloodedMethods = new HashSet<string> { caller.Id, callee.Id };
+        callGraph.FloodedMethods.UnionWith(new[] { caller.Id, callee.Id });
 
         // Act
         var transformations = await _analyzer.GetTransformationInfoAsync(callGraph);
@@ -405,10 +411,10 @@ public class AsyncFloodingAnalyzerTests
         var rootMethods = new HashSet<string> { method.Id };
 
         // Act
-        await _analyzer.AnalyzeFloodingAsync(callGraph, rootMethods);
+        var result = await _analyzer.AnalyzeFloodingAsync(callGraph, rootMethods);
 
         // Assert
-        method.AsyncReturnType.Should().Be("Task<List<string>>");
+        result.Methods[method.Id].AsyncReturnType.Should().Be("Task<List<string>>");
     }
 
     [Fact]
@@ -432,7 +438,7 @@ public class AsyncFloodingAnalyzerTests
 
         // Assert
         result.FloodedMethods.Should().BeEmpty();
-        method.RequiresAsyncTransformation.Should().BeFalse();
+        result.Methods[method.Id].RequiresAsyncTransformation.Should().BeFalse();
     }
 
     [Fact]
@@ -452,10 +458,14 @@ public class AsyncFloodingAnalyzerTests
         callGraph.Methods.TryAdd(bottom.Id, bottom);
 
         // Diamond: Top -> Left -> Bottom, Top -> Right -> Bottom
-        callGraph.Calls.Add(new MethodCall { CallerId = top.Id, CalleeId = left.Id, CallerSignature = "Top()", CalleeSignature = "Left()" });
-        callGraph.Calls.Add(new MethodCall { CallerId = top.Id, CalleeId = right.Id, CallerSignature = "Top()", CalleeSignature = "Right()" });
-        callGraph.Calls.Add(new MethodCall { CallerId = left.Id, CalleeId = bottom.Id, CallerSignature = "Left()", CalleeSignature = "Bottom()" });
-        callGraph.Calls.Add(new MethodCall { CallerId = right.Id, CalleeId = bottom.Id, CallerSignature = "Right()", CalleeSignature = "Bottom()" });
+        var c1 = new MethodCall { CallerId = top.Id, CalleeId = left.Id, CallerSignature = "Top()", CalleeSignature = "Left()" };
+        var c2 = new MethodCall { CallerId = top.Id, CalleeId = right.Id, CallerSignature = "Top()", CalleeSignature = "Right()" };
+        var c3 = new MethodCall { CallerId = left.Id, CalleeId = bottom.Id, CallerSignature = "Left()", CalleeSignature = "Bottom()" };
+        var c4 = new MethodCall { CallerId = right.Id, CalleeId = bottom.Id, CallerSignature = "Right()", CalleeSignature = "Bottom()" };
+        callGraph.Calls[c1.Id] = c1;
+        callGraph.Calls[c2.Id] = c2;
+        callGraph.Calls[c3.Id] = c3;
+        callGraph.Calls[c4.Id] = c4;
 
         var rootMethods = new HashSet<string> { bottom.Id };
 
@@ -464,9 +474,9 @@ public class AsyncFloodingAnalyzerTests
 
         // Assert
         result.FloodedMethods.Should().HaveCount(4);
-        top.RequiresAsyncTransformation.Should().BeTrue();
-        left.RequiresAsyncTransformation.Should().BeTrue();
-        right.RequiresAsyncTransformation.Should().BeTrue();
-        bottom.RequiresAsyncTransformation.Should().BeTrue();
+        result.Methods[top.Id].RequiresAsyncTransformation.Should().BeTrue();
+        result.Methods[left.Id].RequiresAsyncTransformation.Should().BeTrue();
+        result.Methods[right.Id].RequiresAsyncTransformation.Should().BeTrue();
+        result.Methods[bottom.Id].RequiresAsyncTransformation.Should().BeTrue();
     }
 }

@@ -252,7 +252,7 @@ public class CallGraphBuilder : ICallGraphBuilder
 
             if (callGraph.Methods.TryGetValue(methodId, out var methodNode))
             {
-                methodNode.IsSyncWrapper = true;
+                callGraph.Methods[methodId] = methodNode with { IsSyncWrapper = true };
             }
         }
     }
@@ -275,18 +275,16 @@ public class CallGraphBuilder : ICallGraphBuilder
         {
             foreach (var (id, method) in resolver.DiscoveredExternalMethods)
             {
-                callGraph.Methods.TryAdd(id, method);
-
-                if (callGraph.SyncWrapperMethods.Contains(id))
-                {
-                    method.IsSyncWrapper = true;
-                }
+                var methodToAdd = callGraph.SyncWrapperMethods.Contains(id)
+                    ? method with { IsSyncWrapper = true }
+                    : method;
+                callGraph.Methods.TryAdd(id, methodToAdd);
             }
         }
 
         foreach (var call in calls)
         {
-            callGraph.Calls.Add(call);
+            callGraph.Calls[call.Id] = call;
         }
     }
 
