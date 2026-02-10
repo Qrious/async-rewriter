@@ -1,5 +1,7 @@
 # Async Rewriter
 
+> ⚠️ **Status**: This project is **vibe coded** and still under development. APIs, features, and functionality are subject to change. Use at your own risk in production environments.
+
 A C# Roslyn-based server for efficiently transforming synchronous methods to async by analyzing the call graph and determining the "flooding" of async/await changes needed throughout the codebase.
 
 ## Features
