@@ -1,21 +1,21 @@
-<Project Sdk="Microsoft.NET.Sdk.Web">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
-    <LangVersion>latest</LangVersion>
-    <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.0" />
-    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />
+    <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
+    <PackageReference Include="Microsoft.Build.Locator" Version="1.6.10" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\AsyncRewriter.Core\AsyncRewriter.Core.csproj" />
     <ProjectReference Include="..\AsyncRewriter.Analyzer\AsyncRewriter.Analyzer.csproj" />
-    <ProjectReference Include="..\AsyncRewriter.Neo4j\AsyncRewriter.Neo4j.csproj" />
     <ProjectReference Include="..\AsyncRewriter.Transformation\AsyncRewriter.Transformation.csproj" />
   </ItemGroup>
 
