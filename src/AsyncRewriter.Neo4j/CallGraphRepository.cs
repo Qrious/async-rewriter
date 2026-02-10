@@ -160,7 +160,7 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable, IDisp
         }
 
         // 4. Create CALLS relationships in batches
-        var calls = callGraph.Calls.ToList();
+        var calls = callGraph.Calls.Values.ToList();
         for (int i = 0; i < totalCalls; i += BatchSize)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -310,7 +310,7 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable, IDisp
         foreach (var record in methodRecords)
         {
             var method = MapToMethodNode(record["m"].As<INode>());
-            callGraph.AddMethod(method);
+            callGraph.Methods[method.Id] = method;
         }
 
         // Fetch all call relationships
@@ -334,7 +334,7 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable, IDisp
                 FilePath = rel["filePath"].As<string>(),
                 RequiresAwait = rel["requiresAwait"].As<bool>()
             };
-            callGraph.AddCall(call);
+            callGraph.Calls[call.Id] = call;
         }
 
         return callGraph;

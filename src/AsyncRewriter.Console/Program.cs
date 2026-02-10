@@ -263,8 +263,8 @@ class Program
 
                 // Set sync wrapper methods as root methods
                 var rootMethodIds = syncWrappers.Select(sw => sw.MethodId).ToHashSet();
-                callGraph.RootAsyncMethods = rootMethodIds;
-                callGraph.SyncWrapperMethods = rootMethodIds;
+                callGraph.RootAsyncMethods.UnionWith(rootMethodIds);
+                callGraph.SyncWrapperMethods.UnionWith(rootMethodIds);
 
                 // Apply interface mappings
                 foreach (var mapping in interfaceMappingsDict)
@@ -661,7 +661,7 @@ class Program
                 }
 
                 // Find a call where current is the caller and the callee requires async
-                var nextCall = callGraph.Calls.FirstOrDefault(c =>
+                var nextCall = callGraph.Calls.Values.FirstOrDefault(c =>
                     c.CallerId == current &&
                     callGraph.Methods.TryGetValue(c.CalleeId, out var callee) &&
                     (callee.RequiresAsyncTransformation || callee.IsAsync));

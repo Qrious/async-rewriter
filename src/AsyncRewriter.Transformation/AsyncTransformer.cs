@@ -103,7 +103,7 @@ public class AsyncTransformer : IAsyncTransformer
                 }
             }
 
-            foreach (var call in callGraph.Calls)
+            foreach (var call in callGraph.Calls.Values)
             {
                 if (call.RequiresAwait &&
                     !string.IsNullOrEmpty(call.FilePath) &&

@@ -29,7 +29,8 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
         CancellationToken cancellationToken = default)
     {
         // Store root methods
-        callGraph.RootAsyncMethods = new HashSet<string>(rootMethodIds);
+        callGraph.RootAsyncMethods.Clear();
+        callGraph.RootAsyncMethods.UnionWith(rootMethodIds);
 
         // Methods that need to become async
         var methodsToFlood = new HashSet<string>();
@@ -67,8 +68,13 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
             if (!currentMethod.IsAsync && !callGraph.SyncWrapperMethods.Contains(currentMethodId))
             {
                 methodsToFlood.Add(currentMethodId);
-                currentMethod.RequiresAsyncTransformation = true;
-                currentMethod.AsyncReturnType = DetermineAsyncReturnType(currentMethod.ReturnType);
+                callGraph.Methods[currentMethodId] = currentMethod with
+                {
+                    RequiresAsyncTransformation = true,
+                    AsyncReturnType = DetermineAsyncReturnType(currentMethod.ReturnType)
+                };
+                // Re-read the updated method for further processing
+                currentMethod = callGraph.Methods[currentMethodId];
 
                 // Also mark any interface methods this method implements
                 foreach (var interfaceMethodId in currentMethod.ImplementsInterfaceMethods)
@@ -121,9 +127,13 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                         if (!interfaceMethod.RequiresAsyncTransformation)
                         {
                             methodsToFlood.Add(interfaceMethodId);
-                            interfaceMethod.RequiresAsyncTransformation = true;
-                            interfaceMethod.AsyncReturnType = DetermineAsyncReturnType(interfaceMethod.ReturnType);
-                            SetPropagationSource(interfaceMethod, currentMethodId);
+                            callGraph.Methods[interfaceMethodId] = interfaceMethod with
+                            {
+                                RequiresAsyncTransformation = true,
+                                AsyncReturnType = DetermineAsyncReturnType(interfaceMethod.ReturnType),
+                                AsyncPropagationSourceMethodId = interfaceMethod.AsyncPropagationSourceMethodId
+                                    ?? currentMethodId
+                            };
 
                             // Find and mark ALL other implementations of this interface method
                             foreach (var method in callGraph.Methods.Values)
@@ -132,7 +142,7 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                                     !method.RequiresAsyncTransformation &&
                                     !method.IsAsync)
                                 {
-                                    SetPropagationSource(method, interfaceMethodId);
+                                    UpdatePropagationSource(callGraph, method.Id, interfaceMethodId);
                                     queue.Enqueue(method.Id);
                                 }
                             }
@@ -145,23 +155,28 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
             var callers = callGraph.GetCallersIncludingInterfaceCalls(currentMethodId);
             foreach (var caller in callers)
             {
-                SetPropagationSource(caller, currentMethodId);
+                UpdatePropagationSource(callGraph, caller.Id, currentMethodId);
                 queue.Enqueue(caller.Id);
             }
         }
 
-        callGraph.FloodedMethods = methodsToFlood;
+        callGraph.FloodedMethods.Clear();
+        callGraph.FloodedMethods.UnionWith(methodsToFlood);
         EnsureFloodedMethodReasons(callGraph);
 
         progressCallback?.Invoke("Marking calls that require await", visited.Count, totalMethods);
 
         // Mark all calls that need await
-        foreach (var call in callGraph.Calls)
+        foreach (var call in callGraph.Calls.Values)
         {
             if (callGraph.Methods.TryGetValue(call.CalleeId, out var callee))
             {
                 // If the callee is async or needs to be async, this call needs await
-                call.RequiresAwait = callee.IsAsync || callee.RequiresAsyncTransformation;
+                var requiresAwait = callee.IsAsync || callee.RequiresAsyncTransformation;
+                if (requiresAwait != call.RequiresAwait)
+                {
+                    callGraph.Calls[call.Id] = call with { RequiresAwait = requiresAwait };
+                }
             }
         }
 
@@ -182,7 +197,7 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                 continue;
 
             // Find all call sites in this method that need await
-            var callSites = callGraph.Calls
+            var callSites = callGraph.Calls.Values
                 .Where(c => c.CallerId == methodId && c.RequiresAwait)
                 .Select(c => new CallSiteTransformation
                 {
@@ -247,29 +262,36 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
 
             if (callGraph.RootAsyncMethods.Contains(methodId))
             {
-                method.AsyncPropagationSourceMethodId = methodId;
+                callGraph.Methods[methodId] = method with { AsyncPropagationSourceMethodId = methodId };
                 continue;
             }
 
             if (method.ImplementsInterfaceMethods.Count > 0)
             {
-                method.AsyncPropagationSourceMethodId = method.ImplementsInterfaceMethods[0];
+                callGraph.Methods[methodId] = method with
+                {
+                    AsyncPropagationSourceMethodId = method.ImplementsInterfaceMethods[0]
+                };
                 continue;
             }
 
             var fallbackCaller = callGraph.GetCallersIncludingInterfaceCalls(methodId).FirstOrDefault();
             if (fallbackCaller != null)
             {
-                method.AsyncPropagationSourceMethodId = fallbackCaller.Id;
+                callGraph.Methods[methodId] = method with
+                {
+                    AsyncPropagationSourceMethodId = fallbackCaller.Id
+                };
             }
         }
     }
 
-    private static void SetPropagationSource(MethodNode method, string sourceMethodId)
+    private static void UpdatePropagationSource(CallGraph callGraph, string methodId, string sourceMethodId)
     {
-        if (string.IsNullOrWhiteSpace(method.AsyncPropagationSourceMethodId))
+        if (callGraph.Methods.TryGetValue(methodId, out var method) &&
+            string.IsNullOrWhiteSpace(method.AsyncPropagationSourceMethodId))
         {
-            method.AsyncPropagationSourceMethodId = sourceMethodId;
+            callGraph.Methods[methodId] = method with { AsyncPropagationSourceMethodId = sourceMethodId };
         }
     }
 }
