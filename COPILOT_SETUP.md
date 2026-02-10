@@ -327,8 +327,10 @@ Expected output: All tests should pass
 
 ### Start Neo4j
 ```bash
-docker-compose up neo4j -d
-docker-compose ps
+docker compose up neo4j -d
+# or for older Docker versions: docker-compose up neo4j -d
+docker compose ps
+# or for older Docker versions: docker-compose ps
 ```
 Expected output: Neo4j container should be running
 
