@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -12,25 +14,27 @@ namespace AsyncRewriter.Analyzer;
 /// <summary>
 /// Resolves method declarations from a syntax tree using an async visitor pattern
 /// </summary>
-public class MethodsResolver : AsyncCSharpSyntaxWalker, IMethodsResolver
+public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
 {
-    private readonly Dictionary<string, MethodNode> _methods = new();
     private SemanticModel _semanticModel = null!;
     private string _filePath = string.Empty;
+    private ConcurrentDictionary<string, MethodNode> _methods;
+    private Guid _callGraphId;
 
-    public async Task<IReadOnlyDictionary<string, MethodNode>> ResolveMethodsAsync(
+    public async Task Extract(
+        Guid callGraphId,
         SyntaxNode root,
         SemanticModel semanticModel,
         string filePath,
+        ConcurrentDictionary<string, MethodNode> methods,
         CancellationToken cancellationToken = default)
     {
-        _methods.Clear();
+        _callGraphId = callGraphId;
+        _methods = methods;
         _semanticModel = semanticModel;
         _filePath = filePath;
 
         await VisitAsync(root, cancellationToken);
-
-        return _methods;
     }
 
     public override async Task VisitMethodDeclarationAsync(MethodDeclarationSyntax node, CancellationToken cancellationToken = default)
@@ -91,6 +95,7 @@ public class MethodsResolver : AsyncCSharpSyntaxWalker, IMethodsResolver
 
         return new MethodNode
         {
+            CallGraphId = _callGraphId.ToString(),
             Id = GetMethodId(methodSymbol),
             Name = methodSymbol.Name,
             ContainingType = methodSymbol.ContainingType?.ToDisplayString() ?? "",
@@ -100,10 +105,6 @@ public class MethodsResolver : AsyncCSharpSyntaxWalker, IMethodsResolver
             FilePath = _filePath,
             StartLine = lineSpan.StartLinePosition.Line + 1,
             EndLine = lineSpan.EndLinePosition.Line + 1,
-            IsAsync = methodSymbol.IsAsync,
-            Signature = GetMethodSignature(methodSymbol),
-            SourceCode = methodDecl.ToFullString(),
-            ImplementsInterfaceMethods = implementedInterfaces
         };
     }
 
@@ -135,6 +136,7 @@ public class MethodsResolver : AsyncCSharpSyntaxWalker, IMethodsResolver
 
         return new MethodNode
         {
+            CallGraphId = _callGraphId.ToString(),
             Id = GetMethodId(methodSymbol),
             Name = methodSymbol.Name,
             ContainingType = methodSymbol.ContainingType?.ToDisplayString() ?? "",
@@ -144,12 +146,6 @@ public class MethodsResolver : AsyncCSharpSyntaxWalker, IMethodsResolver
             FilePath = _filePath,
             StartLine = lineSpan.StartLinePosition.Line + 1,
             EndLine = lineSpan.EndLinePosition.Line + 1,
-            IsAsync = false,
-            IsInterfaceMethod = true,
-            IsReturnTypeParameter = isReturnTypeParameter,
-            ReturnTypeParameterIndex = returnTypeParameterIndex,
-            Signature = GetMethodSignature(methodSymbol),
-            SourceCode = methodDecl.ToFullString()
         };
     }
 

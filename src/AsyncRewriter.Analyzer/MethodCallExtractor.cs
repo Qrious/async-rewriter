@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -12,40 +14,34 @@ namespace AsyncRewriter.Analyzer;
 /// <summary>
 /// Resolves method call relationships from a syntax tree using an async visitor pattern
 /// </summary>
-public class MethodCallsResolver : AsyncCSharpSyntaxWalker, IMethodCallsResolver
+public class MethodCallExtractor : AsyncCSharpSyntaxWalker, IMethodCallExtractor
 {
-    private readonly List<MethodCall> _calls = new();
-    private readonly Dictionary<string, MethodNode> _discoveredExternalMethods = new();
+    private ConcurrentBag<MethodCall> _calls = new();
     private SemanticModel _semanticModel = null!;
     private string _filePath = string.Empty;
-    private IReadOnlyDictionary<string, MethodNode> _knownMethods = null!;
     private IMethodSymbol? _currentMethodSymbol;
+    private ConcurrentDictionary<string, MethodNode> _methods;
+    private Guid _callGraphId;
 
-    public async Task<IReadOnlyList<MethodCall>> ResolveCallsAsync(
+    public async Task Extract(
+        Guid callGraphId,
         SyntaxNode root,
         SemanticModel semanticModel,
         string filePath,
-        IReadOnlyDictionary<string, MethodNode> knownMethods,
+        ConcurrentDictionary<string, MethodNode> methods,
+        ConcurrentBag<MethodCall> calls,
         CancellationToken cancellationToken = default)
     {
-        _calls.Clear();
-        _discoveredExternalMethods.Clear();
+        _callGraphId = callGraphId;
+        _calls = calls;
+        _methods = methods;
         _semanticModel = semanticModel;
         _filePath = filePath;
-        _knownMethods = knownMethods;
         _currentMethodSymbol = null;
 
         await VisitAsync(root, cancellationToken);
-
-        return _calls;
     }
-
-    /// <summary>
-    /// External methods discovered during call resolution that weren't in the known methods set.
-    /// These should be added to the call graph.
-    /// </summary>
-    public IReadOnlyDictionary<string, MethodNode> DiscoveredExternalMethods => _discoveredExternalMethods;
-
+    
     public override async Task VisitMethodDeclarationAsync(MethodDeclarationSyntax node, CancellationToken cancellationToken = default)
     {
         var methodSymbol = _semanticModel.GetDeclaredSymbol(node) as IMethodSymbol;
@@ -68,21 +64,21 @@ public class MethodCallsResolver : AsyncCSharpSyntaxWalker, IMethodCallsResolver
             var invokedSymbol = _semanticModel.GetSymbolInfo(node).Symbol as IMethodSymbol;
             if (invokedSymbol != null)
             {
-                var callerId = MethodsResolver.GetMethodId(_currentMethodSymbol);
-                var calleeId = MethodsResolver.GetMethodId(invokedSymbol);
+                var callerId = MethodExtractor.GetMethodId(_currentMethodSymbol);
+                var calleeId = MethodExtractor.GetMethodId(invokedSymbol);
 
                 // Create a method node for the callee if it doesn't exist in known methods
-                if (!_knownMethods.ContainsKey(calleeId) && !_discoveredExternalMethods.ContainsKey(calleeId))
+                if (!_methods.ContainsKey(calleeId))
                 {
-                    _discoveredExternalMethods[calleeId] = CreateMethodNodeFromSymbol(invokedSymbol, "external");
+                    _methods.TryAdd(calleeId, CreateMethodNodeFromSymbol(invokedSymbol, "external"));
                 }
 
                 var methodCall = new MethodCall
                 {
+                    CallGraphId = _callGraphId.ToString(),
+                    Id = Guid.NewGuid().ToString(),
                     CallerId = callerId,
                     CalleeId = calleeId,
-                    CallerSignature = MethodsResolver.GetMethodSignature(_currentMethodSymbol),
-                    CalleeSignature = MethodsResolver.GetMethodSignature(invokedSymbol),
                     LineNumber = node.GetLocation().GetLineSpan().StartLinePosition.Line + 1,
                     FilePath = _filePath
                 };
@@ -95,19 +91,20 @@ public class MethodCallsResolver : AsyncCSharpSyntaxWalker, IMethodCallsResolver
         await DefaultVisitAsync(node, cancellationToken);
     }
 
-    private static MethodNode CreateMethodNodeFromSymbol(IMethodSymbol methodSymbol, string filePath)
+    private MethodNode CreateMethodNodeFromSymbol(IMethodSymbol methodSymbol, string filePath)
     {
         return new MethodNode
         {
-            Id = MethodsResolver.GetMethodId(methodSymbol),
+            CallGraphId = _callGraphId.ToString(),
+            Id = MethodExtractor.GetMethodId(methodSymbol),
             Name = methodSymbol.Name,
             ContainingType = methodSymbol.ContainingType?.ToDisplayString() ?? "",
             ContainingNamespace = methodSymbol.ContainingNamespace?.ToDisplayString() ?? "",
             ReturnType = methodSymbol.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
             Parameters = methodSymbol.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
             FilePath = filePath,
-            IsAsync = methodSymbol.IsAsync,
-            Signature = MethodsResolver.GetMethodSignature(methodSymbol)
+            StartLine = methodSymbol.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Line + 1 ?? 0,
+            EndLine = methodSymbol.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Line + 1 ?? 0,
         };
     }
 }

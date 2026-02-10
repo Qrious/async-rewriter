@@ -14,81 +14,39 @@ public class CallGraph
     public string ProjectName { get; init; } = string.Empty;
     public DateTime CreatedAt { get; init; } = DateTime.UtcNow;
     public ConcurrentDictionary<string, MethodNode> Methods { get; init; } = new();
-    public ConcurrentDictionary<string, MethodCall> Calls { get; init; } = new();
-
+    
+    public ConcurrentBag<MethodCall> Calls { get; } = new();
+    
     /// <summary>
-    /// Root methods that were marked for async transformation
+    /// Calls indexed by the caller
     /// </summary>
-    public HashSet<string> RootAsyncMethods { get; init; } = new();
+    private ConcurrentDictionary<string, List<MethodCall>> _callsByCaller { get; init; } = new();
+    
+    private ConcurrentDictionary<string, List<MethodCall>> _callsByCallee { get; init; } = new();
 
-    /// <summary>
-    /// Sync wrapper methods (like AsyncHelper.RunSync) whose calls should be unwrapped
-    /// </summary>
-    public HashSet<string> SyncWrapperMethods { get; init; } = new();
-
-    /// <summary>
-    /// Methods affected by async flooding (need to become async)
-    /// </summary>
-    public HashSet<string> FloodedMethods { get; init; } = new();
-
-    /// <summary>
-    /// Base type transformations needed when implementations of generic interfaces become async.
-    /// Key is the containing type name, value is the list of base type transformations needed.
-    /// </summary>
-    public Dictionary<string, List<BaseTypeTransformation>> BaseTypeTransformations { get; init; } = new();
-
-    /// <summary>
-    /// Mappings from sync interfaces to their async equivalents.
-    /// When a sync interface needs to be made async, it will be replaced with the async interface instead.
-    /// Key is the sync interface name, value is the async interface name.
-    /// </summary>
-    public Dictionary<string, string> InterfaceMappings { get; init; } = new();
-
+    public CallGraph(ConcurrentBag<MethodCall> methodCalls)
+    {
+        Calls = methodCalls;
+        _callsByCaller = new ConcurrentDictionary<string, List<MethodCall>>(methodCalls
+            .GroupBy(v => v.CallerId)
+            .Select(grouping => new KeyValuePair<string, List<MethodCall>>(grouping.Key, grouping.ToList())));
+        _callsByCallee = new ConcurrentDictionary<string, List<MethodCall>>(methodCalls
+            .GroupBy(v => v.CalleeId)
+            .Select(grouping => new KeyValuePair<string, List<MethodCall>>(grouping.Key, grouping.ToList())));
+    }
+    
     /// <summary>
     /// Get all methods that call the specified method
     /// </summary>
     public IEnumerable<MethodNode> GetCallers(string methodId)
     {
-        var callerIds = Calls.Values
-            .Where(c => c.CalleeId == methodId)
-            .Select(c => c.CallerId)
-            .Distinct();
-
-        return callerIds
-            .Where(id => Methods.ContainsKey(id))
-            .Select(id => Methods[id])
-            .Where(m => m != null);
-    }
-
-    /// <summary>
-    /// Get all methods that call the specified method, including calls through interface methods
-    /// </summary>
-    public IEnumerable<MethodNode> GetCallersIncludingInterfaceCalls(string methodId)
-    {
-        // Start with direct callers
-        var directCallers = GetCallers(methodId);
-
-        // If this method implements interface methods, also get callers of those interface methods
-        if (Methods.TryGetValue(methodId, out var method))
+        if (!_callsByCallee.TryGetValue(methodId, out var callsByCaller))
         {
-            foreach (var interfaceMethodId in method.ImplementsInterfaceMethods)
-            {
-                var interfaceCallers = GetCallers(interfaceMethodId);
-                directCallers = directCallers.Concat(interfaceCallers);
-            }
+            return [];
         }
 
-        // If this method is an interface method, also get callers of its implementations
-        if (Methods.TryGetValue(methodId, out var interfaceMethod) && interfaceMethod.IsInterfaceMethod)
-        {
-            var implementationCallers = Methods.Values
-                .Where(m => m.ImplementsInterfaceMethods.Contains(methodId))
-                .SelectMany(m => GetCallers(m.Id));
-
-            directCallers = directCallers.Concat(implementationCallers);
-        }
-
-        return directCallers.DistinctBy(m => m.Id);
+        return callsByCaller
+            .Select(c => Methods[c.CallerId]);
     }
 
     /// <summary>
@@ -96,11 +54,12 @@ public class CallGraph
     /// </summary>
     public IEnumerable<MethodNode> GetCallees(string methodId)
     {
-        var calleeIds = Calls.Values
-            .Where(c => c.CallerId == methodId)
-            .Select(c => c.CalleeId)
-            .Distinct();
+        if (!_callsByCaller.TryGetValue(methodId, out var callees))
+        {
+            return [];
+        }
 
-        return calleeIds.Select(id => Methods[id]).Where(m => m != null);
+        return callees
+            .Select(c => Methods[c.CallerId]);
     }
 }

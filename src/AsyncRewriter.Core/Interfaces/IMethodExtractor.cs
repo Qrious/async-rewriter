@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -7,17 +9,18 @@ using Microsoft.CodeAnalysis;
 namespace AsyncRewriter.Core.Interfaces;
 
 /// <summary>
-/// Resolves method call relationships from a syntax tree
+/// Resolves method declarations from a syntax tree
 /// </summary>
-public interface IMethodCallsResolver
+public interface IMethodExtractor
 {
     /// <summary>
-    /// Resolves all method calls in a syntax tree
+    /// Resolves all method declarations in a syntax tree, including interface methods
     /// </summary>
-    Task<IReadOnlyList<MethodCall>> ResolveCallsAsync(
+    Task Extract(
+        Guid callGraphId,
         SyntaxNode root,
         SemanticModel semanticModel,
         string filePath,
-        IReadOnlyDictionary<string, MethodNode> knownMethods,
+        ConcurrentDictionary<string, MethodNode> methods,
         CancellationToken cancellationToken = default);
 }

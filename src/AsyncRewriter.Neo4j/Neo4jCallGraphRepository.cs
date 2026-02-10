@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -14,23 +15,23 @@ namespace AsyncRewriter.Neo4j;
 /// Uses CREATE statements with indexes for fast insertion (no deduplication).
 /// Call <see cref="EnsureIndexesAsync"/> once before first use.
 /// </summary>
-public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable, IDisposable
+public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, IDisposable
 {
     private readonly IDriver _driver;
     private const int BatchSize = 500;
 
-    public CallGraphRepository(string uri, string user, string password)
+    public Neo4jCallGraphRepository(string uri, string user, string password)
     {
         _driver = GraphDatabase.Driver(uri, AuthTokens.Basic(user, password));
     }
 
-    public CallGraphRepository(IDriver driver)
+    public Neo4jCallGraphRepository(IDriver driver)
     {
         _driver = driver;
     }
 
     /// <summary>
-    /// Creates indexes for Method and CallGraph nodes and CALLS relationships.
+    /// Creates indexes for Method nodes.
     /// Should be called once at startup before storing data.
     /// </summary>
     public async Task EnsureIndexesAsync(CancellationToken cancellationToken = default)
@@ -38,14 +39,12 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable, IDisp
         await using var session = _driver.AsyncSession();
 
         // Node indexes
-        await session.RunAsync("CREATE INDEX method_id IF NOT EXISTS FOR (m:Method) ON (m.id)");
-        await session.RunAsync("CREATE INDEX method_name IF NOT EXISTS FOR (m:Method) ON (m.name)");
-        await session.RunAsync("CREATE INDEX method_type IF NOT EXISTS FOR (m:Method) ON (m.containingType)");
-        await session.RunAsync("CREATE INDEX callgraph_id IF NOT EXISTS FOR (cg:CallGraph) ON (cg.id)");
-        await session.RunAsync("CREATE INDEX callgraph_project IF NOT EXISTS FOR (cg:CallGraph) ON (cg.projectName)");
+        await session.RunAsync("CREATE INDEX method_id IF NOT EXISTS FOR (m:Method) ON (m.callGraphId, m.id)");
+        await session.RunAsync("CREATE INDEX method_name IF NOT EXISTS FOR (m:Method) ON (m.callGraphId, m.name)");
+        await session.RunAsync("CREATE INDEX method_type IF NOT EXISTS FOR (m:Method) ON (m.callGraphId, m.containingType)");
 
         // Composite index for lookups by namespace + type
-        await session.RunAsync("CREATE INDEX method_ns_type IF NOT EXISTS FOR (m:Method) ON (m.containingNamespace, m.containingType)");
+        await session.RunAsync("CREATE INDEX method_ns_type IF NOT EXISTS FOR (m:Method) ON (m.callGraphId, m.containingNamespace, m.containingType)");
     }
 
     public Task StoreCallGraphAsync(CallGraph callGraph, CancellationToken cancellationToken = default)
@@ -60,43 +59,16 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable, IDisp
     {
         await using var session = _driver.AsyncSession();
 
-        // 1. Clean any existing data for this project to keep the graph fresh
+        // 1. Clean any existing data for this call graph
         progressCallback?.Invoke("Clearing existing data", 0, 3);
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync(
-                "MATCH (cg:CallGraph {projectName: $projectName}) " +
-                "OPTIONAL MATCH (cg)-[:CONTAINS]->(m:Method) " +
-                "OPTIONAL MATCH (m)-[r:CALLS]->() " +
-                "DELETE r, m, cg",
-                new { projectName = callGraph.ProjectName });
+                "MATCH (n:Method {callGraphId: $callGraphId}) DETACH DELETE n",
+                new { callGraphId = callGraph.Id });
         });
 
-        // 2. Create CallGraph node
-        progressCallback?.Invoke("Creating CallGraph node", 1, 3);
-        await session.ExecuteWriteAsync(async tx =>
-        {
-            await tx.RunAsync(
-                @"CREATE (cg:CallGraph {
-                    id: $id,
-                    projectName: $projectName,
-                    createdAt: $createdAt,
-                    rootAsyncMethods: $rootAsyncMethods,
-                    syncWrapperMethods: $syncWrapperMethods,
-                    floodedMethods: $floodedMethods
-                })",
-                new
-                {
-                    id = callGraph.Id,
-                    projectName = callGraph.ProjectName,
-                    createdAt = callGraph.CreatedAt.ToString("O"),
-                    rootAsyncMethods = callGraph.RootAsyncMethods.ToList(),
-                    syncWrapperMethods = callGraph.SyncWrapperMethods.ToList(),
-                    floodedMethods = callGraph.FloodedMethods.ToList()
-                });
-        });
-
-        // 3. Create Method nodes in batches
+        // 2. Create Method nodes in batches
         var methods = callGraph.Methods.Values.ToList();
         var totalMethods = methods.Count;
         var totalCalls = callGraph.Calls.Count;
@@ -113,6 +85,7 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable, IDisp
                 await tx.RunAsync(
                     @"UNWIND $methods AS m
                     CREATE (method:Method {
+                        callGraphId: m.callGraphId,
                         id: m.id,
                         name: m.name,
                         containingType: m.containingType,
@@ -121,23 +94,13 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable, IDisp
                         parameters: m.parameters,
                         filePath: m.filePath,
                         startLine: m.startLine,
-                        endLine: m.endLine,
-                        isAsync: m.isAsync,
-                        requiresAsyncTransformation: m.requiresAsyncTransformation,
-                        isSyncWrapper: m.isSyncWrapper,
-                        signature: m.signature,
-                        isInterfaceMethod: m.isInterfaceMethod,
-                        isReturnTypeParameter: m.isReturnTypeParameter,
-                        implementsInterfaceMethods: m.implementsInterfaceMethods
-                    })
-                    WITH method, m
-                    MATCH (cg:CallGraph {id: $callGraphId})
-                    CREATE (cg)-[:CONTAINS]->(method)",
+                        endLine: m.endLine
+                    })",
                     new
                     {
-                        callGraphId = callGraph.Id,
                         methods = batch.Select(m => new Dictionary<string, object?>
                         {
+                            ["callGraphId"] = m.CallGraphId,
                             ["id"] = m.Id,
                             ["name"] = m.Name,
                             ["containingType"] = m.ContainingType,
@@ -146,21 +109,14 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable, IDisp
                             ["parameters"] = m.Parameters,
                             ["filePath"] = m.FilePath,
                             ["startLine"] = m.StartLine,
-                            ["endLine"] = m.EndLine,
-                            ["isAsync"] = m.IsAsync,
-                            ["requiresAsyncTransformation"] = m.RequiresAsyncTransformation,
-                            ["isSyncWrapper"] = m.IsSyncWrapper,
-                            ["signature"] = m.Signature,
-                            ["isInterfaceMethod"] = m.IsInterfaceMethod,
-                            ["isReturnTypeParameter"] = m.IsReturnTypeParameter,
-                            ["implementsInterfaceMethods"] = m.ImplementsInterfaceMethods
+                            ["endLine"] = m.EndLine
                         }).ToList()
                     });
             });
         }
 
-        // 4. Create CALLS relationships in batches
-        var calls = callGraph.Calls.Values.ToList();
+        // 3. Create CALLS relationships in batches
+        var calls = callGraph.Calls;
         for (int i = 0; i < totalCalls; i += BatchSize)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -172,28 +128,24 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable, IDisp
             {
                 await tx.RunAsync(
                     @"UNWIND $calls AS c
-                    MATCH (caller:Method {id: c.callerId})
-                    MATCH (callee:Method {id: c.calleeId})
+                    MATCH (caller:Method {id: c.callerId, callGraphId: c.callGraphId})
+                    MATCH (callee:Method {id: c.calleeId, callGraphId: c.callGraphId})
                     CREATE (caller)-[:CALLS {
+                        callGraphId: c.callGraphId,
                         id: c.id,
-                        callerSignature: c.callerSignature,
-                        calleeSignature: c.calleeSignature,
                         lineNumber: c.lineNumber,
-                        filePath: c.filePath,
-                        requiresAwait: c.requiresAwait
+                        filePath: c.filePath
                     }]->(callee)",
                     new
                     {
                         calls = batch.Select(c => new Dictionary<string, object>
                         {
+                            ["callGraphId"] = c.CallGraphId,
                             ["id"] = c.Id,
                             ["callerId"] = c.CallerId,
                             ["calleeId"] = c.CalleeId,
-                            ["callerSignature"] = c.CallerSignature,
-                            ["calleeSignature"] = c.CalleeSignature,
                             ["lineNumber"] = c.LineNumber,
                             ["filePath"] = c.FilePath,
-                            ["requiresAwait"] = c.RequiresAwait
                         }).ToList()
                     });
             });
@@ -208,14 +160,14 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable, IDisp
 
         return await session.ExecuteReadAsync(async tx =>
         {
-            // Fetch the CallGraph node
-            var cgResult = await tx.RunAsync(
-                "MATCH (cg:CallGraph {id: $id}) RETURN cg",
+            // Check if any methods exist for this call graph
+            var checkResult = await tx.RunAsync(
+                "MATCH (m:Method {callGraphId: $id}) RETURN m LIMIT 1",
                 new { id });
-            var cgRecord = await cgResult.SingleAsync();
-            if (cgRecord == null) return null;
+            var checkRecord = await checkResult.SingleAsync();
+            if (checkRecord == null) return null;
 
-            return await ReadCallGraphFromTransaction(tx, cgRecord);
+            return await ReadCallGraphFromTransaction(tx, id);
         });
     }
 
@@ -225,13 +177,16 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable, IDisp
 
         return await session.ExecuteReadAsync(async tx =>
         {
-            var cgResult = await tx.RunAsync(
-                "MATCH (cg:CallGraph {projectName: $projectName}) RETURN cg ORDER BY cg.createdAt DESC LIMIT 1",
+            // Find a callGraphId for methods that belong to this project's namespace
+            // Since we no longer have a CallGraph node, we look for methods whose namespace matches the project name
+            var result = await tx.RunAsync(
+                "MATCH (m:Method) WHERE m.containingNamespace STARTS WITH $projectName RETURN m.callGraphId AS callGraphId LIMIT 1",
                 new { projectName });
-            var cgRecord = await cgResult.SingleAsync();
-            if (cgRecord == null) return null;
+            var record = await result.SingleAsync();
+            if (record == null) return null;
 
-            return await ReadCallGraphFromTransaction(tx, cgRecord);
+            var callGraphId = record["callGraphId"].As<string>();
+            return await ReadCallGraphFromTransaction(tx, callGraphId);
         });
     }
 
@@ -280,70 +235,61 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable, IDisp
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync(
-                "MATCH (cg:CallGraph {id: $id}) " +
-                "OPTIONAL MATCH (cg)-[:CONTAINS]->(m:Method) " +
-                "OPTIONAL MATCH (m)-[r:CALLS]->() " +
-                "DELETE r, m, cg",
+                "MATCH (m:Method {callGraphId: $id}) DETACH DELETE m",
                 new { id });
         });
     }
 
-    private async Task<CallGraph> ReadCallGraphFromTransaction(IAsyncQueryRunner tx, IRecord cgRecord)
+    private async Task<CallGraph> ReadCallGraphFromTransaction(IAsyncQueryRunner tx, string callGraphId)
     {
-        var cgNode = cgRecord["cg"].As<INode>();
-        var callGraph = new CallGraph
-        {
-            Id = cgNode["id"].As<string>(),
-            ProjectName = cgNode["projectName"].As<string>(),
-            CreatedAt = DateTime.Parse(cgNode["createdAt"].As<string>()),
-            RootAsyncMethods = cgNode["rootAsyncMethods"].As<List<string>>().ToHashSet(),
-            SyncWrapperMethods = cgNode["syncWrapperMethods"].As<List<string>>().ToHashSet(),
-            FloodedMethods = cgNode["floodedMethods"].As<List<string>>().ToHashSet()
-        };
-
         // Fetch all methods
         var methodsResult = await tx.RunAsync(
-            "MATCH (cg:CallGraph {id: $id})-[:CONTAINS]->(m:Method) RETURN m",
-            new { id = callGraph.Id });
+            "MATCH (m:Method {callGraphId: $callGraphId}) RETURN m",
+            new { callGraphId });
         var methodRecords = await methodsResult.ToListAsync();
 
+        var methods = new ConcurrentDictionary<string, MethodNode>();
         foreach (var record in methodRecords)
         {
             var method = MapToMethodNode(record["m"].As<INode>());
-            callGraph.Methods[method.Id] = method;
+            methods[method.Id] = method;
         }
 
         // Fetch all call relationships
         var callsResult = await tx.RunAsync(
-            "MATCH (cg:CallGraph {id: $id})-[:CONTAINS]->(caller:Method)-[r:CALLS]->(callee:Method) " +
+            "MATCH (caller:Method {callGraphId: $callGraphId})-[r:CALLS]->(callee:Method) " +
             "RETURN r, caller.id AS callerId, callee.id AS calleeId",
-            new { id = callGraph.Id });
+            new { callGraphId });
         var callRecords = await callsResult.ToListAsync();
 
+        var callsBag = new ConcurrentBag<MethodCall>();
         foreach (var record in callRecords)
         {
             var rel = record["r"].As<IRelationship>();
             var call = new MethodCall
             {
+                CallGraphId = callGraphId,
                 Id = rel["id"].As<string>(),
                 CallerId = record["callerId"].As<string>(),
                 CalleeId = record["calleeId"].As<string>(),
-                CallerSignature = rel["callerSignature"].As<string>(),
-                CalleeSignature = rel["calleeSignature"].As<string>(),
                 LineNumber = rel["lineNumber"].As<int>(),
                 FilePath = rel["filePath"].As<string>(),
-                RequiresAwait = rel["requiresAwait"].As<bool>()
             };
-            callGraph.Calls[call.Id] = call;
+            callsBag.Add(call);
         }
 
-        return callGraph;
+        return new CallGraph(callsBag)
+        {
+            Id = callGraphId,
+            Methods = methods,
+        };
     }
 
     private static MethodNode MapToMethodNode(INode node)
     {
         return new MethodNode
         {
+            CallGraphId = node["callGraphId"].As<string>(),
             Id = node["id"].As<string>(),
             Name = node["name"].As<string>(),
             ContainingType = node["containingType"].As<string>(),
@@ -353,13 +299,6 @@ public class CallGraphRepository : ICallGraphRepository, IAsyncDisposable, IDisp
             FilePath = node["filePath"].As<string>(),
             StartLine = node["startLine"].As<int>(),
             EndLine = node["endLine"].As<int>(),
-            IsAsync = node["isAsync"].As<bool>(),
-            RequiresAsyncTransformation = node["requiresAsyncTransformation"].As<bool>(),
-            IsSyncWrapper = node["isSyncWrapper"].As<bool>(),
-            Signature = node["signature"].As<string>(),
-            IsInterfaceMethod = node["isInterfaceMethod"].As<bool>(),
-            IsReturnTypeParameter = node["isReturnTypeParameter"].As<bool>(),
-            ImplementsInterfaceMethods = node["implementsInterfaceMethods"].As<List<string>>()
         };
     }
 
