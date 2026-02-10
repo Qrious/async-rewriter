@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/setup.sh\"",
+            "timeout": 600,
+            "statusMessage": "Installing .NET 10 SDK and restoring NuGet packages..."
+          }
+        ]
+      }
+    ]
+  }
+}
