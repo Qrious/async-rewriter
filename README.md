@@ -40,7 +40,8 @@ The solution is divided into several projects:
 Using Docker Compose:
 
 ```bash
-docker-compose up neo4j -d
+docker compose up neo4j -d
+# or for older Docker versions: docker-compose up neo4j -d
 ```
 
 Or install Neo4j locally and ensure it's running on `bolt://localhost:7687`.
@@ -80,7 +81,8 @@ Swagger documentation: `http://localhost:5000/swagger`
 To run the entire stack (API + Neo4j):
 
 ```bash
-docker-compose up --build
+docker compose up --build
+# or for older Docker versions: docker-compose up --build
 ```
 
 ## CLI Client (Recommended)

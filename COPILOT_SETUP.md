@@ -227,12 +227,14 @@ dotnet test
 
 Using Docker Compose (recommended):
 ```bash
-docker-compose up neo4j -d
+docker compose up neo4j -d
+# or for older Docker versions: docker-compose up neo4j -d
 ```
 
 Wait a few seconds for Neo4j to fully start, then verify it's running:
 ```bash
-docker-compose ps
+docker compose ps
+# or for older Docker versions: docker-compose ps
 ```
 
 Access Neo4j Browser at http://localhost:7474

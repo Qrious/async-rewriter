@@ -31,7 +31,8 @@ dotnet run --project src/AsyncRewriter.Client -- <command>
 
 Neo4j is required for the server. Start it with Docker:
 ```bash
-docker-compose up neo4j -d
+docker compose up neo4j -d
+# or for older Docker versions: docker-compose up neo4j -d
 ```
 
 Neo4j Browser: http://localhost:7474 (neo4j/password)
