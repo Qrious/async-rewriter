@@ -1,6 +1,7 @@
 using System.CommandLine;
 using AsyncRewriter.Analyzer;
 using AsyncRewriter.Core.Interfaces;
+using AsyncRewriter.Core.Models;
 using AsyncRewriter.Neo4j;
 using AsyncRewriter.Transformation;
 using Microsoft.Build.Locator;
@@ -314,7 +315,7 @@ class Program
                         System.Console.WriteLine("Running async flooding analysis...");
                         var asyncGraph = await floodingAnalyzer.AnalyzeFloodingAsync(callGraph, rootMethodIds);
                         PrintFloodingStatistics(callGraph, asyncGraph);
-                        PrintProblematicInterfaces(callGraph, asyncGraph);
+                        var interfaceMappings = await ResolveProblematicInterfacesAsync(callGraph, asyncGraph);
 
                         System.Console.Write("Would you like to transform the source files? [Y/n] ");
                         var transformResponse = System.Console.ReadLine()?.Trim();
@@ -482,7 +483,7 @@ class Program
             System.Console.WriteLine();
             PrintFloodingStatistics(callGraph, asyncGraph);
 
-            PrintProblematicInterfaces(callGraph, asyncGraph);
+            var interfaceMappings = await ResolveProblematicInterfacesAsync(callGraph, asyncGraph);
 
             // Store the async call graph in Neo4j
             System.Console.WriteLine($"Storing async call graph '{asyncGraph.ProjectName}' in Neo4j...");
@@ -637,13 +638,15 @@ class Program
         System.Console.WriteLine();
     }
 
-    static void PrintProblematicInterfaces(AsyncRewriter.Core.Models.CallGraph callGraph, AsyncRewriter.Core.Models.CallGraph asyncGraph)
+    static async Task<List<InterfaceMapping>> ResolveProblematicInterfacesAsync(CallGraph callGraph, CallGraph asyncGraph)
     {
-        var problematicInterfaces = new Dictionary<string, (string InterfaceMethodId, string InterfaceType, string InterfaceMethodName, List<string> ImplementingTypes)>();
+        var mappings = new List<InterfaceMapping>();
+
+        // Collect problematic methods grouped by interface type
+        var byInterfaceType = new Dictionary<string, List<(string InterfaceMethodId, MethodNode? InterfaceMethod, MethodNode OriginalImpl, MethodNode AsyncImpl)>>();
 
         foreach (var impl in callGraph.InterfaceImplementations)
         {
-            // Check if the implementing method was flooded (return type changed)
             if (!callGraph.Methods.TryGetValue(impl.ImplementingMethodId, out var originalImpl))
                 continue;
             if (!asyncGraph.Methods.TryGetValue(impl.ImplementingMethodId, out var asyncImpl))
@@ -651,52 +654,249 @@ class Program
             if (originalImpl.ReturnType == asyncImpl.ReturnType)
                 continue;
 
-            // Check if the interface method is external
             var isExternal = !callGraph.Methods.TryGetValue(impl.InterfaceMethodId, out var interfaceMethod)
                 || interfaceMethod.FilePath == "external";
-
             if (!isExternal)
                 continue;
 
-            if (!problematicInterfaces.TryGetValue(impl.InterfaceMethodId, out var entry))
+            var interfaceType = interfaceMethod?.ContainingType
+                ?? impl.InterfaceMethodId.Split('.').LastOrDefault()
+                ?? impl.InterfaceMethodId;
+
+            if (!byInterfaceType.TryGetValue(interfaceType, out var list))
             {
-                var ifaceName = interfaceMethod?.ContainingType ?? impl.InterfaceMethodId.Split('.').LastOrDefault() ?? impl.InterfaceMethodId;
-                var ifaceMethodName = interfaceMethod?.Name ?? impl.InterfaceMethodId;
-                entry = (impl.InterfaceMethodId, ifaceName, ifaceMethodName, new List<string>());
-                problematicInterfaces[impl.InterfaceMethodId] = entry;
+                list = new();
+                byInterfaceType[interfaceType] = list;
             }
 
-            entry.ImplementingTypes.Add($"{originalImpl.ContainingType}.{originalImpl.Name}");
+            // Avoid duplicates for the same interface method
+            if (!list.Any(e => e.InterfaceMethodId == impl.InterfaceMethodId))
+                list.Add((impl.InterfaceMethodId, interfaceMethod, originalImpl, asyncImpl));
         }
 
-        if (problematicInterfaces.Count > 0)
-        {
-            System.Console.ForegroundColor = ConsoleColor.Yellow;
-            System.Console.WriteLine($"⚠ {problematicInterfaces.Count} problematic external interface(s) detected:");
-            System.Console.ResetColor();
-            System.Console.WriteLine("  These interface methods are defined in external code and cannot be modified,");
-            System.Console.WriteLine("  but their implementations were flooded to async:");
-            System.Console.WriteLine();
-
-            foreach (var (_, entry) in problematicInterfaces.OrderBy(p => p.Value.InterfaceType))
-            {
-                System.Console.ForegroundColor = ConsoleColor.Yellow;
-                System.Console.Write($"  {entry.InterfaceType}.{entry.InterfaceMethodName}");
-                System.Console.ResetColor();
-                System.Console.WriteLine();
-                foreach (var implType in entry.ImplementingTypes)
-                {
-                    System.Console.WriteLine($"    implemented by: {implType}");
-                }
-            }
-            System.Console.WriteLine();
-        }
-        else
+        if (byInterfaceType.Count == 0)
         {
             System.Console.ForegroundColor = ConsoleColor.Green;
             System.Console.WriteLine("✓ No problematic external interfaces detected.");
             System.Console.ResetColor();
             System.Console.WriteLine();
+            return mappings;
+        }
+
+        System.Console.ForegroundColor = ConsoleColor.Yellow;
+        System.Console.WriteLine($"⚠ {byInterfaceType.Count} problematic external interface(s) detected:");
+        System.Console.ResetColor();
+        System.Console.WriteLine();
+
+        foreach (var (interfaceType, methods) in byInterfaceType.OrderBy(kv => kv.Key))
+        {
+            System.Console.ForegroundColor = ConsoleColor.Yellow;
+            System.Console.WriteLine($"⚠ Problematic interface: {interfaceType} ({methods.Count} method(s) flooded)");
+            System.Console.ResetColor();
+
+            foreach (var m in methods)
+            {
+                var origRet = m.InterfaceMethod?.ReturnType ?? m.OriginalImpl.ReturnType;
+                var asyncRet = m.AsyncImpl.ReturnType;
+                var name = m.InterfaceMethod?.Name ?? m.OriginalImpl.Name;
+                System.Console.WriteLine($"    {origRet} {name}() → {asyncRet}");
+            }
+            System.Console.WriteLine();
+
+            // Check for existing async interface
+            var existingAsync = FindExistingAsyncInterface(callGraph, interfaceType, methods);
+
+            var optionNum = 1;
+            if (existingAsync != null)
+            {
+                System.Console.WriteLine($"  [{optionNum}] Use existing: {existingAsync} (found in codebase)");
+                optionNum++;
+            }
+            System.Console.WriteLine($"  [{optionNum}] Create new async interface");
+            var createOption = optionNum;
+            optionNum++;
+            System.Console.WriteLine($"  [{optionNum}] Ignore");
+            var ignoreOption = optionNum;
+
+            System.Console.Write("  Choice: ");
+            var choice = System.Console.ReadLine()?.Trim();
+
+            if (!int.TryParse(choice, out var choiceNum))
+                choiceNum = ignoreOption;
+
+            if (existingAsync != null && choiceNum == 1)
+            {
+                // Use existing async interface
+                var ns = GetNamespaceFromCallGraph(callGraph, existingAsync);
+                mappings.Add(new InterfaceMapping
+                {
+                    SyncInterfaceName = interfaceType,
+                    AsyncInterfaceName = existingAsync,
+                    RequiredNamespaces = ns != null ? new List<string> { ns } : new List<string>()
+                });
+                System.Console.ForegroundColor = ConsoleColor.Green;
+                System.Console.WriteLine($"  ✓ Will replace {interfaceType} → {existingAsync}");
+                System.Console.ResetColor();
+            }
+            else if (choiceNum == createOption)
+            {
+                // Create new async interface
+                var asyncName = interfaceType + "Async";
+                var defaultPath = $"src/{asyncName}.cs";
+
+                System.Console.Write($"  File path [{defaultPath}]: ");
+                var filePath = System.Console.ReadLine()?.Trim();
+                if (string.IsNullOrEmpty(filePath))
+                    filePath = defaultPath;
+
+                System.Console.Write("  Namespace [AsyncInterfaces]: ");
+                var ns = System.Console.ReadLine()?.Trim();
+                if (string.IsNullOrEmpty(ns))
+                    ns = "AsyncInterfaces";
+
+                var source = GenerateAsyncInterface(asyncName, ns, methods);
+                await File.WriteAllTextAsync(filePath, source);
+
+                System.Console.ForegroundColor = ConsoleColor.Green;
+                System.Console.WriteLine($"  ✓ Created {filePath}");
+                System.Console.ResetColor();
+
+                mappings.Add(new InterfaceMapping
+                {
+                    SyncInterfaceName = interfaceType,
+                    AsyncInterfaceName = asyncName,
+                    RequiredNamespaces = new List<string> { ns }
+                });
+            }
+            else
+            {
+                System.Console.ForegroundColor = ConsoleColor.DarkGray;
+                System.Console.WriteLine("  Ignored.");
+                System.Console.ResetColor();
+            }
+
+            System.Console.WriteLine();
+        }
+
+        // Apply interface replacements to flooded files
+        if (mappings.Count > 0)
+        {
+            await ApplyInterfaceReplacements(callGraph, asyncGraph, mappings);
+        }
+
+        return mappings;
+    }
+
+    static string? FindExistingAsyncInterface(CallGraph callGraph, string syncInterfaceType, List<(string InterfaceMethodId, MethodNode? InterfaceMethod, MethodNode OriginalImpl, MethodNode AsyncImpl)> methods)
+    {
+        // Look for IAsyncFoo or IFooAsync patterns
+        var candidates = new List<string>();
+        if (syncInterfaceType.StartsWith("I"))
+            candidates.Add("IAsync" + syncInterfaceType.Substring(1));
+        candidates.Add(syncInterfaceType + "Async");
+
+        var methodsByType = callGraph.Methods.Values
+            .GroupBy(m => m.ContainingType)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        foreach (var candidate in candidates)
+        {
+            if (!methodsByType.TryGetValue(candidate, out var candidateMethods))
+                continue;
+
+            // Check that all flooded methods have matching async signatures
+            var allMatch = true;
+            foreach (var m in methods)
+            {
+                var name = m.InterfaceMethod?.Name ?? m.OriginalImpl.Name;
+                var expectedReturnType = m.AsyncImpl.ReturnType;
+
+                var match = candidateMethods.Any(cm =>
+                    cm.Name == name && cm.ReturnType == expectedReturnType);
+
+                if (!match)
+                {
+                    allMatch = false;
+                    break;
+                }
+            }
+
+            if (allMatch)
+                return candidate;
+        }
+
+        return null;
+    }
+
+    static string GenerateAsyncInterface(string asyncInterfaceName, string ns, List<(string InterfaceMethodId, MethodNode? InterfaceMethod, MethodNode OriginalImpl, MethodNode AsyncImpl)> methods)
+    {
+        var lines = new List<string>
+        {
+            "using System.Threading.Tasks;",
+            "",
+            $"namespace {ns};",
+            "",
+            $"public interface {asyncInterfaceName}",
+            "{"
+        };
+
+        foreach (var m in methods)
+        {
+            var name = m.InterfaceMethod?.Name ?? m.OriginalImpl.Name;
+            var returnType = m.AsyncImpl.ReturnType;
+            var parameters = m.InterfaceMethod?.Parameters ?? m.OriginalImpl.Parameters;
+            var paramStr = string.Join(", ", parameters);
+            lines.Add($"    {returnType} {name}({paramStr});");
+        }
+
+        lines.Add("}");
+        lines.Add("");
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    static string? GetNamespaceFromCallGraph(CallGraph callGraph, string typeName)
+    {
+        var method = callGraph.Methods.Values.FirstOrDefault(m => m.ContainingType == typeName);
+        return method?.ContainingNamespace;
+    }
+
+    static async Task ApplyInterfaceReplacements(CallGraph callGraph, CallGraph asyncGraph, List<InterfaceMapping> mappings)
+    {
+        // Find files that contain implementations of the sync interfaces
+        var syncTypeNames = new HashSet<string>(mappings.Select(m => m.SyncInterfaceName));
+        var filesToProcess = new HashSet<string>();
+
+        foreach (var impl in callGraph.InterfaceImplementations)
+        {
+            if (!callGraph.Methods.TryGetValue(impl.ImplementingMethodId, out var implMethod))
+                continue;
+            if (!callGraph.Methods.TryGetValue(impl.InterfaceMethodId, out var ifaceMethod))
+                continue;
+            if (!syncTypeNames.Contains(ifaceMethod.ContainingType))
+                continue;
+            if (!string.IsNullOrEmpty(implMethod.FilePath) && implMethod.FilePath != "external")
+                filesToProcess.Add(implMethod.FilePath);
+        }
+
+        if (filesToProcess.Count == 0)
+            return;
+
+        System.Console.WriteLine($"Replacing interface references in {filesToProcess.Count} file(s)...");
+
+        foreach (var filePath in filesToProcess.OrderBy(f => f))
+        {
+            if (!File.Exists(filePath))
+                continue;
+
+            var source = await File.ReadAllTextAsync(filePath);
+            var transformed = InterfaceReplacer.Transform(source, mappings);
+
+            if (transformed != null)
+            {
+                await File.WriteAllTextAsync(filePath, transformed);
+                System.Console.WriteLine($"  Updated: {filePath}");
+            }
         }
     }
 
