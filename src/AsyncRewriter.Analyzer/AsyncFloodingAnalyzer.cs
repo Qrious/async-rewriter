@@ -1,0 +1,224 @@
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using AsyncRewriter.Core.Interfaces;
+using AsyncRewriter.Core.Models;
+
+namespace AsyncRewriter.Analyzer;
+
+public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
+{
+    public Task<CallGraph> AnalyzeFloodingAsync(CallGraph callGraph, HashSet<string> rootMethodIds, CancellationToken cancellationToken = default)
+        => AnalyzeFloodingAsync(callGraph, rootMethodIds, null, cancellationToken);
+
+    public Task<CallGraph> AnalyzeFloodingAsync(
+        CallGraph callGraph,
+        HashSet<string> rootMethodIds,
+        Action<string, int, int>? progressCallback,
+        CancellationToken cancellationToken = default)
+    {
+        var floodedIds = new HashSet<string>(rootMethodIds);
+        var queue = new Queue<string>(rootMethodIds);
+        var processed = 0;
+
+        // BFS upstream through callers, interface implementations, and overrides
+        while (queue.Count > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var methodId = queue.Dequeue();
+            processed++;
+
+            if (callGraph.Methods.TryGetValue(methodId, out var method))
+            {
+                progressCallback?.Invoke(
+                    $"{method.ContainingType}.{method.Name}",
+                    processed,
+                    processed + queue.Count);
+            }
+
+            // Flood to callers
+            foreach (var caller in callGraph.GetCallers(methodId))
+            {
+                if (floodedIds.Add(caller.Id))
+                    queue.Enqueue(caller.Id);
+            }
+
+            // Flood through interface implementations, but only when the return type
+            // is NOT a generic type parameter of the interface. When it IS a type parameter,
+            // the implementation can adjust which interface variant it implements
+            // (e.g. IMapper<X, Y> → IMapper<X, Task<Y>>) instead of flooding.
+            foreach (var impl in callGraph.GetInterfaceMethodsFor(methodId))
+            {
+                if (!HasGenericReturnType(callGraph, impl.InterfaceMethodId) && floodedIds.Add(impl.InterfaceMethodId))
+                    queue.Enqueue(impl.InterfaceMethodId);
+            }
+            foreach (var impl in callGraph.GetImplementationsOf(methodId))
+            {
+                if (!HasGenericReturnType(callGraph, methodId) && floodedIds.Add(impl.ImplementingMethodId))
+                    queue.Enqueue(impl.ImplementingMethodId);
+            }
+
+            // Flood through overrides (both directions)
+            foreach (var ovr in callGraph.GetBaseMethodsFor(methodId))
+            {
+                if (floodedIds.Add(ovr.BaseMethodId))
+                    queue.Enqueue(ovr.BaseMethodId);
+            }
+            foreach (var ovr in callGraph.GetOverridesOf(methodId))
+            {
+                if (floodedIds.Add(ovr.OverridingMethodId))
+                    queue.Enqueue(ovr.OverridingMethodId);
+            }
+        }
+
+        // Build new call graph with transformed return types
+        var newGraphId = Guid.NewGuid().ToString();
+        var newMethods = new ConcurrentDictionary<string, MethodNode>();
+
+        foreach (var (id, method) in callGraph.Methods)
+        {
+            var newReturnType = floodedIds.Contains(id)
+                ? TransformReturnType(method.ReturnType)
+                : method.ReturnType;
+
+            newMethods[id] = method with
+            {
+                CallGraphId = newGraphId,
+                ReturnType = newReturnType
+            };
+        }
+
+        var newCalls = new ConcurrentBag<MethodCall>(
+            callGraph.Calls.Select(c => c with { CallGraphId = newGraphId }));
+
+        var newImpls = new ConcurrentBag<InterfaceImplementation>(
+            callGraph.InterfaceImplementations.Select(i => new InterfaceImplementation
+            {
+                CallGraphId = newGraphId,
+                ImplementingMethodId = i.ImplementingMethodId,
+                InterfaceMethodId = i.InterfaceMethodId
+            }));
+
+        var newOverrides = new ConcurrentBag<MethodOverride>(
+            callGraph.MethodOverrides.Select(o => new MethodOverride
+            {
+                CallGraphId = newGraphId,
+                OverridingMethodId = o.OverridingMethodId,
+                BaseMethodId = o.BaseMethodId
+            }));
+
+        var newGraph = new CallGraph(newCalls, newImpls, newOverrides)
+        {
+            Id = newGraphId,
+            ProjectName = callGraph.ProjectName + "-async",
+            Methods = newMethods
+        };
+
+        return Task.FromResult(newGraph);
+    }
+
+    public Task<List<AsyncTransformationInfo>> GetTransformationInfoAsync(CallGraph callGraph, CancellationToken cancellationToken = default)
+    {
+        var results = new List<AsyncTransformationInfo>();
+
+        foreach (var (id, method) in callGraph.Methods)
+        {
+            // A method was flooded if its return type is Task-based
+            var returnType = method.ReturnType;
+            if (!IsTaskType(returnType))
+                continue;
+
+            var interfaceMethods = callGraph.GetInterfaceMethodsFor(id)
+                .Select(i => i.InterfaceMethodId)
+                .ToList();
+
+            results.Add(new AsyncTransformationInfo
+            {
+                MethodId = id,
+                OriginalReturnType = returnType, // already transformed in the new graph
+                NewReturnType = returnType,
+                NeedsAsyncKeyword = true,
+                ImplementsInterfaceMethods = interfaceMethods
+            });
+        }
+
+        return Task.FromResult(results);
+    }
+
+    public static string TransformReturnType(string returnType)
+    {
+        if (IsTaskType(returnType))
+            return returnType;
+
+        if (returnType == "void")
+            return "Task";
+
+        return $"Task<{returnType}>";
+    }
+
+    /// <summary>
+    /// Checks whether the interface method's return type is a generic type parameter
+    /// of the containing interface. E.g. IMapper&lt;TSource, TDestination&gt;.Map returns
+    /// TDestination — the return type can be adjusted by changing the type argument.
+    /// </summary>
+    private static bool HasGenericReturnType(CallGraph callGraph, string interfaceMethodId)
+    {
+        if (!callGraph.Methods.TryGetValue(interfaceMethodId, out var method))
+            return false;
+
+        var typeParams = ParseGenericTypeParameters(method.ContainingType);
+        if (typeParams.Count == 0)
+            return false;
+
+        var returnType = method.ReturnType.TrimEnd('?');
+        return typeParams.Contains(returnType);
+    }
+
+    /// <summary>
+    /// Extracts generic type parameter names from a containing type string.
+    /// E.g. "IMapper&lt;TSource, TDestination&gt;" → ["TSource", "TDestination"]
+    /// </summary>
+    public static List<string> ParseGenericTypeParameters(string containingType)
+    {
+        var startIndex = containingType.IndexOf('<');
+        if (startIndex < 0) return [];
+
+        var endIndex = containingType.LastIndexOf('>');
+        if (endIndex < 0) return [];
+
+        var paramString = containingType.Substring(startIndex + 1, endIndex - startIndex - 1);
+
+        // Handle nested generics by only splitting at top-level commas
+        var result = new List<string>();
+        var depth = 0;
+        var current = 0;
+        for (var i = 0; i < paramString.Length; i++)
+        {
+            switch (paramString[i])
+            {
+                case '<': depth++; break;
+                case '>': depth--; break;
+                case ',' when depth == 0:
+                    result.Add(paramString.Substring(current, i - current).Trim());
+                    current = i + 1;
+                    break;
+            }
+        }
+        result.Add(paramString.Substring(current).Trim());
+        return result;
+    }
+
+    private static bool IsTaskType(string returnType)
+    {
+        return returnType == "Task"
+            || returnType.StartsWith("Task<")
+            || returnType == "System.Threading.Tasks.Task"
+            || returnType.StartsWith("System.Threading.Tasks.Task<")
+            || returnType == "ValueTask"
+            || returnType.StartsWith("ValueTask<")
+            || returnType.StartsWith("System.Threading.Tasks.ValueTask");
+    }
+}

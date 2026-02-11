@@ -118,6 +118,37 @@ class Program
 
         rootCommand.AddCommand(findSourcesCommand);
 
+        // Flood command - run async flooding analysis from task wrappers
+        var floodCommand = new Command("flood", "Run async flooding analysis from task wrapper methods");
+        var floodProjectNameArgument = new Argument<string>("project-name", "The project name to load the call graph for");
+        var floodNeo4jUriOption = new Option<string>(
+            aliases: new[] { "--uri", "-u" },
+            description: "Neo4j Bolt URI",
+            getDefaultValue: () => "bolt://localhost:7687");
+        var floodNeo4jUserOption = new Option<string>(
+            aliases: new[] { "--neo4j-user" },
+            description: "Neo4j username",
+            getDefaultValue: () => "neo4j");
+        var floodNeo4jPasswordOption = new Option<string>(
+            aliases: new[] { "--neo4j-password" },
+            description: "Neo4j password",
+            getDefaultValue: () => "asyncrewriter");
+
+        floodCommand.AddArgument(floodProjectNameArgument);
+        floodCommand.AddOption(floodNeo4jUriOption);
+        floodCommand.AddOption(floodNeo4jUserOption);
+        floodCommand.AddOption(floodNeo4jPasswordOption);
+
+        floodCommand.SetHandler(async (projectName, neo4jUri, neo4jUser, neo4jPassword) =>
+        {
+            await FloodAsync(
+                services.GetRequiredService<ITaskWrapperExtractor>(),
+                services.GetRequiredService<IAsyncFloodingAnalyzer>(),
+                projectName, neo4jUri, neo4jUser, neo4jPassword);
+        }, floodProjectNameArgument, floodNeo4jUriOption, floodNeo4jUserOption, floodNeo4jPasswordOption);
+
+        rootCommand.AddCommand(floodCommand);
+
         return await rootCommand.InvokeAsync(args);
     }
 
@@ -130,6 +161,7 @@ class Program
         serviceCollection.AddSingleton<IMethodCallExtractorFactory, MethodCallExtractorFactory>();
 
         serviceCollection.AddTransient<ITaskWrapperExtractor, TaskWrapperExtractor>();
+        serviceCollection.AddTransient<IAsyncFloodingAnalyzer, AsyncFloodingAnalyzer>();
         serviceCollection.AddSingleton<ICallGraphRepository, Neo4jCallGraphRepository>();
         serviceCollection.AddLogging();
     }
@@ -257,6 +289,101 @@ class Program
             System.Console.WriteLine();
 
             PrintTaskWrappers(extractor, callGraph);
+        }
+        catch (Exception ex)
+        {
+            System.Console.ForegroundColor = ConsoleColor.Red;
+            System.Console.WriteLine($"Error: {ex.Message}");
+            System.Console.WriteLine(ex.StackTrace);
+            System.Console.ResetColor();
+        }
+    }
+
+    static async Task FloodAsync(ITaskWrapperExtractor extractor, IAsyncFloodingAnalyzer floodingAnalyzer, string projectName, string neo4jUri, string neo4jUser, string neo4jPassword)
+    {
+        try
+        {
+            System.Console.WriteLine($"Loading call graph for project: {projectName}");
+
+            await using var repository = new Neo4jCallGraphRepository(neo4jUri, neo4jUser, neo4jPassword);
+            var callGraph = await repository.GetCallGraphByProjectAsync(projectName);
+
+            if (callGraph == null)
+            {
+                System.Console.ForegroundColor = ConsoleColor.Red;
+                System.Console.WriteLine($"No call graph found for project '{projectName}'.");
+                System.Console.ResetColor();
+                return;
+            }
+
+            System.Console.WriteLine($"Call graph loaded: {callGraph.Methods.Count} methods, {callGraph.Calls.Count} calls");
+            System.Console.WriteLine();
+
+            // Find task wrappers as root methods
+            var wrappers = extractor.Extract(callGraph);
+            if (wrappers.Count == 0)
+            {
+                System.Console.ForegroundColor = ConsoleColor.Yellow;
+                System.Console.WriteLine("No task wrapper methods found. Nothing to flood.");
+                System.Console.ResetColor();
+                return;
+            }
+
+            System.Console.WriteLine($"Found {wrappers.Count} task wrapper(s) as flooding roots:");
+            foreach (var w in wrappers)
+            {
+                System.Console.WriteLine($"  - {w.Signature}");
+            }
+            System.Console.WriteLine();
+
+            var rootMethodIds = new HashSet<string>(wrappers.Select(w => w.MethodId));
+
+            // Run flooding analysis
+            System.Console.WriteLine("Running async flooding analysis...");
+            var asyncGraph = await floodingAnalyzer.AnalyzeFloodingAsync(callGraph, rootMethodIds, (method, current, total) =>
+            {
+                System.Console.WriteLine($"  Flooding: {method} ({current}/{total})");
+            });
+
+            // Count flooded methods (those whose return type changed)
+            var floodedCount = 0;
+            foreach (var (id, method) in asyncGraph.Methods)
+            {
+                if (callGraph.Methods.TryGetValue(id, out var original) && original.ReturnType != method.ReturnType)
+                    floodedCount++;
+            }
+
+            System.Console.WriteLine();
+            System.Console.ForegroundColor = ConsoleColor.Green;
+            System.Console.WriteLine($"✓ Flooding complete: {floodedCount} methods need async transformation");
+            System.Console.ResetColor();
+            System.Console.WriteLine();
+
+            // Print flooded methods
+            foreach (var (id, method) in asyncGraph.Methods.OrderBy(m => m.Value.ContainingType).ThenBy(m => m.Value.Name))
+            {
+                if (callGraph.Methods.TryGetValue(id, out var original) && original.ReturnType != method.ReturnType)
+                {
+                    System.Console.ForegroundColor = ConsoleColor.Cyan;
+                    System.Console.Write($"  {method.ContainingType}.{method.Name}");
+                    System.Console.ResetColor();
+                    System.Console.WriteLine($": {original.ReturnType} → {method.ReturnType}");
+                }
+            }
+            System.Console.WriteLine();
+
+            // Store the async call graph in Neo4j
+            System.Console.WriteLine($"Storing async call graph '{asyncGraph.ProjectName}' in Neo4j...");
+            await repository.EnsureIndexesAsync();
+            await repository.StoreCallGraphAsync(asyncGraph, (phase, current, total) =>
+            {
+                System.Console.WriteLine($"  {phase}: {current}/{total}");
+            });
+
+            System.Console.WriteLine();
+            System.Console.ForegroundColor = ConsoleColor.Green;
+            System.Console.WriteLine($"✓ Async call graph stored as '{asyncGraph.ProjectName}'");
+            System.Console.ResetColor();
         }
         catch (Exception ex)
         {
