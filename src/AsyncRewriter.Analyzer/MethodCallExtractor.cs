@@ -89,6 +89,12 @@ public class MethodCallExtractor : AsyncCSharpSyntaxWalker, IMethodCallExtractor
 
     public override async Task VisitParenthesizedLambdaExpressionAsync(ParenthesizedLambdaExpressionSyntax node, CancellationToken cancellationToken = default)
     {
+        // Expression tree lambdas (Expression<Func<T>>) are never executed,
+        // so calls inside them should not create call graph edges.
+        // This handles mocking frameworks (FakeItEasy A.CallTo, Moq Setup) and EF LINQ expressions.
+        if (IsExpressionTreeLambda(node))
+            return;
+
         var methodSymbol = _semanticModel.GetSymbolInfo(node).Symbol as IMethodSymbol;
         if (methodSymbol == null)
             return;
@@ -105,6 +111,9 @@ public class MethodCallExtractor : AsyncCSharpSyntaxWalker, IMethodCallExtractor
 
     public override async Task VisitSimpleLambdaExpressionAsync(SimpleLambdaExpressionSyntax node, CancellationToken cancellationToken = default)
     {
+        if (IsExpressionTreeLambda(node))
+            return;
+
         var methodSymbol = _semanticModel.GetSymbolInfo(node).Symbol as IMethodSymbol;
         if (methodSymbol == null)
             return;
@@ -117,6 +126,22 @@ public class MethodCallExtractor : AsyncCSharpSyntaxWalker, IMethodCallExtractor
         await DefaultVisitAsync(node, cancellationToken);
 
         _currentMethodSymbol = previousSymbol;
+    }
+
+    /// <summary>
+    /// Checks if a lambda is being passed as an Expression&lt;T&gt; parameter,
+    /// meaning it's an expression tree that is never executed.
+    /// </summary>
+    private bool IsExpressionTreeLambda(LambdaExpressionSyntax node)
+    {
+        var typeInfo = _semanticModel.GetTypeInfo(node);
+        var convertedType = typeInfo.ConvertedType;
+        if (convertedType is not INamedTypeSymbol namedType)
+            return false;
+
+        var originalDef = namedType.OriginalDefinition;
+        return originalDef.ContainingNamespace?.ToDisplayString() == "System.Linq.Expressions"
+            && originalDef.Name == "Expression";
     }
 
     private void RecordLambdaCall(SyntaxNode node, IMethodSymbol lambdaSymbol)

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 using AsyncRewriter.Analyzer;
 using AsyncRewriter.Core.Interfaces;
@@ -29,6 +30,7 @@ public class CallGraphBuilderTests
             MetadataReference.CreateFromFile(typeof(Console).Assembly.Location),
             MetadataReference.CreateFromFile(typeof(Enumerable).Assembly.Location),
             MetadataReference.CreateFromFile(typeof(List<>).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(Expression<>).Assembly.Location),
         };
 
         // Add runtime assembly references
@@ -470,6 +472,7 @@ public class CallGraphBuilderTests
             MetadataReference.CreateFromFile(typeof(Console).Assembly.Location),
             MetadataReference.CreateFromFile(typeof(Enumerable).Assembly.Location),
             MetadataReference.CreateFromFile(typeof(List<>).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(Expression<>).Assembly.Location),
         };
         var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
         var runtimeRef = MetadataReference.CreateFromFile(Path.Combine(runtimeDir, "System.Runtime.dll"));
@@ -610,6 +613,29 @@ public class CallGraphBuilderTests
         overrides.Should().Contain(o =>
             o.OverridingMethodId.Contains("ConcreteClass") && o.OverridingMethodId.Contains("Calculate")
             && o.BaseMethodId.Contains("AbstractBase") && o.BaseMethodId.Contains("Calculate"));
+    }
+
+    [Fact]
+    public async Task ExpressionTreeLambda_DoesNotCreateCallEdges()
+    {
+        var source = LoadTestSource("ExpressionTreeLambda");
+
+        var (methods, calls, _, _) = await AnalyzeSource(source);
+
+        // The expression tree lambda should NOT create a call edge to GetValue
+        // (simulates FakeItEasy A.CallTo, Moq Setup, etc.)
+        calls.Should().NotContain(c =>
+            c.CallerId.Contains("TestMethod") && c.CallerId.Contains(">b__")
+            && c.CalleeId.Contains("GetValue"));
+
+        // The regular (non-expression) lambda SHOULD create a call edge to GetValue
+        var regularLambda = methods.Values.FirstOrDefault(m =>
+            m.Id.Contains(">b__") && calls.Any(c =>
+                c.CallerId.Contains("RegularLambdaMethod") && !c.CallerId.Contains(">b__")
+                && c.CalleeId == m.Id));
+        regularLambda.Should().NotBeNull("regular lambda should be recorded");
+        calls.Should().Contain(c =>
+            c.CallerId == regularLambda!.Id && c.CalleeId.Contains("GetValue"));
     }
 
     [Fact]
