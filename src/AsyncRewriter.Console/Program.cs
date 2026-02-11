@@ -789,19 +789,41 @@ class Program
 
     static string? FindExistingAsyncInterface(CallGraph callGraph, string syncInterfaceType, List<(string InterfaceMethodId, MethodNode? InterfaceMethod, MethodNode OriginalImpl, MethodNode AsyncImpl)> methods)
     {
-        // Look for IAsyncFoo or IFooAsync patterns
-        var candidates = new List<string>();
-        if (syncInterfaceType.StartsWith("I"))
-            candidates.Add("IAsync" + syncInterfaceType.Substring(1));
-        candidates.Add(syncInterfaceType + "Async");
+        // Build candidate names from both simple and qualified forms
+        // syncInterfaceType could be "IFoo" or "Some.Namespace.IFoo"
+        var simpleName = syncInterfaceType.Contains('.')
+            ? syncInterfaceType.Substring(syncInterfaceType.LastIndexOf('.') + 1)
+            : syncInterfaceType;
+        var prefix = syncInterfaceType.Contains('.')
+            ? syncInterfaceType.Substring(0, syncInterfaceType.LastIndexOf('.') + 1)
+            : "";
+
+        var candidateSimpleNames = new HashSet<string>(StringComparer.Ordinal);
+        if (simpleName.StartsWith("I"))
+            candidateSimpleNames.Add("IAsync" + simpleName.Substring(1));
+        candidateSimpleNames.Add(simpleName + "Async");
+
+        // Also generate qualified candidates
+        var candidateNames = new HashSet<string>(candidateSimpleNames, StringComparer.Ordinal);
+        if (prefix.Length > 0)
+        {
+            foreach (var c in candidateSimpleNames)
+                candidateNames.Add(prefix + c);
+        }
 
         var methodsByType = callGraph.Methods.Values
             .GroupBy(m => m.ContainingType)
             .ToDictionary(g => g.Key, g => g.ToList());
 
-        foreach (var candidate in candidates)
+        // Search by exact match first, then by simple name match
+        foreach (var (typeName, candidateMethods) in methodsByType)
         {
-            if (!methodsByType.TryGetValue(candidate, out var candidateMethods))
+            // Check if this type matches any candidate (exact or simple name)
+            var typeSimpleName = typeName.Contains('.')
+                ? typeName.Substring(typeName.LastIndexOf('.') + 1)
+                : typeName;
+
+            if (!candidateNames.Contains(typeName) && !candidateSimpleNames.Contains(typeSimpleName))
                 continue;
 
             // Check that all flooded methods have matching async signatures
@@ -811,8 +833,11 @@ class Program
                 var name = m.InterfaceMethod?.Name ?? m.OriginalImpl.Name;
                 var expectedReturnType = m.AsyncImpl.ReturnType;
 
+                // Also try matching with Async suffix on method name
+                // Compare return types flexibly (Task<T> vs System.Threading.Tasks.Task<T>)
                 var match = candidateMethods.Any(cm =>
-                    cm.Name == name && cm.ReturnType == expectedReturnType);
+                    (cm.Name == name || cm.Name == name + "Async")
+                    && NormalizeReturnType(cm.ReturnType) == NormalizeReturnType(expectedReturnType));
 
                 if (!match)
                 {
@@ -822,10 +847,17 @@ class Program
             }
 
             if (allMatch)
-                return candidate;
+                return typeName;
         }
 
         return null;
+    }
+
+    static string NormalizeReturnType(string returnType)
+    {
+        return returnType
+            .Replace("System.Threading.Tasks.Task", "Task")
+            .Replace("System.Threading.Tasks.ValueTask", "ValueTask");
     }
 
     static string GenerateAsyncInterface(string asyncInterfaceName, string ns, List<(string InterfaceMethodId, MethodNode? InterfaceMethod, MethodNode OriginalImpl, MethodNode AsyncImpl)> methods)
