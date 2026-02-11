@@ -30,8 +30,7 @@ class Program
 
         var rootCommand = new RootCommand("Async Rewriter - Analyze and transform C# codebases from sync to async");
 
-        // Analyze command
-        var buildCallGraphCommand = new Command("build", "Build a call graph from a Solution");
+        // Shared options
         var solutionPathArgument = new Argument<string>("solution-path", "The path to the solution to build a call graph from");
         var neo4jUriOption = new Option<string>(
             aliases: new[] { "--uri", "-u" },
@@ -46,6 +45,8 @@ class Program
             description: "Neo4j password",
             getDefaultValue: () => "asyncrewriter");
 
+        // Build command - builds call graph and stores in Neo4j
+        var buildCallGraphCommand = new Command("build", "Build a call graph from a Solution");
         buildCallGraphCommand.AddArgument(solutionPathArgument);
         buildCallGraphCommand.AddOption(neo4jUriOption);
         buildCallGraphCommand.AddOption(neo4jUserOption);
@@ -53,11 +54,69 @@ class Program
 
         buildCallGraphCommand.SetHandler(async (solutionPath, neo4jUri, neo4jUser, neo4jPassword) =>
         {
-            await AnalyzeSolutionAsync(services.GetRequiredService<ICallGraphBuilder>(), solutionPath, neo4jUri, neo4jUser, neo4jPassword);
+            await BuildCallGraphAsync(services.GetRequiredService<ICallGraphBuilder>(), solutionPath, neo4jUri, neo4jUser, neo4jPassword);
         }, solutionPathArgument, neo4jUriOption, neo4jUserOption, neo4jPasswordOption);
 
-
         rootCommand.AddCommand(buildCallGraphCommand);
+
+        // Analyze command - builds call graph, stores, then offers find-sources
+        var analyzeCommand = new Command("analyze", "Build a call graph and interactively analyze it");
+        var analyzeSolutionPathArgument = new Argument<string>("solution-path", "The path to the solution to analyze");
+        var analyzeNeo4jUriOption = new Option<string>(
+            aliases: new[] { "--uri", "-u" },
+            description: "Neo4j Bolt URI",
+            getDefaultValue: () => "bolt://localhost:7687");
+        var analyzeNeo4jUserOption = new Option<string>(
+            aliases: new[] { "--neo4j-user" },
+            description: "Neo4j username",
+            getDefaultValue: () => "neo4j");
+        var analyzeNeo4jPasswordOption = new Option<string>(
+            aliases: new[] { "--neo4j-password" },
+            description: "Neo4j password",
+            getDefaultValue: () => "asyncrewriter");
+
+        analyzeCommand.AddArgument(analyzeSolutionPathArgument);
+        analyzeCommand.AddOption(analyzeNeo4jUriOption);
+        analyzeCommand.AddOption(analyzeNeo4jUserOption);
+        analyzeCommand.AddOption(analyzeNeo4jPasswordOption);
+
+        analyzeCommand.SetHandler(async (solutionPath, neo4jUri, neo4jUser, neo4jPassword) =>
+        {
+            await AnalyzeSolutionAsync(
+                services.GetRequiredService<ICallGraphBuilder>(),
+                services.GetRequiredService<ITaskWrapperExtractor>(),
+                solutionPath, neo4jUri, neo4jUser, neo4jPassword);
+        }, analyzeSolutionPathArgument, analyzeNeo4jUriOption, analyzeNeo4jUserOption, analyzeNeo4jPasswordOption);
+
+        rootCommand.AddCommand(analyzeCommand);
+
+        // Find sources command
+        var findSourcesCommand = new Command("find-sources", "Find task wrapper methods (sync-over-async patterns) in the call graph");
+        var projectNameArgument = new Argument<string>("project-name", "The project name to load the call graph for");
+        var findSourcesNeo4jUriOption = new Option<string>(
+            aliases: new[] { "--uri", "-u" },
+            description: "Neo4j Bolt URI",
+            getDefaultValue: () => "bolt://localhost:7687");
+        var findSourcesNeo4jUserOption = new Option<string>(
+            aliases: new[] { "--neo4j-user" },
+            description: "Neo4j username",
+            getDefaultValue: () => "neo4j");
+        var findSourcesNeo4jPasswordOption = new Option<string>(
+            aliases: new[] { "--neo4j-password" },
+            description: "Neo4j password",
+            getDefaultValue: () => "asyncrewriter");
+
+        findSourcesCommand.AddArgument(projectNameArgument);
+        findSourcesCommand.AddOption(findSourcesNeo4jUriOption);
+        findSourcesCommand.AddOption(findSourcesNeo4jUserOption);
+        findSourcesCommand.AddOption(findSourcesNeo4jPasswordOption);
+
+        findSourcesCommand.SetHandler(async (projectName, neo4jUri, neo4jUser, neo4jPassword) =>
+        {
+            await FindSourcesAsync(services.GetRequiredService<ITaskWrapperExtractor>(), projectName, neo4jUri, neo4jUser, neo4jPassword);
+        }, projectNameArgument, findSourcesNeo4jUriOption, findSourcesNeo4jUserOption, findSourcesNeo4jPasswordOption);
+
+        rootCommand.AddCommand(findSourcesCommand);
 
         return await rootCommand.InvokeAsync(args);
     }
@@ -70,17 +129,17 @@ class Program
         serviceCollection.AddSingleton<IMethodExtractorFactory, MethodExtractorFactory>();
         serviceCollection.AddSingleton<IMethodCallExtractorFactory, MethodCallExtractorFactory>();
 
+        serviceCollection.AddTransient<ITaskWrapperExtractor, TaskWrapperExtractor>();
         serviceCollection.AddSingleton<ICallGraphRepository, Neo4jCallGraphRepository>();
         serviceCollection.AddLogging();
     }
 
-    static async Task AnalyzeSolutionAsync(ICallGraphBuilder callGraphBuilder, string solutionPath, string neo4jUri, string neo4jUser, string neo4jPassword)
+    static async Task BuildCallGraphAsync(ICallGraphBuilder callGraphBuilder, string solutionPath, string neo4jUri, string neo4jUser, string neo4jPassword)
     {
         try
         {
             System.Console.WriteLine($"Analyzing solution: {solutionPath}");
             System.Console.WriteLine();
-            
 
             var callGraph = await callGraphBuilder.Build(solutionPath);
 
@@ -119,6 +178,118 @@ class Program
             System.Console.WriteLine($"Error: {ex.Message}");
             System.Console.WriteLine(ex.StackTrace);
             System.Console.ResetColor();
+        }
+    }
+
+    static async Task AnalyzeSolutionAsync(ICallGraphBuilder callGraphBuilder, ITaskWrapperExtractor taskWrapperExtractor, string solutionPath, string neo4jUri, string neo4jUser, string neo4jPassword)
+    {
+        try
+        {
+            System.Console.WriteLine($"Analyzing solution: {solutionPath}");
+            System.Console.WriteLine();
+
+
+            var callGraph = await callGraphBuilder.Build(solutionPath);
+
+            System.Console.WriteLine();
+            System.Console.ForegroundColor = ConsoleColor.Green;
+            System.Console.WriteLine("✓ Analysis completed successfully!");
+            System.Console.ResetColor();
+            System.Console.WriteLine();
+            System.Console.WriteLine($"Methods found: {callGraph.Methods.Count}");
+            System.Console.WriteLine($"Method calls: {callGraph.Calls.Count}");
+
+            System.Console.WriteLine($"Connecting to Neo4j at {neo4jUri}...");
+
+            await using var repository = new Neo4jCallGraphRepository(neo4jUri, neo4jUser, neo4jPassword);
+
+            System.Console.WriteLine("Ensuring indexes...");
+            await repository.EnsureIndexesAsync();
+
+            System.Console.WriteLine($"Storing call graph ({callGraph.Methods.Count} methods, {callGraph.Calls.Count} calls)...");
+            System.Console.WriteLine();
+
+            await repository.StoreCallGraphAsync(callGraph, (phase, current, total) =>
+            {
+                System.Console.WriteLine($"  {phase}: {current}/{total}");
+            });
+
+            System.Console.WriteLine();
+            System.Console.ForegroundColor = ConsoleColor.Green;
+            System.Console.WriteLine($"✓ Call graph stored in Neo4j successfully!");
+            System.Console.WriteLine();
+            System.Console.ResetColor();
+
+            System.Console.Write("Would you like to detect task wrapper methods (find-sources)? [Y/n] ");
+            var response = System.Console.ReadLine()?.Trim();
+            if (string.IsNullOrEmpty(response) || response.Equals("y", StringComparison.OrdinalIgnoreCase) || response.Equals("yes", StringComparison.OrdinalIgnoreCase))
+            {
+                PrintTaskWrappers(taskWrapperExtractor, callGraph);
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Console.ForegroundColor = ConsoleColor.Red;
+            System.Console.WriteLine($"Error: {ex.Message}");
+            System.Console.WriteLine(ex.StackTrace);
+            System.Console.ResetColor();
+        }
+    }
+
+    static async Task FindSourcesAsync(ITaskWrapperExtractor extractor, string projectName, string neo4jUri, string neo4jUser, string neo4jPassword)
+    {
+        try
+        {
+            System.Console.WriteLine($"Loading call graph for project: {projectName}");
+
+            await using var repository = new Neo4jCallGraphRepository(neo4jUri, neo4jUser, neo4jPassword);
+            var callGraph = await repository.GetCallGraphByProjectAsync(projectName);
+
+            if (callGraph == null)
+            {
+                System.Console.ForegroundColor = ConsoleColor.Red;
+                System.Console.WriteLine($"No call graph found for project '{projectName}'.");
+                System.Console.ResetColor();
+                return;
+            }
+
+            System.Console.WriteLine($"Call graph loaded: {callGraph.Methods.Count} methods");
+            System.Console.WriteLine();
+
+            PrintTaskWrappers(extractor, callGraph);
+        }
+        catch (Exception ex)
+        {
+            System.Console.ForegroundColor = ConsoleColor.Red;
+            System.Console.WriteLine($"Error: {ex.Message}");
+            System.Console.WriteLine(ex.StackTrace);
+            System.Console.ResetColor();
+        }
+    }
+
+    static void PrintTaskWrappers(ITaskWrapperExtractor extractor, AsyncRewriter.Core.Models.CallGraph callGraph)
+    {
+        var wrappers = extractor.Extract(callGraph);
+
+        if (wrappers.Count == 0)
+        {
+            System.Console.WriteLine("No task wrapper methods found.");
+            return;
+        }
+
+        System.Console.ForegroundColor = ConsoleColor.Green;
+        System.Console.WriteLine($"Found {wrappers.Count} task wrapper method(s):");
+        System.Console.ResetColor();
+        System.Console.WriteLine();
+
+        foreach (var wrapper in wrappers)
+        {
+            System.Console.ForegroundColor = ConsoleColor.Cyan;
+            System.Console.WriteLine($"  {wrapper.Signature}");
+            System.Console.ResetColor();
+            System.Console.WriteLine($"    Pattern: {wrapper.PatternDescription}");
+            System.Console.WriteLine($"    Location: {wrapper.FilePath}:{wrapper.StartLine}");
+            System.Console.WriteLine();
         }
     }
 }
