@@ -22,5 +22,7 @@ public interface IMethodExtractor
         SemanticModel semanticModel,
         string filePath,
         ConcurrentDictionary<string, MethodNode> methods,
+        ConcurrentBag<InterfaceImplementation> interfaceImplementations,
+        ConcurrentBag<MethodOverride> methodOverrides,
         CancellationToken cancellationToken = default);
 }

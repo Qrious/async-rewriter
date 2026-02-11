@@ -25,7 +25,9 @@ public class CallGraphBuilder : ICallGraphBuilder
     private readonly ILogger<CallGraphBuilder> _logger;
     private readonly ConcurrentDictionary<string, MethodNode> _methods = new();
     private readonly ConcurrentBag<MethodCall> _calls = new();
-    
+    private readonly ConcurrentBag<InterfaceImplementation> _implementations = new();
+    private readonly ConcurrentBag<MethodOverride> _overrides = new();
+
 
     public CallGraphBuilder(IMethodExtractorFactory methodExtractorFactory, IMethodCallExtractorFactory methodCallExtractorFactory, ILogger<CallGraphBuilder> logger)
     {
@@ -45,13 +47,13 @@ public class CallGraphBuilder : ICallGraphBuilder
         _logger.LogInformation($"Loading solution {Path.GetFileName(solutionPath)}...");
         var solution = await workspace.OpenSolutionAsync(solutionPath, cancellationToken: cancellationToken);
         
-       await Build(solution, _methods, async (root, semanticModel, filePath, context, ct) => 
-           await (await _methodExtractorFactory.Create()).Extract(callGraphId, root, semanticModel, filePath, context, ct), cancellationToken);
+       await Build(solution, (Methods: _methods, Implementations: _implementations, Overrides: _overrides), async (root, semanticModel, filePath, context, ct) =>
+           await (await _methodExtractorFactory.Create()).Extract(callGraphId, root, semanticModel, filePath, context.Methods, context.Implementations, context.Overrides, ct), cancellationToken);
        
        await Build(solution, (Methods: _methods, Calls: _calls), async (root, semanticModel, filePath, context, ct) => 
            await (await _methodCallExtractorFactory.Create()).Extract(callGraphId, root, semanticModel, filePath, context.Methods, context.Calls, ct), cancellationToken);
        
-       return new  CallGraph(_calls)
+       return new CallGraph(_calls, _implementations, _overrides)
        {
            Methods = _methods,
        };

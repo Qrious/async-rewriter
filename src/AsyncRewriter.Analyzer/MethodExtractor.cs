@@ -18,7 +18,9 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
 {
     private SemanticModel _semanticModel = null!;
     private string _filePath = string.Empty;
-    private ConcurrentDictionary<string, MethodNode> _methods;
+    private ConcurrentDictionary<string, MethodNode> _methods = null!;
+    private ConcurrentBag<InterfaceImplementation> _interfaceImplementations = null!;
+    private ConcurrentBag<MethodOverride> _methodOverrides = null!;
     private Guid _callGraphId;
 
     public async Task Extract(
@@ -27,10 +29,14 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
         SemanticModel semanticModel,
         string filePath,
         ConcurrentDictionary<string, MethodNode> methods,
+        ConcurrentBag<InterfaceImplementation> interfaceImplementations,
+        ConcurrentBag<MethodOverride> methodOverrides,
         CancellationToken cancellationToken = default)
     {
         _callGraphId = callGraphId;
         _methods = methods;
+        _interfaceImplementations = interfaceImplementations;
+        _methodOverrides = methodOverrides;
         _semanticModel = semanticModel;
         _filePath = filePath;
 
@@ -63,6 +69,30 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
         await DefaultVisitAsync(node, cancellationToken);
     }
 
+    public override async Task VisitParenthesizedLambdaExpressionAsync(ParenthesizedLambdaExpressionSyntax node, CancellationToken cancellationToken = default)
+    {
+        var methodSymbol = _semanticModel.GetSymbolInfo(node).Symbol as IMethodSymbol;
+        if (methodSymbol != null)
+        {
+            var methodNode = CreateMethodNode(node, methodSymbol);
+            _methods[methodNode.Id] = methodNode;
+        }
+
+        await DefaultVisitAsync(node, cancellationToken);
+    }
+
+    public override async Task VisitSimpleLambdaExpressionAsync(SimpleLambdaExpressionSyntax node, CancellationToken cancellationToken = default)
+    {
+        var methodSymbol = _semanticModel.GetSymbolInfo(node).Symbol as IMethodSymbol;
+        if (methodSymbol != null)
+        {
+            var methodNode = CreateMethodNode(node, methodSymbol);
+            _methods[methodNode.Id] = methodNode;
+        }
+
+        await DefaultVisitAsync(node, cancellationToken);
+    }
+
     public override async Task VisitInterfaceDeclarationAsync(InterfaceDeclarationSyntax node, CancellationToken cancellationToken = default)
     {
         var interfaceSymbol = _semanticModel.GetDeclaredSymbol(node);
@@ -84,11 +114,24 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
     {
         var lineSpan = methodDecl.GetLocation().GetLineSpan();
 
-        var implementedInterfaces = new List<string>();
+        var name = methodSymbol.Name;
+        if (methodSymbol.MethodKind == MethodKind.AnonymousFunction)
+        {
+            var containingName = (methodSymbol.ContainingSymbol as IMethodSymbol)?.Name ?? "";
+            var line = lineSpan.StartLinePosition.Line;
+            name = $"<{containingName}>b__{line}";
+        }
+
+        var methodId = GetMethodId(methodSymbol);
 
         foreach (var explicitImpl in methodSymbol.ExplicitInterfaceImplementations)
         {
-            implementedInterfaces.Add(GetMethodId(explicitImpl));
+            _interfaceImplementations.Add(new InterfaceImplementation
+            {
+                CallGraphId = _callGraphId.ToString(),
+                ImplementingMethodId = methodId,
+                InterfaceMethodId = GetMethodId(explicitImpl),
+            });
         }
 
         var containingType = methodSymbol.ContainingType;
@@ -101,9 +144,46 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                     var implementation = containingType.FindImplementationForInterfaceMember(interfaceMember);
                     if (SymbolEqualityComparer.Default.Equals(implementation, methodSymbol))
                     {
-                        implementedInterfaces.Add(GetMethodId(interfaceMember));
+                        _interfaceImplementations.Add(new InterfaceImplementation
+                        {
+                            CallGraphId = _callGraphId.ToString(),
+                            ImplementingMethodId = methodId,
+                            InterfaceMethodId = GetMethodId(interfaceMember),
+                        });
                     }
                 }
+            }
+        }
+
+        if (methodSymbol.IsOverride)
+        {
+            var overridden = methodSymbol.OverriddenMethod;
+            while (overridden != null)
+            {
+                var baseMethodId = GetMethodId(overridden);
+                _methodOverrides.Add(new MethodOverride
+                {
+                    CallGraphId = _callGraphId.ToString(),
+                    OverridingMethodId = methodId,
+                    BaseMethodId = baseMethodId,
+                });
+
+                // Ensure the base method node exists
+                _methods.TryAdd(baseMethodId, new MethodNode
+                {
+                    CallGraphId = _callGraphId.ToString(),
+                    Id = baseMethodId,
+                    Name = overridden.Name,
+                    ContainingType = overridden.ContainingType?.ToDisplayString() ?? "",
+                    ContainingNamespace = overridden.ContainingNamespace?.ToDisplayString() ?? "",
+                    ReturnType = overridden.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+                    Parameters = overridden.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
+                    FilePath = overridden.Locations.FirstOrDefault()?.SourceTree?.FilePath ?? "external",
+                    StartLine = overridden.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Line + 1 ?? 0,
+                    EndLine = overridden.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Line + 1 ?? 0,
+                });
+
+                overridden = overridden.OverriddenMethod;
             }
         }
 
@@ -111,7 +191,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
         {
             CallGraphId = _callGraphId.ToString(),
             Id = GetMethodId(methodSymbol),
-            Name = methodSymbol.Name,
+            Name = name,
             ContainingType = methodSymbol.ContainingType?.ToDisplayString() ?? "",
             ContainingNamespace = methodSymbol.ContainingNamespace?.ToDisplayString() ?? "",
             ReturnType = methodSymbol.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
@@ -167,14 +247,27 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
     {
         var originalMethod = methodSymbol.OriginalDefinition;
 
-        // For local functions, build the full chain: Type.ParentMethod(params).LocalFunc(params)
-        if (originalMethod.MethodKind == MethodKind.LocalFunction)
+        // For local functions and lambdas, build the full chain: Type.ParentMethod(params).LocalFunc(params)
+        if (originalMethod.MethodKind == MethodKind.LocalFunction || originalMethod.MethodKind == MethodKind.AnonymousFunction)
         {
             var parts = new List<string>();
             var current = originalMethod;
-            while (current != null && current.MethodKind == MethodKind.LocalFunction)
+            while (current != null && (current.MethodKind == MethodKind.LocalFunction || current.MethodKind == MethodKind.AnonymousFunction))
             {
-                parts.Add(GetMethodSignature(current));
+                if (current.MethodKind == MethodKind.AnonymousFunction)
+                {
+                    // Synthesize IL-style name: <ContainingMethod>b__<line>
+                    var containingName = (current.ContainingSymbol as IMethodSymbol)?.Name ?? "";
+                    var location = current.Locations.FirstOrDefault();
+                    var line = location?.GetLineSpan().StartLinePosition.Line ?? 0;
+                    var lambdaName = $"<{containingName}>b__{line}";
+                    var parameters = string.Join(", ", current.Parameters.Select(p => p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)));
+                    parts.Add($"{lambdaName}({parameters})");
+                }
+                else
+                {
+                    parts.Add(GetMethodSignature(current));
+                }
                 current = current.ContainingSymbol as IMethodSymbol;
             }
 

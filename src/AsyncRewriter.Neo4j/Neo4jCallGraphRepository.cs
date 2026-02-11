@@ -151,7 +151,69 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
             });
         }
 
-        progressCallback?.Invoke("Done", totalMethods + totalCalls, totalMethods + totalCalls);
+        // 4. Create IMPLEMENTS relationships in batches
+        var implementations = callGraph.InterfaceImplementations.ToList();
+        var totalImpls = implementations.Count;
+
+        for (int i = 0; i < totalImpls; i += BatchSize)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var batch = implementations.Skip(i).Take(BatchSize).ToList();
+            var processed = Math.Min(i + BatchSize, totalImpls);
+            progressCallback?.Invoke("Creating IMPLEMENTS relationships", processed, totalImpls);
+
+            await session.ExecuteWriteAsync(async tx =>
+            {
+                await tx.RunAsync(
+                    @"UNWIND $impls AS i
+                    MATCH (impl:Method {id: i.implementingMethodId, callGraphId: i.callGraphId})
+                    MATCH (iface:Method {id: i.interfaceMethodId, callGraphId: i.callGraphId})
+                    CREATE (impl)-[:IMPLEMENTS {callGraphId: i.callGraphId}]->(iface)
+                    CREATE (iface)-[:IMPLEMENTED_BY {callGraphId: i.callGraphId}]->(impl)",
+                    new
+                    {
+                        impls = batch.Select(impl => new Dictionary<string, object>
+                        {
+                            ["callGraphId"] = impl.CallGraphId,
+                            ["implementingMethodId"] = impl.ImplementingMethodId,
+                            ["interfaceMethodId"] = impl.InterfaceMethodId,
+                        }).ToList()
+                    });
+            });
+        }
+
+        // 5. Create OVERRIDES relationships in batches
+        var overrides = callGraph.MethodOverrides.ToList();
+        var totalOverrides = overrides.Count;
+
+        for (int i = 0; i < totalOverrides; i += BatchSize)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var batch = overrides.Skip(i).Take(BatchSize).ToList();
+            var processed = Math.Min(i + BatchSize, totalOverrides);
+            progressCallback?.Invoke("Creating OVERRIDES relationships", processed, totalOverrides);
+
+            await session.ExecuteWriteAsync(async tx =>
+            {
+                await tx.RunAsync(
+                    @"UNWIND $overrides AS o
+                    MATCH (overriding:Method {id: o.overridingMethodId, callGraphId: o.callGraphId})
+                    MATCH (base:Method {id: o.baseMethodId, callGraphId: o.callGraphId})
+                    CREATE (overriding)-[:OVERRIDES {callGraphId: o.callGraphId}]->(base)
+                    CREATE (base)-[:OVERRIDDEN_BY {callGraphId: o.callGraphId}]->(overriding)",
+                    new
+                    {
+                        overrides = batch.Select(o => new Dictionary<string, object>
+                        {
+                            ["callGraphId"] = o.CallGraphId,
+                            ["overridingMethodId"] = o.OverridingMethodId,
+                            ["baseMethodId"] = o.BaseMethodId,
+                        }).ToList()
+                    });
+            });
+        }
+
+        progressCallback?.Invoke("Done", totalMethods + totalCalls + totalImpls + totalOverrides, totalMethods + totalCalls + totalImpls + totalOverrides);
     }
 
     public async Task<CallGraph?> GetCallGraphAsync(string id, CancellationToken cancellationToken = default)
@@ -278,7 +340,43 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
             callsBag.Add(call);
         }
 
-        return new CallGraph(callsBag)
+        // Fetch all IMPLEMENTS relationships
+        var implsResult = await tx.RunAsync(
+            "MATCH (impl:Method {callGraphId: $callGraphId})-[r:IMPLEMENTS]->(iface:Method) " +
+            "RETURN impl.id AS implementingMethodId, iface.id AS interfaceMethodId",
+            new { callGraphId });
+        var implRecords = await implsResult.ToListAsync();
+
+        var implsBag = new ConcurrentBag<InterfaceImplementation>();
+        foreach (var record in implRecords)
+        {
+            implsBag.Add(new InterfaceImplementation
+            {
+                CallGraphId = callGraphId,
+                ImplementingMethodId = record["implementingMethodId"].As<string>(),
+                InterfaceMethodId = record["interfaceMethodId"].As<string>(),
+            });
+        }
+
+        // Fetch all OVERRIDES relationships
+        var overridesResult = await tx.RunAsync(
+            "MATCH (overriding:Method {callGraphId: $callGraphId})-[r:OVERRIDES]->(base:Method) " +
+            "RETURN overriding.id AS overridingMethodId, base.id AS baseMethodId",
+            new { callGraphId });
+        var overrideRecords = await overridesResult.ToListAsync();
+
+        var overridesBag = new ConcurrentBag<MethodOverride>();
+        foreach (var record in overrideRecords)
+        {
+            overridesBag.Add(new MethodOverride
+            {
+                CallGraphId = callGraphId,
+                OverridingMethodId = record["overridingMethodId"].As<string>(),
+                BaseMethodId = record["baseMethodId"].As<string>(),
+            });
+        }
+
+        return new CallGraph(callsBag, implsBag, overridesBag)
         {
             Id = callGraphId,
             Methods = methods,

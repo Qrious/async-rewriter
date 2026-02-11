@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using AsyncRewriter.Analyzer;
 using AsyncRewriter.Core.Models;
@@ -16,7 +18,7 @@ public class CallGraphBuilderTests
     private static string LoadTestSource([CallerMemberName] string testName = "")
         => File.ReadAllText(Path.Combine("TestData", $"{testName}.cs"));
 
-    private static async Task<(ConcurrentDictionary<string, MethodNode> Methods, ConcurrentBag<MethodCall> Calls)> AnalyzeSource(string sourceCode)
+    private static async Task<(ConcurrentDictionary<string, MethodNode> Methods, ConcurrentBag<MethodCall> Calls, ConcurrentBag<InterfaceImplementation> InterfaceImplementations, ConcurrentBag<MethodOverride> MethodOverrides)> AnalyzeSource(string sourceCode)
     {
         var syntaxTree = CSharpSyntaxTree.ParseText(sourceCode);
         var references = new[]
@@ -24,6 +26,8 @@ public class CallGraphBuilderTests
             MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
             MetadataReference.CreateFromFile(typeof(Task).Assembly.Location),
             MetadataReference.CreateFromFile(typeof(Console).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(Enumerable).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(List<>).Assembly.Location),
         };
 
         // Add runtime assembly references
@@ -40,14 +44,16 @@ public class CallGraphBuilderTests
 
         var methods = new ConcurrentDictionary<string, MethodNode>();
         var calls = new ConcurrentBag<MethodCall>();
+        var interfaceImplementations = new ConcurrentBag<InterfaceImplementation>();
+        var methodOverrides = new ConcurrentBag<MethodOverride>();
 
         var methodExtractor = new MethodExtractor();
-        await methodExtractor.Extract(TestCallGraphId, root, semanticModel, "test.cs", methods);
+        await methodExtractor.Extract(TestCallGraphId, root, semanticModel, "test.cs", methods, interfaceImplementations, methodOverrides);
 
         var callExtractor = new MethodCallExtractor();
         await callExtractor.Extract(TestCallGraphId, root, semanticModel, "test.cs", methods, calls);
 
-        return (methods, calls);
+        return (methods, calls, interfaceImplementations, methodOverrides);
     }
 
     [Fact]
@@ -55,7 +61,7 @@ public class CallGraphBuilderTests
     {
         var source = LoadTestSource("SimpleMethod");
 
-        var (methods, _) = await AnalyzeSource(source);
+        var (methods, _, _, _) = await AnalyzeSource(source);
 
         methods.Should().ContainSingle();
         var method = methods.Values.First();
@@ -69,7 +75,7 @@ public class CallGraphBuilderTests
     {
         var source = LoadTestSource("MethodWithParameters");
 
-        var (methods, _) = await AnalyzeSource(source);
+        var (methods, _, _, _) = await AnalyzeSource(source);
 
         var method = methods.Values.First();
         method.Parameters.Should().HaveCount(2);
@@ -83,7 +89,7 @@ public class CallGraphBuilderTests
     {
         var source = LoadTestSource("MethodCallsAnotherMethod");
 
-        var (methods, calls) = await AnalyzeSource(source);
+        var (methods, calls, _, _) = await AnalyzeSource(source);
 
         methods.Should().HaveCount(2);
         calls.Should().ContainSingle();
@@ -98,7 +104,7 @@ public class CallGraphBuilderTests
     {
         var source = LoadTestSource("ChainedMethodCalls");
 
-        var (methods, calls) = await AnalyzeSource(source);
+        var (methods, calls, _, _) = await AnalyzeSource(source);
 
         methods.Should().HaveCount(3);
         calls.Should().HaveCount(2);
@@ -112,7 +118,7 @@ public class CallGraphBuilderTests
     {
         var source = LoadTestSource("MultipleCallsInSameMethod");
 
-        var (methods, calls) = await AnalyzeSource(source);
+        var (methods, calls, _, _) = await AnalyzeSource(source);
 
         methods.Should().HaveCount(4);
         calls.Should().HaveCount(3);
@@ -126,7 +132,7 @@ public class CallGraphBuilderTests
     {
         var source = LoadTestSource("ExternalMethodCall");
 
-        var (methods, calls) = await AnalyzeSource(source);
+        var (methods, calls, _, _) = await AnalyzeSource(source);
 
         methods.Should().HaveCount(2);
         var writeLineMethod = methods.Values.FirstOrDefault(m => m.Name == "WriteLine");
@@ -139,7 +145,7 @@ public class CallGraphBuilderTests
     {
         var source = LoadTestSource("RecursiveMethod");
 
-        var (methods, calls) = await AnalyzeSource(source);
+        var (methods, calls, _, _) = await AnalyzeSource(source);
 
         methods.Should().ContainSingle();
         calls.Should().ContainSingle();
@@ -153,7 +159,7 @@ public class CallGraphBuilderTests
     {
         var source = LoadTestSource("EmptyClass");
 
-        var (methods, calls) = await AnalyzeSource(source);
+        var (methods, calls, _, _) = await AnalyzeSource(source);
 
         methods.Should().BeEmpty();
         calls.Should().BeEmpty();
@@ -164,7 +170,7 @@ public class CallGraphBuilderTests
     {
         var source = LoadTestSource("GenericReturnType");
 
-        var (methods, _) = await AnalyzeSource(source);
+        var (methods, _, _, _) = await AnalyzeSource(source);
 
         var method = methods.Values.First();
         method.ReturnType.Should().Contain("List<string>");
@@ -175,7 +181,7 @@ public class CallGraphBuilderTests
     {
         var source = LoadTestSource("MethodWithLineNumbers");
 
-        var (methods, calls) = await AnalyzeSource(source);
+        var (methods, calls, _, _) = await AnalyzeSource(source);
 
         var method1 = methods.Values.First(m => m.Name == "Method1");
         method1.StartLine.Should().BeGreaterThan(0);
@@ -189,7 +195,7 @@ public class CallGraphBuilderTests
     {
         var source = LoadTestSource("LocalFunction");
 
-        var (methods, _) = await AnalyzeSource(source);
+        var (methods, _, _, _) = await AnalyzeSource(source);
 
         methods.Should().HaveCount(2);
         methods.Values.Should().Contain(m => m.Name == "OuterMethod");
@@ -201,7 +207,7 @@ public class CallGraphBuilderTests
     {
         var source = LoadTestSource("LocalFunction");
 
-        var (methods, _) = await AnalyzeSource(source);
+        var (methods, _, _, _) = await AnalyzeSource(source);
 
         var localFunc = methods.Values.First(m => m.Name == "LocalFunc");
         localFunc.Id.Should().Contain("OuterMethod()");
@@ -213,7 +219,7 @@ public class CallGraphBuilderTests
     {
         var source = LoadTestSource("LocalFunction");
 
-        var (methods, calls) = await AnalyzeSource(source);
+        var (methods, calls, _, _) = await AnalyzeSource(source);
 
         calls.Should().ContainSingle();
         var call = calls.First();
@@ -227,7 +233,7 @@ public class CallGraphBuilderTests
     {
         var source = LoadTestSource("LocalFunctionCallsExternal");
 
-        var (methods, calls) = await AnalyzeSource(source);
+        var (methods, calls, _, _) = await AnalyzeSource(source);
 
         // OuterMethod calls LocalFunc, LocalFunc calls WriteLine
         calls.Should().Contain(c => c.CallerId.Contains("LocalFunc()") && c.CalleeId.Contains("WriteLine"));
@@ -239,7 +245,7 @@ public class CallGraphBuilderTests
     {
         var source = LoadTestSource("NestedLocalFunction");
 
-        var (methods, _) = await AnalyzeSource(source);
+        var (methods, _, _, _) = await AnalyzeSource(source);
 
         methods.Should().HaveCount(3);
 
@@ -254,7 +260,7 @@ public class CallGraphBuilderTests
     {
         var source = LoadTestSource("LocalFunctionWithParameters");
 
-        var (methods, _) = await AnalyzeSource(source);
+        var (methods, _, _, _) = await AnalyzeSource(source);
 
         var localFunc = methods.Values.First(m => m.Name == "Add");
         localFunc.Parameters.Should().HaveCount(2);
@@ -264,15 +270,281 @@ public class CallGraphBuilderTests
     }
 
     [Fact]
+    public async Task LambdaCallsMethod()
+    {
+        var source = LoadTestSource();
+
+        var (methods, calls, _, _) = await AnalyzeSource(source);
+
+        // Should have OuterMethod, InnerMethod, and the lambda
+        methods.Values.Should().Contain(m => m.Name == "OuterMethod");
+        methods.Values.Should().Contain(m => m.Name == "InnerMethod");
+        methods.Values.Should().Contain(m => m.Id.Contains(">b__") && m.Id.Contains("<"));
+
+        // Call from lambda to InnerMethod
+        var lambdaMethod = methods.Values.First(m => m.Id.Contains(">b__") && m.Id.Contains("<"));
+        calls.Should().Contain(c => c.CallerId == lambdaMethod.Id && c.CalleeId.Contains("InnerMethod()"));
+    }
+
+    [Fact]
+    public async Task ParenthesizedLambdaWithParameters()
+    {
+        var source = LoadTestSource();
+
+        var (methods, _, _, _) = await AnalyzeSource(source);
+
+        var lambdaMethod = methods.Values.First(m => m.Id.Contains(">b__") && m.Id.Contains("<"));
+        lambdaMethod.Parameters.Should().HaveCount(2);
+        lambdaMethod.Parameters.Should().Contain("int a");
+        lambdaMethod.Parameters.Should().Contain("int b");
+    }
+
+    [Fact]
+    public async Task LambdaChainedCalls()
+    {
+        var source = LoadTestSource();
+
+        var (methods, calls, _, _) = await AnalyzeSource(source);
+
+        // Should have OuterMethod, MiddleMethod, InnerMethod, and two lambdas
+        methods.Values.Where(m => m.Id.Contains(">b__") && m.Id.Contains("<")).Should().HaveCount(2);
+
+        // Lambda in OuterMethod calls MiddleMethod
+        calls.Should().Contain(c => c.CallerId.Contains(">b__") && c.CalleeId.Contains("MiddleMethod()"));
+        // Lambda in MiddleMethod calls InnerMethod
+        calls.Should().Contain(c => c.CallerId.Contains(">b__") && c.CalleeId.Contains("InnerMethod()"));
+    }
+
+    [Fact]
+    public async Task LambdaDirectInvocation()
+    {
+        var source = LoadTestSource();
+
+        var (methods, calls, _, _) = await AnalyzeSource(source);
+
+        var lambdaMethod = methods.Values.First(m => m.Id.Contains(">b__"));
+
+        // OuterMethod calls the lambda (contains it)
+        calls.Should().Contain(c =>
+            c.CallerId.Contains("OuterMethod()") && !c.CallerId.Contains(">b__")
+            && c.CalleeId == lambdaMethod.Id);
+
+        // Lambda calls InnerMethod
+        calls.Should().Contain(c =>
+            c.CallerId == lambdaMethod.Id
+            && c.CalleeId.Contains("InnerMethod()"));
+    }
+
+    [Fact]
+    public async Task LambdaPassedToMethod()
+    {
+        var source = LoadTestSource();
+
+        var (methods, calls, _, _) = await AnalyzeSource(source);
+
+        var lambdaMethod = methods.Values.First(m => m.Id.Contains(">b__"));
+
+        // OuterMethod calls Executor.Run (passing the lambda)
+        calls.Should().Contain(c =>
+            c.CallerId.Contains("OuterMethod()") && !c.CallerId.Contains(">b__")
+            && c.CalleeId.Contains("Run("));
+
+        // OuterMethod calls the lambda (contains it)
+        calls.Should().Contain(c =>
+            c.CallerId.Contains("OuterMethod()") && !c.CallerId.Contains(">b__")
+            && c.CalleeId == lambdaMethod.Id);
+
+        // Lambda calls InnerMethod
+        calls.Should().Contain(c =>
+            c.CallerId == lambdaMethod.Id
+            && c.CalleeId.Contains("InnerMethod()"));
+    }
+
+    [Fact]
+    public async Task LinqSelectAndWhere()
+    {
+        var source = LoadTestSource();
+
+        var (methods, calls, _, _) = await AnalyzeSource(source);
+
+        // FilterAndProject method and two lambdas (Where predicate, Select projection)
+        methods.Values.Should().Contain(m => m.Name == "FilterAndProject");
+        var lambdas = methods.Values.Where(m => m.Id.Contains(">b__")).ToList();
+        lambdas.Should().HaveCount(2);
+
+        // FilterAndProject calls Where and Select
+        calls.Should().Contain(c =>
+            c.CallerId.Contains("FilterAndProject(") && !c.CallerId.Contains(">b__")
+            && c.CalleeId.Contains("Where("));
+        calls.Should().Contain(c =>
+            c.CallerId.Contains("FilterAndProject(") && !c.CallerId.Contains(">b__")
+            && c.CalleeId.Contains("Select("));
+
+        // FilterAndProject contains both lambdas
+        foreach (var lambda in lambdas)
+        {
+            calls.Should().Contain(c =>
+                c.CallerId.Contains("FilterAndProject(") && !c.CallerId.Contains(">b__")
+                && c.CalleeId == lambda.Id);
+        }
+    }
+
+    [Fact]
+    public async Task LambdaFromClassField()
+    {
+        var source = LoadTestSource();
+
+        var (methods, calls, _, _) = await AnalyzeSource(source);
+
+        // The field initializer lambda is extracted as a method node
+        var lambda = methods.Values.FirstOrDefault(m => m.Id.Contains(">b__"));
+        lambda.Should().NotBeNull();
+
+        // FilterNumbers calls Where
+        calls.Should().Contain(c =>
+            c.CallerId.Contains("FilterNumbers(") && !c.CallerId.Contains(">b__")
+            && c.CalleeId.Contains("Where("));
+    }
+
+    [Fact]
+    public async Task LambdaPassedViaConstructor()
+    {
+        var source = LoadTestSource();
+
+        var (methods, calls, _, _) = await AnalyzeSource(source);
+
+        var lambda = methods.Values.First(m => m.Id.Contains(">b__") && m.Id.Contains("<"));
+
+        // Setup contains the lambda
+        calls.Should().Contain(c =>
+            c.CallerId.Contains("Setup()") && !c.CallerId.Contains(">b__")
+            && c.CalleeId == lambda.Id);
+
+        // Lambda calls DoWork
+        calls.Should().Contain(c =>
+            c.CallerId == lambda.Id
+            && c.CalleeId.Contains("DoWork()"));
+
+        // Executor.Execute invokes the lambda through the delegate field
+        calls.Should().Contain(c =>
+            c.CallerId.Contains("Executor.Execute()")
+            && c.CalleeId == lambda.Id);
+    }
+
+    [Fact]
+    public async Task LambdaGenericConstructorChained()
+    {
+        var source = LoadTestSource();
+
+        var (methods, calls, _, _) = await AnalyzeSource(source);
+
+        var lambda = methods.Values.First(m => m.Id.Contains(">b__"));
+
+        // Test contains the lambda
+        calls.Should().Contain(c =>
+            c.CallerId.Contains("Test()") && !c.CallerId.Contains(">b__")
+            && c.CalleeId == lambda.Id);
+
+        // Test calls Execute
+        calls.Should().Contain(c =>
+            c.CallerId.Contains("Test()") && !c.CallerId.Contains(">b__")
+            && c.CalleeId.Contains("Execute()"));
+
+        // Execute calls the lambda through the delegate field
+        calls.Should().Contain(c =>
+            c.CallerId.Contains("Execute()")
+            && c.CalleeId == lambda.Id);
+    }
+
+    [Fact]
     public async Task InterfaceMethod_IsExtracted()
     {
         var source = LoadTestSource("InterfaceMethod");
 
-        var (methods, _) = await AnalyzeSource(source);
+        var (methods, _, _, _) = await AnalyzeSource(source);
 
         methods.Should().ContainSingle();
         var method = methods.Values.First();
         method.Name.Should().Be("DoWork");
         method.ContainingType.Should().Contain("IService");
+    }
+
+    [Fact]
+    public async Task InterfaceImplementation_CreatesImplementsRecords()
+    {
+        var source = LoadTestSource("InterfaceImplementation");
+
+        var (methods, _, implementations, _) = await AnalyzeSource(source);
+
+        // Should have interface methods and implementation methods
+        methods.Values.Should().Contain(m => m.Name == "DoWork" && m.ContainingType.Contains("IService"));
+        methods.Values.Should().Contain(m => m.Name == "DoWork" && m.ContainingType.Contains("ServiceImpl"));
+        methods.Values.Should().Contain(m => m.Name == "Calculate" && m.ContainingType.Contains("IService"));
+        methods.Values.Should().Contain(m => m.Name == "Calculate" && m.ContainingType.Contains("ServiceImpl"));
+
+        // Should have two InterfaceImplementation records
+        implementations.Should().HaveCount(2);
+
+        implementations.Should().Contain(i =>
+            i.ImplementingMethodId.Contains("ServiceImpl") && i.ImplementingMethodId.Contains("DoWork")
+            && i.InterfaceMethodId.Contains("IService") && i.InterfaceMethodId.Contains("DoWork"));
+
+        implementations.Should().Contain(i =>
+            i.ImplementingMethodId.Contains("ServiceImpl") && i.ImplementingMethodId.Contains("Calculate")
+            && i.InterfaceMethodId.Contains("IService") && i.InterfaceMethodId.Contains("Calculate"));
+    }
+
+    [Fact]
+    public async Task SimpleOverride_CreatesOverrideRecord()
+    {
+        var source = LoadTestSource("SimpleOverride");
+
+        var (methods, _, _, overrides) = await AnalyzeSource(source);
+
+        methods.Values.Should().Contain(m => m.Name == "DoWork" && m.ContainingType.Contains("BaseClass"));
+        methods.Values.Should().Contain(m => m.Name == "DoWork" && m.ContainingType.Contains("DerivedClass"));
+
+        overrides.Should().ContainSingle();
+        overrides.Should().Contain(o =>
+            o.OverridingMethodId.Contains("DerivedClass") && o.OverridingMethodId.Contains("DoWork")
+            && o.BaseMethodId.Contains("BaseClass") && o.BaseMethodId.Contains("DoWork"));
+    }
+
+    [Fact]
+    public async Task AbstractOverride_CreatesOverrideRecord()
+    {
+        var source = LoadTestSource("AbstractOverride");
+
+        var (methods, _, _, overrides) = await AnalyzeSource(source);
+
+        methods.Values.Should().Contain(m => m.Name == "Calculate" && m.ContainingType.Contains("AbstractBase"));
+        methods.Values.Should().Contain(m => m.Name == "Calculate" && m.ContainingType.Contains("ConcreteClass"));
+
+        overrides.Should().ContainSingle();
+        overrides.Should().Contain(o =>
+            o.OverridingMethodId.Contains("ConcreteClass") && o.OverridingMethodId.Contains("Calculate")
+            && o.BaseMethodId.Contains("AbstractBase") && o.BaseMethodId.Contains("Calculate"));
+    }
+
+    [Fact]
+    public async Task MultiLevelOverride_CreatesOverrideChain()
+    {
+        var source = LoadTestSource("MultiLevelOverride");
+
+        var (methods, _, _, overrides) = await AnalyzeSource(source);
+
+        methods.Values.Should().Contain(m => m.Name == "Process" && m.ContainingType.Contains("GrandParent"));
+        methods.Values.Should().Contain(m => m.Name == "Process" && m.ContainingType.Contains("Parent"));
+        methods.Values.Should().Contain(m => m.Name == "Process" && m.ContainingType.Contains("Child"));
+
+        // Parent overrides GrandParent
+        overrides.Should().Contain(o =>
+            o.OverridingMethodId.Contains("Parent") && o.BaseMethodId.Contains("GrandParent"));
+
+        // Child overrides Parent (direct) and GrandParent (transitive via OverriddenMethod chain)
+        overrides.Should().Contain(o =>
+            o.OverridingMethodId.Contains("Child") && o.BaseMethodId.Contains("Parent"));
+        overrides.Should().Contain(o =>
+            o.OverridingMethodId.Contains("Child") && o.BaseMethodId.Contains("GrandParent"));
     }
 }
