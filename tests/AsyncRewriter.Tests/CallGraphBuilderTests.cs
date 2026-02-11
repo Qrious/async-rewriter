@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using AsyncRewriter.Analyzer;
+using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
 using FluentAssertions;
 using Microsoft.CodeAnalysis;
@@ -456,6 +457,91 @@ public class CallGraphBuilderTests
             && c.CalleeId == lambda.Id);
     }
 
+    /// <summary>
+    /// Analyzes consumer source that references a separate library compilation,
+    /// simulating a multi-project solution where types are defined in a different project.
+    /// </summary>
+    private static async Task<(ConcurrentDictionary<string, MethodNode> Methods, ConcurrentBag<MethodCall> Calls)> AnalyzeSourceWithReference(string consumerSource, string librarySource)
+    {
+        var references = new[]
+        {
+            MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(Task).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(Console).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(Enumerable).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(List<>).Assembly.Location),
+        };
+        var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
+        var runtimeRef = MetadataReference.CreateFromFile(Path.Combine(runtimeDir, "System.Runtime.dll"));
+        var allRefs = references.Append(runtimeRef).Cast<MetadataReference>().ToArray();
+
+        // Build the library compilation
+        var libTree = CSharpSyntaxTree.ParseText(librarySource, path: "library.cs");
+        var libCompilation = CSharpCompilation.Create("LibraryAssembly",
+            new[] { libTree },
+            allRefs,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        // Build the consumer compilation referencing the library
+        var consumerTree = CSharpSyntaxTree.ParseText(consumerSource, path: "consumer.cs");
+        var consumerCompilation = CSharpCompilation.Create("ConsumerAssembly",
+            new[] { consumerTree },
+            allRefs.Append(libCompilation.ToMetadataReference()),
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        var methods = new ConcurrentDictionary<string, MethodNode>();
+        var calls = new ConcurrentBag<MethodCall>();
+        var implementations = new ConcurrentBag<InterfaceImplementation>();
+        var overrides = new ConcurrentBag<MethodOverride>();
+
+        // Build a cross-compilation resolver
+        var resolver = new MultiCompilationSemanticModelResolver(libCompilation, consumerCompilation);
+
+        // Extract methods from both compilations
+        foreach (var (compilation, tree) in new[] { (libCompilation, libTree), (consumerCompilation, consumerTree) })
+        {
+            var model = compilation.GetSemanticModel(tree);
+            var root = await tree.GetRootAsync();
+            await new MethodExtractor().Extract(TestCallGraphId, root, model, tree.FilePath, methods, implementations, overrides);
+        }
+
+        // Extract calls from both compilations with the cross-compilation resolver
+        foreach (var (compilation, tree) in new[] { (libCompilation, libTree), (consumerCompilation, consumerTree) })
+        {
+            var model = compilation.GetSemanticModel(tree);
+            var root = await tree.GetRootAsync();
+            await new MethodCallExtractor().Extract(TestCallGraphId, root, model, tree.FilePath, methods, calls, resolver);
+        }
+
+        return (methods, calls);
+    }
+
+    [Fact]
+    public async Task LambdaGenericConstructorChainedCrossProject()
+    {
+        var librarySource = File.ReadAllText(Path.Combine("TestData", "LambdaGenericConstructorChainedCrossProject_Library.cs"));
+        var consumerSource = File.ReadAllText(Path.Combine("TestData", "LambdaGenericConstructorChainedCrossProject_Consumer.cs"));
+
+        var (methods, calls) = await AnalyzeSourceWithReference(consumerSource, librarySource);
+
+        var lambda = methods.Values.First(m => m.Id.Contains(">b__"));
+
+        // Test contains the lambda
+        calls.Should().Contain(c =>
+            c.CallerId.Contains("Test()") && !c.CallerId.Contains(">b__")
+            && c.CalleeId == lambda.Id);
+
+        // Test calls Execute
+        calls.Should().Contain(c =>
+            c.CallerId.Contains("Test()") && !c.CallerId.Contains(">b__")
+            && c.CalleeId.Contains("Execute()"));
+
+        // Execute calls the lambda through the delegate field (cross-project)
+        calls.Should().Contain(c =>
+            c.CallerId.Contains("Execute()")
+            && c.CalleeId == lambda.Id);
+    }
+
     [Fact]
     public async Task InterfaceMethod_IsExtracted()
     {
@@ -546,5 +632,25 @@ public class CallGraphBuilderTests
             o.OverridingMethodId.Contains("Child") && o.BaseMethodId.Contains("Parent"));
         overrides.Should().Contain(o =>
             o.OverridingMethodId.Contains("Child") && o.BaseMethodId.Contains("GrandParent"));
+    }
+}
+
+file class MultiCompilationSemanticModelResolver : ISemanticModelResolver
+{
+    private readonly Compilation[] _compilations;
+
+    public MultiCompilationSemanticModelResolver(params Compilation[] compilations)
+    {
+        _compilations = compilations;
+    }
+
+    public SemanticModel? Resolve(SyntaxTree syntaxTree)
+    {
+        foreach (var compilation in _compilations)
+        {
+            if (compilation.ContainsSyntaxTree(syntaxTree))
+                return compilation.GetSemanticModel(syntaxTree);
+        }
+        return null;
     }
 }

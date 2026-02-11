@@ -18,12 +18,13 @@ public class MethodCallExtractor : AsyncCSharpSyntaxWalker, IMethodCallExtractor
 {
     private ConcurrentBag<MethodCall> _calls = new();
     private SemanticModel _semanticModel = null!;
+    private ISemanticModelResolver? _semanticModelResolver;
     private string _filePath = string.Empty;
     private IMethodSymbol? _currentMethodSymbol;
     private ConcurrentDictionary<string, MethodNode> _methods;
     private Guid _callGraphId;
 
-    public async Task Extract(
+    public Task Extract(
         Guid callGraphId,
         SyntaxNode root,
         SemanticModel semanticModel,
@@ -32,10 +33,24 @@ public class MethodCallExtractor : AsyncCSharpSyntaxWalker, IMethodCallExtractor
         ConcurrentBag<MethodCall> calls,
         CancellationToken cancellationToken = default)
     {
+        return Extract(callGraphId, root, semanticModel, filePath, methods, calls, null!, cancellationToken);
+    }
+
+    public async Task Extract(
+        Guid callGraphId,
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        string filePath,
+        ConcurrentDictionary<string, MethodNode> methods,
+        ConcurrentBag<MethodCall> calls,
+        ISemanticModelResolver semanticModelResolver,
+        CancellationToken cancellationToken = default)
+    {
         _callGraphId = callGraphId;
         _calls = calls;
         _methods = methods;
         _semanticModel = semanticModel;
+        _semanticModelResolver = semanticModelResolver;
         _filePath = filePath;
         _currentMethodSymbol = null;
 
@@ -177,6 +192,14 @@ public class MethodCallExtractor : AsyncCSharpSyntaxWalker, IMethodCallExtractor
         }
     }
 
+    private SemanticModel? ResolveSemanticModel(SyntaxTree syntaxTree)
+    {
+        if (_semanticModel.Compilation.ContainsSyntaxTree(syntaxTree))
+            return _semanticModel.Compilation.GetSemanticModel(syntaxTree);
+
+        return _semanticModelResolver?.Resolve(syntaxTree);
+    }
+
     private List<IFieldSymbol> FindFieldsAssignedFromParameter(IMethodSymbol constructorSymbol, IParameterSymbol param)
     {
         var fields = new List<IFieldSymbol>();
@@ -185,8 +208,8 @@ public class MethodCallExtractor : AsyncCSharpSyntaxWalker, IMethodCallExtractor
             .FirstOrDefault()?.GetSyntax();
         if (constructorSyntax == null) return fields;
 
-        var constructorModel = _semanticModel.Compilation
-            .GetSemanticModel(constructorSyntax.SyntaxTree);
+        var constructorModel = ResolveSemanticModel(constructorSyntax.SyntaxTree);
+        if (constructorModel == null) return fields;
 
         foreach (var assignment in constructorSyntax.DescendantNodes().OfType<AssignmentExpressionSyntax>())
         {
@@ -218,8 +241,8 @@ public class MethodCallExtractor : AsyncCSharpSyntaxWalker, IMethodCallExtractor
                 .FirstOrDefault()?.GetSyntax();
             if (memberSyntax == null) continue;
 
-            var memberModel = _semanticModel.Compilation
-                .GetSemanticModel(memberSyntax.SyntaxTree);
+            var memberModel = ResolveSemanticModel(memberSyntax.SyntaxTree);
+            if (memberModel == null) continue;
 
             foreach (var invocation in memberSyntax.DescendantNodes().OfType<InvocationExpressionSyntax>())
             {

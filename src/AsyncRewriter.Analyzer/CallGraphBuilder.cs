@@ -50,8 +50,11 @@ public class CallGraphBuilder : ICallGraphBuilder
        await Build(solution, (Methods: _methods, Implementations: _implementations, Overrides: _overrides), async (root, semanticModel, filePath, context, ct) =>
            await (await _methodExtractorFactory.Create()).Extract(callGraphId, root, semanticModel, filePath, context.Methods, context.Implementations, context.Overrides, ct), cancellationToken);
        
-       await Build(solution, (Methods: _methods, Calls: _calls), async (root, semanticModel, filePath, context, ct) => 
-           await (await _methodCallExtractorFactory.Create()).Extract(callGraphId, root, semanticModel, filePath, context.Methods, context.Calls, ct), cancellationToken);
+       // Build a resolver that can find SemanticModels across all projects in the solution
+       var resolver = await SolutionSemanticModelResolver.CreateAsync(solution, cancellationToken);
+
+       await Build(solution, (Methods: _methods, Calls: _calls), async (root, semanticModel, filePath, context, ct) =>
+           await (await _methodCallExtractorFactory.Create()).Extract(callGraphId, root, semanticModel, filePath, context.Methods, context.Calls, resolver, ct), cancellationToken);
        
        return new CallGraph(_calls, _implementations, _overrides)
        {
