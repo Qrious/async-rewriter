@@ -46,7 +46,21 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
             _methods[methodNode.Id] = methodNode;
         }
 
-        // Don't recurse into method bodies for method discovery
+        // Recurse into method body to find local functions
+        await DefaultVisitAsync(node, cancellationToken);
+    }
+
+    public override async Task VisitLocalFunctionStatementAsync(LocalFunctionStatementSyntax node, CancellationToken cancellationToken = default)
+    {
+        var methodSymbol = _semanticModel.GetDeclaredSymbol(node) as IMethodSymbol;
+        if (methodSymbol != null)
+        {
+            var methodNode = CreateMethodNode(node, methodSymbol);
+            _methods[methodNode.Id] = methodNode;
+        }
+
+        // Recurse to find nested local functions
+        await DefaultVisitAsync(node, cancellationToken);
     }
 
     public override async Task VisitInterfaceDeclarationAsync(InterfaceDeclarationSyntax node, CancellationToken cancellationToken = default)
@@ -66,7 +80,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
         }
     }
 
-    private MethodNode CreateMethodNode(MethodDeclarationSyntax methodDecl, IMethodSymbol methodSymbol)
+    private MethodNode CreateMethodNode(SyntaxNode methodDecl, IMethodSymbol methodSymbol)
     {
         var lineSpan = methodDecl.GetLocation().GetLineSpan();
 
@@ -152,6 +166,27 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
     internal static string GetMethodId(IMethodSymbol methodSymbol)
     {
         var originalMethod = methodSymbol.OriginalDefinition;
+
+        // For local functions, build the full chain: Type.ParentMethod(params).LocalFunc(params)
+        if (originalMethod.MethodKind == MethodKind.LocalFunction)
+        {
+            var parts = new List<string>();
+            var current = originalMethod;
+            while (current != null && current.MethodKind == MethodKind.LocalFunction)
+            {
+                parts.Add(GetMethodSignature(current));
+                current = current.ContainingSymbol as IMethodSymbol;
+            }
+
+            // current is now the outermost non-local method (or null)
+            if (current != null)
+                parts.Add(GetMethodSignature(current));
+
+            parts.Reverse();
+            var containingType = originalMethod.ContainingType?.ToDisplayString() ?? "";
+            return $"{containingType}.{string.Join(".", parts)}";
+        }
+
         return $"{originalMethod.ContainingType?.ToDisplayString()}.{GetMethodSignature(originalMethod)}";
     }
 

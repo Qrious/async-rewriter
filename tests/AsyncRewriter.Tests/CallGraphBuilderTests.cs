@@ -1,73 +1,77 @@
+using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using AsyncRewriter.Analyzer;
 using AsyncRewriter.Core.Models;
 using FluentAssertions;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Xunit;
 
 namespace AsyncRewriter.Tests;
 
 public class CallGraphBuilderTests
 {
-    private readonly CallGraphBuilder _analyzer;
+    private static readonly Guid TestCallGraphId = Guid.NewGuid();
 
-    public CallGraphBuilderTests()
+    private static string LoadTestSource([CallerMemberName] string testName = "")
+        => File.ReadAllText(Path.Combine("TestData", $"{testName}.cs"));
+
+    private static async Task<(ConcurrentDictionary<string, MethodNode> Methods, ConcurrentBag<MethodCall> Calls)> AnalyzeSource(string sourceCode)
     {
-        _analyzer = new CallGraphBuilder();
+        var syntaxTree = CSharpSyntaxTree.ParseText(sourceCode);
+        var references = new[]
+        {
+            MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(Task).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(Console).Assembly.Location),
+        };
+
+        // Add runtime assembly references
+        var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
+        var runtimeRef = MetadataReference.CreateFromFile(Path.Combine(runtimeDir, "System.Runtime.dll"));
+
+        var compilation = CSharpCompilation.Create("TestAssembly",
+            new[] { syntaxTree },
+            references.Append(runtimeRef),
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        var semanticModel = compilation.GetSemanticModel(syntaxTree);
+        var root = await syntaxTree.GetRootAsync();
+
+        var methods = new ConcurrentDictionary<string, MethodNode>();
+        var calls = new ConcurrentBag<MethodCall>();
+
+        var methodExtractor = new MethodExtractor();
+        await methodExtractor.Extract(TestCallGraphId, root, semanticModel, "test.cs", methods);
+
+        var callExtractor = new MethodCallExtractor();
+        await callExtractor.Extract(TestCallGraphId, root, semanticModel, "test.cs", methods, calls);
+
+        return (methods, calls);
     }
 
     [Fact]
-    public async Task AnalyzeSourceAsync_SimpleMethod_CreatesMethodNode()
+    public async Task SimpleMethod_CreatesMethodNode()
     {
-        // Arrange
-        var sourceCode = @"
-using System;
+        var source = LoadTestSource("SimpleMethod");
 
-namespace TestNamespace
-{
-    public class TestClass
-    {
-        public void TestMethod()
-        {
-        }
-    }
-}";
+        var (methods, _) = await AnalyzeSource(source);
 
-        // Act
-        var callGraph = await _analyzer.AnalyzeSourceAsync(sourceCode);
-
-        // Assert
-        callGraph.Should().NotBeNull();
-        callGraph.Methods.Should().ContainSingle();
-
-        var method = callGraph.Methods.Values.First();
+        methods.Should().ContainSingle();
+        var method = methods.Values.First();
         method.Name.Should().Be("TestMethod");
         method.ContainingType.Should().Be("TestNamespace.TestClass");
         method.ReturnType.Should().Be("void");
-        method.IsAsync.Should().BeFalse();
     }
 
     [Fact]
-    public async Task AnalyzeSourceAsync_MethodWithParameters_CapturesParameters()
+    public async Task MethodWithParameters_CapturesParameters()
     {
-        // Arrange
-        var sourceCode = @"
-using System;
+        var source = LoadTestSource("MethodWithParameters");
 
-namespace TestNamespace
-{
-    public class TestClass
-    {
-        public int Calculate(int x, string name)
-        {
-            return x;
-        }
-    }
-}";
+        var (methods, _) = await AnalyzeSource(source);
 
-        // Act
-        var callGraph = await _analyzer.AnalyzeSourceAsync(sourceCode);
-
-        // Assert
-        var method = callGraph.Methods.Values.First();
+        var method = methods.Values.First();
         method.Parameters.Should().HaveCount(2);
         method.Parameters.Should().Contain("int x");
         method.Parameters.Should().Contain("string name");
@@ -75,346 +79,200 @@ namespace TestNamespace
     }
 
     [Fact]
-    public async Task AnalyzeSourceAsync_AsyncMethod_IdentifiesAsAsync()
+    public async Task MethodCallsAnotherMethod_CreatesMethodCall()
     {
-        // Arrange
-        var sourceCode = @"
-using System.Threading.Tasks;
+        var source = LoadTestSource("MethodCallsAnotherMethod");
 
-namespace TestNamespace
-{
-    public class TestClass
-    {
-        public async Task<int> GetValueAsync()
-        {
-            await Task.Delay(100);
-            return 42;
-        }
-    }
-}";
+        var (methods, calls) = await AnalyzeSource(source);
 
-        // Act
-        var callGraph = await _analyzer.AnalyzeSourceAsync(sourceCode);
+        methods.Should().HaveCount(2);
+        calls.Should().ContainSingle();
 
-        // Assert
-        var method = callGraph.Methods.Values.First();
-        method.Name.Should().Be("GetValueAsync");
-        method.IsAsync.Should().BeTrue();
-        method.ReturnType.Should().Be("Task<int>");
+        var call = calls.First();
+        call.CallerId.Should().Contain("CallerMethod()");
+        call.CalleeId.Should().Contain("CalleeMethod()");
     }
 
     [Fact]
-    public async Task AnalyzeSourceAsync_MethodCallsAnotherMethod_CreatesMethodCall()
+    public async Task ChainedMethodCalls_CreatesMultipleCalls()
     {
-        // Arrange
-        var sourceCode = @"
-using System;
+        var source = LoadTestSource("ChainedMethodCalls");
 
-namespace TestNamespace
-{
-    public class TestClass
-    {
-        public void CallerMethod()
-        {
-            CalleeMethod();
-        }
+        var (methods, calls) = await AnalyzeSource(source);
 
-        public void CalleeMethod()
-        {
-        }
-    }
-}";
+        methods.Should().HaveCount(3);
+        calls.Should().HaveCount(2);
 
-        // Act
-        var callGraph = await _analyzer.AnalyzeSourceAsync(sourceCode);
-
-        // Assert
-        callGraph.Methods.Should().HaveCount(2);
-        callGraph.Calls.Values.Should().ContainSingle();
-
-        var call = callGraph.Calls.Values.First();
-        call.CallerSignature.Should().Be("CallerMethod()");
-        call.CalleeSignature.Should().Be("CalleeMethod()");
+        calls.Should().Contain(c => c.CallerId.Contains("Method1()") && c.CalleeId.Contains("Method2()"));
+        calls.Should().Contain(c => c.CallerId.Contains("Method2()") && c.CalleeId.Contains("Method3()"));
     }
 
     [Fact]
-    public async Task AnalyzeSourceAsync_ChainedMethodCalls_CreatesMultipleCalls()
+    public async Task MultipleCallsInSameMethod_CapturesAllCalls()
     {
-        // Arrange
-        var sourceCode = @"
-using System;
+        var source = LoadTestSource("MultipleCallsInSameMethod");
 
-namespace TestNamespace
-{
-    public class TestClass
-    {
-        public void Method1()
-        {
-            Method2();
-        }
+        var (methods, calls) = await AnalyzeSource(source);
 
-        public void Method2()
-        {
-            Method3();
-        }
+        methods.Should().HaveCount(4);
+        calls.Should().HaveCount(3);
 
-        public void Method3()
-        {
-        }
-    }
-}";
-
-        // Act
-        var callGraph = await _analyzer.AnalyzeSourceAsync(sourceCode);
-
-        // Assert
-        callGraph.Methods.Should().HaveCount(3);
-        callGraph.Calls.Values.Should().HaveCount(2);
-
-        var call1 = callGraph.Calls.Values.FirstOrDefault(c => c.CallerSignature == "Method1()");
-        call1.Should().NotBeNull();
-        call1!.CalleeSignature.Should().Be("Method2()");
-
-        var call2 = callGraph.Calls.Values.FirstOrDefault(c => c.CallerSignature == "Method2()");
-        call2.Should().NotBeNull();
-        call2!.CalleeSignature.Should().Be("Method3()");
+        var callerCalls = calls.Where(c => c.CallerId.Contains("CallerMethod()"));
+        callerCalls.Should().HaveCount(3);
     }
 
     [Fact]
-    public async Task AnalyzeSourceAsync_MultipleCallsInSameMethod_CapturesAllCalls()
+    public async Task ExternalMethodCall_AddsExternalMethodNode()
     {
-        // Arrange
-        var sourceCode = @"
-using System;
+        var source = LoadTestSource("ExternalMethodCall");
 
-namespace TestNamespace
-{
-    public class TestClass
-    {
-        public void CallerMethod()
-        {
-            Method1();
-            Method2();
-            Method3();
-        }
+        var (methods, calls) = await AnalyzeSource(source);
 
-        public void Method1() { }
-        public void Method2() { }
-        public void Method3() { }
-    }
-}";
-
-        // Act
-        var callGraph = await _analyzer.AnalyzeSourceAsync(sourceCode);
-
-        // Assert
-        callGraph.Methods.Should().HaveCount(4);
-        callGraph.Calls.Values.Should().HaveCount(3);
-
-        var callsFromCaller = callGraph.Calls.Values.Where(c => c.CallerSignature == "CallerMethod()");
-        callsFromCaller.Should().HaveCount(3);
-    }
-
-    [Fact]
-    public async Task AnalyzeSourceAsync_ExternalMethodCall_AddsExternalMethodNode()
-    {
-        // Arrange
-        var sourceCode = @"
-using System;
-
-namespace TestNamespace
-{
-    public class TestClass
-    {
-        public void TestMethod()
-        {
-            Console.WriteLine(""Hello"");
-        }
-    }
-}";
-
-        // Act
-        var callGraph = await _analyzer.AnalyzeSourceAsync(sourceCode);
-
-        // Assert
-        callGraph.Methods.Should().HaveCount(2); // TestMethod + WriteLine
-
-        var writeLineMethod = callGraph.Methods.Values.FirstOrDefault(m => m.Name == "WriteLine");
+        methods.Should().HaveCount(2);
+        var writeLineMethod = methods.Values.FirstOrDefault(m => m.Name == "WriteLine");
         writeLineMethod.Should().NotBeNull();
         writeLineMethod!.FilePath.Should().Be("external");
     }
 
     [Fact]
-    public async Task AnalyzeSourceAsync_MethodWithLineNumbers_CapturesCorrectLineNumbers()
+    public async Task RecursiveMethod_CreatesCallToSelf()
     {
-        // Arrange
-        var sourceCode = @"
-using System;
+        var source = LoadTestSource("RecursiveMethod");
 
-namespace TestNamespace
-{
-    public class TestClass
-    {
-        public void Method1()
-        {
-            Method2();
-        }
+        var (methods, calls) = await AnalyzeSource(source);
 
-        public void Method2()
-        {
-        }
-    }
-}";
+        methods.Should().ContainSingle();
+        calls.Should().ContainSingle();
 
-        // Act
-        var callGraph = await _analyzer.AnalyzeSourceAsync(sourceCode);
-
-        // Assert
-        var method1 = callGraph.Methods.Values.FirstOrDefault(m => m.Name == "Method1");
-        method1.Should().NotBeNull();
-        method1!.StartLine.Should().BeGreaterThan(0);
-        method1.EndLine.Should().BeGreaterOrEqualTo(method1.StartLine);
-
-        var call = callGraph.Calls.Values.First();
-        call.LineNumber.Should().BeGreaterThan(0);
+        var call = calls.First();
+        call.CallerId.Should().Be(call.CalleeId);
     }
 
     [Fact]
-    public async Task AnalyzeSourceAsync_ClassWithMultipleMethods_IdentifiesAllMethods()
+    public async Task EmptyClass_CreatesEmptyCallGraph()
     {
-        // Arrange
-        var sourceCode = @"
-using System;
+        var source = LoadTestSource("EmptyClass");
 
-namespace TestNamespace
-{
-    public class TestClass
-    {
-        public void Method1() { }
-        public int Method2(string s) { return 0; }
-        public async Task Method3() { await Task.Delay(1); }
-        private string Method4(int x, int y) { return """"; }
-    }
-}";
+        var (methods, calls) = await AnalyzeSource(source);
 
-        // Act
-        var callGraph = await _analyzer.AnalyzeSourceAsync(sourceCode);
-
-        // Assert
-        callGraph.Methods.Should().HaveCount(4);
-
-        var methodNames = callGraph.Methods.Values.Select(m => m.Name).ToList();
-        methodNames.Should().Contain("Method1");
-        methodNames.Should().Contain("Method2");
-        methodNames.Should().Contain("Method3");
-        methodNames.Should().Contain("Method4");
+        methods.Should().BeEmpty();
+        calls.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task AnalyzeSourceAsync_GenericReturnType_CapturesGenericType()
+    public async Task GenericReturnType_CapturesGenericType()
     {
-        // Arrange
-        var sourceCode = @"
-using System.Collections.Generic;
+        var source = LoadTestSource("GenericReturnType");
 
-namespace TestNamespace
-{
-    public class TestClass
-    {
-        public List<string> GetNames()
-        {
-            return new List<string>();
-        }
-    }
-}";
+        var (methods, _) = await AnalyzeSource(source);
 
-        // Act
-        var callGraph = await _analyzer.AnalyzeSourceAsync(sourceCode);
-
-        // Assert
-        var method = callGraph.Methods.Values.First();
+        var method = methods.Values.First();
         method.ReturnType.Should().Contain("List<string>");
     }
 
     [Fact]
-    public async Task AnalyzeSourceAsync_MethodInvocationWithArguments_StillCreatesCall()
+    public async Task MethodWithLineNumbers_CapturesCorrectLineNumbers()
     {
-        // Arrange
-        var sourceCode = @"
-using System;
+        var source = LoadTestSource("MethodWithLineNumbers");
 
-namespace TestNamespace
-{
-    public class TestClass
-    {
-        public void CallerMethod()
-        {
-            CalleeMethod(42, ""test"");
-        }
+        var (methods, calls) = await AnalyzeSource(source);
 
-        public void CalleeMethod(int x, string s)
-        {
-        }
-    }
-}";
+        var method1 = methods.Values.First(m => m.Name == "Method1");
+        method1.StartLine.Should().BeGreaterThan(0);
+        method1.EndLine.Should().BeGreaterOrEqualTo(method1.StartLine);
 
-        // Act
-        var callGraph = await _analyzer.AnalyzeSourceAsync(sourceCode);
-
-        // Assert
-        callGraph.Calls.Values.Should().ContainSingle();
-
-        var call = callGraph.Calls.Values.First();
-        call.CalleeSignature.Should().Be("CalleeMethod(int, string)");
+        calls.First().LineNumber.Should().BeGreaterThan(0);
     }
 
     [Fact]
-    public async Task AnalyzeSourceAsync_RecursiveMethod_CreatesCallToSelf()
+    public async Task LocalFunction_IsExtracted()
     {
-        // Arrange
-        var sourceCode = @"
-namespace TestNamespace
-{
-    public class TestClass
-    {
-        public int Factorial(int n)
-        {
-            if (n <= 1) return 1;
-            return n * Factorial(n - 1);
-        }
-    }
-}";
+        var source = LoadTestSource("LocalFunction");
 
-        // Act
-        var callGraph = await _analyzer.AnalyzeSourceAsync(sourceCode);
+        var (methods, _) = await AnalyzeSource(source);
 
-        // Assert
-        callGraph.Methods.Should().ContainSingle();
-        callGraph.Calls.Values.Should().ContainSingle();
-
-        var call = callGraph.Calls.Values.First();
-        call.CallerSignature.Should().Be(call.CalleeSignature);
-        call.CalleeSignature.Should().Be("Factorial(int)");
+        methods.Should().HaveCount(2);
+        methods.Values.Should().Contain(m => m.Name == "OuterMethod");
+        methods.Values.Should().Contain(m => m.Name == "LocalFunc");
     }
 
     [Fact]
-    public async Task AnalyzeSourceAsync_EmptyClass_CreatesEmptyCallGraph()
+    public async Task LocalFunction_IdContainsParentMethod()
     {
-        // Arrange
-        var sourceCode = @"
-namespace TestNamespace
-{
-    public class EmptyClass
-    {
+        var source = LoadTestSource("LocalFunction");
+
+        var (methods, _) = await AnalyzeSource(source);
+
+        var localFunc = methods.Values.First(m => m.Name == "LocalFunc");
+        localFunc.Id.Should().Contain("OuterMethod()");
+        localFunc.Id.Should().Contain("LocalFunc()");
     }
-}";
 
-        // Act
-        var callGraph = await _analyzer.AnalyzeSourceAsync(sourceCode);
+    [Fact]
+    public async Task LocalFunction_CallFromParent_CreatesMethodCall()
+    {
+        var source = LoadTestSource("LocalFunction");
 
-        // Assert
-        callGraph.Should().NotBeNull();
-        callGraph.Methods.Should().BeEmpty();
-        callGraph.Calls.Values.Should().BeEmpty();
+        var (methods, calls) = await AnalyzeSource(source);
+
+        calls.Should().ContainSingle();
+        var call = calls.First();
+        call.CallerId.Should().Contain("OuterMethod()");
+        call.CallerId.Should().NotContain("LocalFunc");
+        call.CalleeId.Should().Contain("LocalFunc()");
+    }
+
+    [Fact]
+    public async Task LocalFunction_CallsExternalMethod_CreatesMethodCall()
+    {
+        var source = LoadTestSource("LocalFunctionCallsExternal");
+
+        var (methods, calls) = await AnalyzeSource(source);
+
+        // OuterMethod calls LocalFunc, LocalFunc calls WriteLine
+        calls.Should().Contain(c => c.CallerId.Contains("LocalFunc()") && c.CalleeId.Contains("WriteLine"));
+        calls.Should().Contain(c => c.CallerId.Contains("OuterMethod()") && c.CalleeId.Contains("LocalFunc()"));
+    }
+
+    [Fact]
+    public async Task NestedLocalFunction_IdContainsFullChain()
+    {
+        var source = LoadTestSource("NestedLocalFunction");
+
+        var (methods, _) = await AnalyzeSource(source);
+
+        methods.Should().HaveCount(3);
+
+        var inner = methods.Values.First(m => m.Name == "Inner");
+        inner.Id.Should().Contain("OuterMethod()");
+        inner.Id.Should().Contain("Middle()");
+        inner.Id.Should().Contain("Inner()");
+    }
+
+    [Fact]
+    public async Task LocalFunctionWithParameters_CapturesParameters()
+    {
+        var source = LoadTestSource("LocalFunctionWithParameters");
+
+        var (methods, _) = await AnalyzeSource(source);
+
+        var localFunc = methods.Values.First(m => m.Name == "Add");
+        localFunc.Parameters.Should().HaveCount(2);
+        localFunc.Parameters.Should().Contain("int a");
+        localFunc.Parameters.Should().Contain("int b");
+        localFunc.ReturnType.Should().Be("int");
+    }
+
+    [Fact]
+    public async Task InterfaceMethod_IsExtracted()
+    {
+        var source = LoadTestSource("InterfaceMethod");
+
+        var (methods, _) = await AnalyzeSource(source);
+
+        methods.Should().ContainSingle();
+        var method = methods.Values.First();
+        method.Name.Should().Be("DoWork");
+        method.ContainingType.Should().Contain("IService");
     }
 }

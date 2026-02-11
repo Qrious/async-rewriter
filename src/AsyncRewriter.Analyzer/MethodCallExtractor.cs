@@ -57,6 +57,21 @@ public class MethodCallExtractor : AsyncCSharpSyntaxWalker, IMethodCallExtractor
         _currentMethodSymbol = previousSymbol;
     }
 
+    public override async Task VisitLocalFunctionStatementAsync(LocalFunctionStatementSyntax node, CancellationToken cancellationToken = default)
+    {
+        var methodSymbol = _semanticModel.GetDeclaredSymbol(node) as IMethodSymbol;
+        if (methodSymbol == null)
+            return;
+
+        var previousSymbol = _currentMethodSymbol;
+        _currentMethodSymbol = methodSymbol;
+
+        // Visit children to find invocations within this local function
+        await DefaultVisitAsync(node, cancellationToken);
+
+        _currentMethodSymbol = previousSymbol;
+    }
+
     public override async Task VisitInvocationExpressionAsync(InvocationExpressionSyntax node, CancellationToken cancellationToken = default)
     {
         if (_currentMethodSymbol != null)

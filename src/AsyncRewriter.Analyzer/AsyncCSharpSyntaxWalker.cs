@@ -33,6 +33,9 @@ public abstract class AsyncCSharpSyntaxWalker
             case MethodDeclarationSyntax methodDecl:
                 await VisitMethodDeclarationAsync(methodDecl, cancellationToken);
                 break;
+            case LocalFunctionStatementSyntax localFunc:
+                await VisitLocalFunctionStatementAsync(localFunc, cancellationToken);
+                break;
             case InvocationExpressionSyntax invocation:
                 await VisitInvocationExpressionAsync(invocation, cancellationToken);
                 break;
@@ -63,6 +66,9 @@ public abstract class AsyncCSharpSyntaxWalker
         => DefaultVisitAsync(node, cancellationToken);
 
     public virtual Task VisitMethodDeclarationAsync(MethodDeclarationSyntax node, CancellationToken cancellationToken = default)
+        => DefaultVisitAsync(node, cancellationToken);
+
+    public virtual Task VisitLocalFunctionStatementAsync(LocalFunctionStatementSyntax node, CancellationToken cancellationToken = default)
         => DefaultVisitAsync(node, cancellationToken);
 
     public virtual Task VisitInvocationExpressionAsync(InvocationExpressionSyntax node, CancellationToken cancellationToken = default)
