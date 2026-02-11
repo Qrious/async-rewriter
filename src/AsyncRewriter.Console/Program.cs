@@ -275,6 +275,7 @@ class Program
                         var rootMethodIds = new HashSet<string>(wrappers.Select(w => w.MethodId));
                         System.Console.WriteLine("Running async flooding analysis...");
                         var asyncGraph = await floodingAnalyzer.AnalyzeFloodingAsync(callGraph, rootMethodIds);
+                        PrintFloodingStatistics(callGraph, asyncGraph);
                         PrintProblematicInterfaces(callGraph, asyncGraph);
                     }
                 }
@@ -366,52 +367,8 @@ class Program
                 System.Console.WriteLine($"  Flooding: {method} ({current}/{total})");
             });
 
-            // Collect flooded methods (those whose return type changed)
-            var floodedMethods = new List<(string Id, AsyncRewriter.Core.Models.MethodNode Original, AsyncRewriter.Core.Models.MethodNode Flooded)>();
-            foreach (var (id, method) in asyncGraph.Methods)
-            {
-                if (callGraph.Methods.TryGetValue(id, out var original) && original.ReturnType != method.ReturnType)
-                    floodedMethods.Add((id, original, method));
-            }
-
             System.Console.WriteLine();
-            System.Console.ForegroundColor = ConsoleColor.Green;
-            System.Console.WriteLine($"✓ Flooding complete: {floodedMethods.Count} methods need async transformation");
-            System.Console.ResetColor();
-            System.Console.WriteLine();
-
-            // Statistics
-            var affectedTypes = floodedMethods.Select(m => m.Original.ContainingType).Distinct().Count();
-            var affectedFiles = floodedMethods.Where(m => m.Original.FilePath != "external").Select(m => m.Original.FilePath).Distinct().Count();
-            var externalFlooded = floodedMethods.Count(m => m.Original.FilePath == "external");
-            var internalFlooded = floodedMethods.Count - externalFlooded;
-
-            var byReturnTypeChange = floodedMethods
-                .GroupBy(m => $"{m.Original.ReturnType} → {m.Flooded.ReturnType}")
-                .OrderByDescending(g => g.Count())
-                .ToList();
-
-            System.Console.WriteLine("Statistics:");
-            System.Console.WriteLine($"  Methods flooded:  {floodedMethods.Count} ({internalFlooded} internal, {externalFlooded} external)");
-            System.Console.WriteLine($"  Types affected:   {affectedTypes}");
-            System.Console.WriteLine($"  Files affected:   {affectedFiles}");
-            System.Console.WriteLine();
-            System.Console.WriteLine("  Return type changes:");
-            foreach (var group in byReturnTypeChange)
-            {
-                System.Console.WriteLine($"    {group.Key}: {group.Count()}");
-            }
-            System.Console.WriteLine();
-
-            // Print flooded methods
-            foreach (var (_, original, flooded) in floodedMethods.OrderBy(m => m.Flooded.ContainingType).ThenBy(m => m.Flooded.Name))
-            {
-                System.Console.ForegroundColor = ConsoleColor.Cyan;
-                System.Console.Write($"  {flooded.ContainingType}.{flooded.Name}");
-                System.Console.ResetColor();
-                System.Console.WriteLine($": {original.ReturnType} → {flooded.ReturnType}");
-            }
-            System.Console.WriteLine();
+            PrintFloodingStatistics(callGraph, asyncGraph);
 
             PrintProblematicInterfaces(callGraph, asyncGraph);
 
@@ -435,6 +392,53 @@ class Program
             System.Console.WriteLine(ex.StackTrace);
             System.Console.ResetColor();
         }
+    }
+
+    static void PrintFloodingStatistics(AsyncRewriter.Core.Models.CallGraph callGraph, AsyncRewriter.Core.Models.CallGraph asyncGraph)
+    {
+        var floodedMethods = new List<(string Id, AsyncRewriter.Core.Models.MethodNode Original, AsyncRewriter.Core.Models.MethodNode Flooded)>();
+        foreach (var (id, method) in asyncGraph.Methods)
+        {
+            if (callGraph.Methods.TryGetValue(id, out var original) && original.ReturnType != method.ReturnType)
+                floodedMethods.Add((id, original, method));
+        }
+
+        System.Console.ForegroundColor = ConsoleColor.Green;
+        System.Console.WriteLine($"✓ Flooding complete: {floodedMethods.Count} methods need async transformation");
+        System.Console.ResetColor();
+        System.Console.WriteLine();
+
+        var affectedTypes = floodedMethods.Select(m => m.Original.ContainingType).Distinct().Count();
+        var affectedFiles = floodedMethods.Where(m => m.Original.FilePath != "external").Select(m => m.Original.FilePath).Distinct().Count();
+        var externalFlooded = floodedMethods.Count(m => m.Original.FilePath == "external");
+        var internalFlooded = floodedMethods.Count - externalFlooded;
+
+        var byReturnTypeChange = floodedMethods
+            .GroupBy(m => $"{m.Original.ReturnType} → {m.Flooded.ReturnType}")
+            .OrderByDescending(g => g.Count())
+            .ToList();
+
+        System.Console.WriteLine("Statistics:");
+        System.Console.WriteLine($"  Methods flooded:  {floodedMethods.Count} ({internalFlooded} internal, {externalFlooded} external)");
+        System.Console.WriteLine($"  Types affected:   {affectedTypes}");
+        System.Console.WriteLine($"  Files affected:   {affectedFiles}");
+        System.Console.WriteLine();
+        System.Console.WriteLine("  Return type changes:");
+        foreach (var group in byReturnTypeChange)
+        {
+            System.Console.WriteLine($"    {group.Key}: {group.Count()}");
+        }
+        System.Console.WriteLine();
+
+        // Print flooded methods
+        foreach (var (_, original, flooded) in floodedMethods.OrderBy(m => m.Flooded.ContainingType).ThenBy(m => m.Flooded.Name))
+        {
+            System.Console.ForegroundColor = ConsoleColor.Cyan;
+            System.Console.Write($"  {flooded.ContainingType}.{flooded.Name}");
+            System.Console.ResetColor();
+            System.Console.WriteLine($": {original.ReturnType} → {flooded.ReturnType}");
+        }
+        System.Console.WriteLine();
     }
 
     static void PrintProblematicInterfaces(AsyncRewriter.Core.Models.CallGraph callGraph, AsyncRewriter.Core.Models.CallGraph asyncGraph)
