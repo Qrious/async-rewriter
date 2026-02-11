@@ -36,6 +36,15 @@ public abstract class AsyncCSharpSyntaxWalker
             case LocalFunctionStatementSyntax localFunc:
                 await VisitLocalFunctionStatementAsync(localFunc, cancellationToken);
                 break;
+            case ParenthesizedLambdaExpressionSyntax parenthesizedLambda:
+                await VisitParenthesizedLambdaExpressionAsync(parenthesizedLambda, cancellationToken);
+                break;
+            case SimpleLambdaExpressionSyntax simpleLambda:
+                await VisitSimpleLambdaExpressionAsync(simpleLambda, cancellationToken);
+                break;
+            case ObjectCreationExpressionSyntax objectCreation:
+                await VisitObjectCreationExpressionAsync(objectCreation, cancellationToken);
+                break;
             case InvocationExpressionSyntax invocation:
                 await VisitInvocationExpressionAsync(invocation, cancellationToken);
                 break;
@@ -69,6 +78,15 @@ public abstract class AsyncCSharpSyntaxWalker
         => DefaultVisitAsync(node, cancellationToken);
 
     public virtual Task VisitLocalFunctionStatementAsync(LocalFunctionStatementSyntax node, CancellationToken cancellationToken = default)
+        => DefaultVisitAsync(node, cancellationToken);
+
+    public virtual Task VisitParenthesizedLambdaExpressionAsync(ParenthesizedLambdaExpressionSyntax node, CancellationToken cancellationToken = default)
+        => DefaultVisitAsync(node, cancellationToken);
+
+    public virtual Task VisitSimpleLambdaExpressionAsync(SimpleLambdaExpressionSyntax node, CancellationToken cancellationToken = default)
+        => DefaultVisitAsync(node, cancellationToken);
+
+    public virtual Task VisitObjectCreationExpressionAsync(ObjectCreationExpressionSyntax node, CancellationToken cancellationToken = default)
         => DefaultVisitAsync(node, cancellationToken);
 
     public virtual Task VisitInvocationExpressionAsync(InvocationExpressionSyntax node, CancellationToken cancellationToken = default)
