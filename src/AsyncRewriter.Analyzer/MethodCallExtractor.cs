@@ -309,15 +309,16 @@ public class MethodCallExtractor : AsyncCSharpSyntaxWalker, IMethodCallExtractor
 
     private MethodNode CreateMethodNodeFromSymbol(IMethodSymbol methodSymbol, string filePath)
     {
+        var original = methodSymbol.OriginalDefinition;
         return new MethodNode
         {
             CallGraphId = _callGraphId.ToString(),
             Id = MethodExtractor.GetMethodId(methodSymbol),
-            Name = methodSymbol.Name,
-            ContainingType = methodSymbol.ContainingType?.ToDisplayString() ?? "",
-            ContainingNamespace = methodSymbol.ContainingNamespace?.ToDisplayString() ?? "",
-            ReturnType = methodSymbol.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-            Parameters = methodSymbol.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
+            Name = original.Name,
+            ContainingType = original.ContainingType?.ToDisplayString() ?? "",
+            ContainingNamespace = original.ContainingNamespace?.ToDisplayString() ?? "",
+            ReturnType = original.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+            Parameters = original.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
             FilePath = filePath,
             StartLine = methodSymbol.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Line + 1 ?? 0,
             EndLine = methodSymbol.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Line + 1 ?? 0,

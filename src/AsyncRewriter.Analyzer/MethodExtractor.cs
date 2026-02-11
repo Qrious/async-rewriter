@@ -168,16 +168,17 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                     BaseMethodId = baseMethodId,
                 });
 
-                // Ensure the base method node exists
+                // Ensure the base method node exists (use OriginalDefinition for consistent generic type display)
+                var overriddenOriginal = overridden.OriginalDefinition;
                 _methods.TryAdd(baseMethodId, new MethodNode
                 {
                     CallGraphId = _callGraphId.ToString(),
                     Id = baseMethodId,
-                    Name = overridden.Name,
-                    ContainingType = overridden.ContainingType?.ToDisplayString() ?? "",
-                    ContainingNamespace = overridden.ContainingNamespace?.ToDisplayString() ?? "",
-                    ReturnType = overridden.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-                    Parameters = overridden.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
+                    Name = overriddenOriginal.Name,
+                    ContainingType = overriddenOriginal.ContainingType?.ToDisplayString() ?? "",
+                    ContainingNamespace = overriddenOriginal.ContainingNamespace?.ToDisplayString() ?? "",
+                    ReturnType = overriddenOriginal.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+                    Parameters = overriddenOriginal.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
                     FilePath = overridden.Locations.FirstOrDefault()?.SourceTree?.FilePath ?? "external",
                     StartLine = overridden.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Line + 1 ?? 0,
                     EndLine = overridden.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Line + 1 ?? 0,
