@@ -85,6 +85,7 @@ class Program
             await AnalyzeSolutionAsync(
                 services.GetRequiredService<ICallGraphBuilder>(),
                 services.GetRequiredService<ITaskWrapperExtractor>(),
+                services.GetRequiredService<IAsyncFloodingAnalyzer>(),
                 solutionPath, neo4jUri, neo4jUser, neo4jPassword);
         }, analyzeSolutionPathArgument, analyzeNeo4jUriOption, analyzeNeo4jUserOption, analyzeNeo4jPasswordOption);
 
@@ -213,7 +214,7 @@ class Program
         }
     }
 
-    static async Task AnalyzeSolutionAsync(ICallGraphBuilder callGraphBuilder, ITaskWrapperExtractor taskWrapperExtractor, string solutionPath, string neo4jUri, string neo4jUser, string neo4jPassword)
+    static async Task AnalyzeSolutionAsync(ICallGraphBuilder callGraphBuilder, ITaskWrapperExtractor taskWrapperExtractor, IAsyncFloodingAnalyzer floodingAnalyzer, string solutionPath, string neo4jUri, string neo4jUser, string neo4jPassword)
     {
         try
         {
@@ -257,6 +258,26 @@ class Program
             if (string.IsNullOrEmpty(response) || response.Equals("y", StringComparison.OrdinalIgnoreCase) || response.Equals("yes", StringComparison.OrdinalIgnoreCase))
             {
                 PrintTaskWrappers(taskWrapperExtractor, callGraph);
+
+                System.Console.Write("Would you like to check for problematic external interfaces? [Y/n] ");
+                var floodResponse = System.Console.ReadLine()?.Trim();
+                if (string.IsNullOrEmpty(floodResponse) || floodResponse.Equals("y", StringComparison.OrdinalIgnoreCase) || floodResponse.Equals("yes", StringComparison.OrdinalIgnoreCase))
+                {
+                    var wrappers = taskWrapperExtractor.Extract(callGraph);
+                    if (wrappers.Count == 0)
+                    {
+                        System.Console.ForegroundColor = ConsoleColor.Yellow;
+                        System.Console.WriteLine("No task wrapper methods found. Cannot run flooding analysis.");
+                        System.Console.ResetColor();
+                    }
+                    else
+                    {
+                        var rootMethodIds = new HashSet<string>(wrappers.Select(w => w.MethodId));
+                        System.Console.WriteLine("Running async flooding analysis...");
+                        var asyncGraph = await floodingAnalyzer.AnalyzeFloodingAsync(callGraph, rootMethodIds);
+                        PrintProblematicInterfaces(callGraph, asyncGraph);
+                    }
+                }
             }
         }
         catch (Exception ex)
@@ -372,6 +393,8 @@ class Program
             }
             System.Console.WriteLine();
 
+            PrintProblematicInterfaces(callGraph, asyncGraph);
+
             // Store the async call graph in Neo4j
             System.Console.WriteLine($"Storing async call graph '{asyncGraph.ProjectName}' in Neo4j...");
             await repository.EnsureIndexesAsync();
@@ -391,6 +414,69 @@ class Program
             System.Console.WriteLine($"Error: {ex.Message}");
             System.Console.WriteLine(ex.StackTrace);
             System.Console.ResetColor();
+        }
+    }
+
+    static void PrintProblematicInterfaces(AsyncRewriter.Core.Models.CallGraph callGraph, AsyncRewriter.Core.Models.CallGraph asyncGraph)
+    {
+        var problematicInterfaces = new Dictionary<string, (string InterfaceMethodId, string InterfaceType, string InterfaceMethodName, List<string> ImplementingTypes)>();
+
+        foreach (var impl in callGraph.InterfaceImplementations)
+        {
+            // Check if the implementing method was flooded (return type changed)
+            if (!callGraph.Methods.TryGetValue(impl.ImplementingMethodId, out var originalImpl))
+                continue;
+            if (!asyncGraph.Methods.TryGetValue(impl.ImplementingMethodId, out var asyncImpl))
+                continue;
+            if (originalImpl.ReturnType == asyncImpl.ReturnType)
+                continue;
+
+            // Check if the interface method is external
+            var isExternal = !callGraph.Methods.TryGetValue(impl.InterfaceMethodId, out var interfaceMethod)
+                || interfaceMethod.FilePath == "external";
+
+            if (!isExternal)
+                continue;
+
+            if (!problematicInterfaces.TryGetValue(impl.InterfaceMethodId, out var entry))
+            {
+                var ifaceName = interfaceMethod?.ContainingType ?? impl.InterfaceMethodId.Split('.').LastOrDefault() ?? impl.InterfaceMethodId;
+                var ifaceMethodName = interfaceMethod?.Name ?? impl.InterfaceMethodId;
+                entry = (impl.InterfaceMethodId, ifaceName, ifaceMethodName, new List<string>());
+                problematicInterfaces[impl.InterfaceMethodId] = entry;
+            }
+
+            entry.ImplementingTypes.Add($"{originalImpl.ContainingType}.{originalImpl.Name}");
+        }
+
+        if (problematicInterfaces.Count > 0)
+        {
+            System.Console.ForegroundColor = ConsoleColor.Yellow;
+            System.Console.WriteLine($"⚠ {problematicInterfaces.Count} problematic external interface(s) detected:");
+            System.Console.ResetColor();
+            System.Console.WriteLine("  These interface methods are defined in external code and cannot be modified,");
+            System.Console.WriteLine("  but their implementations were flooded to async:");
+            System.Console.WriteLine();
+
+            foreach (var (_, entry) in problematicInterfaces.OrderBy(p => p.Value.InterfaceType))
+            {
+                System.Console.ForegroundColor = ConsoleColor.Yellow;
+                System.Console.Write($"  {entry.InterfaceType}.{entry.InterfaceMethodName}");
+                System.Console.ResetColor();
+                System.Console.WriteLine();
+                foreach (var implType in entry.ImplementingTypes)
+                {
+                    System.Console.WriteLine($"    implemented by: {implType}");
+                }
+            }
+            System.Console.WriteLine();
+        }
+        else
+        {
+            System.Console.ForegroundColor = ConsoleColor.Green;
+            System.Console.WriteLine("✓ No problematic external interfaces detected.");
+            System.Console.ResetColor();
+            System.Console.WriteLine();
         }
     }
 
