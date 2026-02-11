@@ -1,0 +1,285 @@
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using AsyncRewriter.Core.Models;
+using static Microsoft.CodeAnalysis.CSharp.SyntaxFactory;
+
+namespace AsyncRewriter.Transformation;
+
+/// <summary>
+/// Roslyn syntax rewriter that transforms synchronous methods to async.
+/// Matches methods by start line and call sites by line number.
+/// </summary>
+public class AsyncMethodRewriter : CSharpSyntaxRewriter
+{
+    private readonly Dictionary<int, MethodTransformInfo> _methodsByStartLine;
+    private readonly Dictionary<int, CallSiteInfo> _callSitesByLine;
+    private readonly HashSet<string> _syncWrapperMethodIds;
+    private readonly HashSet<string> _allAsyncMethodIds;
+    private readonly List<MethodTransformation> _transformations = new();
+    private bool _anyMethodTransformed;
+
+    public IReadOnlyList<MethodTransformation> Transformations => _transformations;
+    public bool AnyMethodTransformed => _anyMethodTransformed;
+
+    public AsyncMethodRewriter(
+        Dictionary<int, MethodTransformInfo> methodsByStartLine,
+        Dictionary<int, CallSiteInfo> callSitesByLine,
+        HashSet<string>? syncWrapperMethodIds = null,
+        HashSet<string>? allAsyncMethodIds = null)
+    {
+        _methodsByStartLine = methodsByStartLine;
+        _callSitesByLine = callSitesByLine;
+        _syncWrapperMethodIds = syncWrapperMethodIds ?? new HashSet<string>();
+        _allAsyncMethodIds = allAsyncMethodIds ?? new HashSet<string>();
+    }
+
+    public override SyntaxNode? VisitMethodDeclaration(MethodDeclarationSyntax node)
+    {
+        var startLine = node.GetLocation().GetLineSpan().StartLinePosition.Line + 1; // 1-based
+
+        if (!_methodsByStartLine.TryGetValue(startLine, out var info))
+            return base.VisitMethodDeclaration(node);
+
+        // Collect which call sites in this method need await
+        var awaitLines = new List<int>();
+        foreach (var callSite in _callSitesByLine)
+        {
+            if (callSite.Key >= info.StartLine && callSite.Key <= info.EndLine)
+                awaitLines.Add(callSite.Key);
+        }
+
+        var hasAwaitableCalls = awaitLines.Count > 0;
+        var isSyncWrapper = _syncWrapperMethodIds.Contains(info.MethodId);
+
+        // First, visit children to transform invocations
+        var visited = (MethodDeclarationSyntax)base.VisitMethodDeclaration(node)!;
+
+        // Transform return type
+        var originalReturnType = node.ReturnType.ToString().Trim();
+        var newReturnType = info.NewReturnType;
+        var newReturnTypeSyntax = ParseTypeName(newReturnType).WithTriviaFrom(visited.ReturnType);
+
+        visited = visited.WithReturnType(newReturnTypeSyntax);
+
+        if (isSyncWrapper)
+        {
+            // Sync wrappers: just change the return type, don't add async/await
+            // The wrapper body will be removed/rewritten separately
+        }
+        else if (hasAwaitableCalls)
+        {
+            // Add async modifier
+            visited = AddAsyncModifier(visited);
+        }
+        else
+        {
+            // No awaitable calls but method is flooded — wrap return values
+            visited = TransformBodyForNoAwait(visited, originalReturnType, newReturnType);
+        }
+
+        _anyMethodTransformed = true;
+        _transformations.Add(new MethodTransformation
+        {
+            MethodName = info.MethodName,
+            MethodSignature = $"{info.ContainingType}.{info.MethodName}",
+            StartLine = info.StartLine,
+            EndLine = info.EndLine,
+            OriginalReturnType = originalReturnType,
+            NewReturnType = newReturnType,
+            AwaitAddedAtLines = awaitLines
+        });
+
+        return visited;
+    }
+
+    public override SyntaxNode? VisitInvocationExpression(InvocationExpressionSyntax node)
+    {
+        var visited = (InvocationExpressionSyntax)base.VisitInvocationExpression(node)!;
+
+        var line = node.GetLocation().GetLineSpan().StartLinePosition.Line + 1; // 1-based
+        if (!_callSitesByLine.TryGetValue(line, out _))
+            return visited;
+
+        // Wrap with await — but only if not already awaited
+        if (visited.Parent is AwaitExpressionSyntax)
+            return visited;
+
+        // Create await expression: move leading trivia to outer await, add space before invocation
+        var leadingTrivia = visited.GetLeadingTrivia();
+        var awaitExpr = AwaitExpression(
+            Token(SyntaxKind.AwaitKeyword).WithTrailingTrivia(Space),
+            visited.WithoutLeadingTrivia());
+        return awaitExpr.WithLeadingTrivia(leadingTrivia);
+    }
+
+    private static MethodDeclarationSyntax AddAsyncModifier(MethodDeclarationSyntax method)
+    {
+        if (method.Modifiers.Any(SyntaxKind.AsyncKeyword))
+            return method;
+
+        if (method.Modifiers.Count == 0)
+        {
+            // No existing modifiers: move return type's leading trivia to async token
+            var leadingTrivia = method.ReturnType.GetLeadingTrivia();
+            var asyncToken = Token(SyntaxKind.AsyncKeyword)
+                .WithLeadingTrivia(leadingTrivia)
+                .WithTrailingTrivia(Space);
+            var newReturnType = method.ReturnType.WithoutLeadingTrivia();
+            return method
+                .WithModifiers(TokenList(asyncToken))
+                .WithReturnType(newReturnType);
+        }
+        else
+        {
+            // Has existing modifiers: add async after last modifier
+            var asyncToken = Token(SyntaxKind.AsyncKeyword).WithTrailingTrivia(Space);
+            var newModifiers = method.Modifiers.Add(asyncToken);
+            return method.WithModifiers(newModifiers);
+        }
+    }
+
+    private static MethodDeclarationSyntax TransformBodyForNoAwait(
+        MethodDeclarationSyntax method,
+        string originalReturnType,
+        string newReturnType)
+    {
+        if (method.Body == null && method.ExpressionBody == null)
+            return method;
+
+        if (originalReturnType == "void")
+        {
+            return TransformVoidMethodNoAwait(method);
+        }
+
+        return TransformReturningMethodNoAwait(method, originalReturnType);
+    }
+
+    /// <summary>
+    /// void method with no awaitable calls: append "return Task.CompletedTask;" at end
+    /// </summary>
+    private static MethodDeclarationSyntax TransformVoidMethodNoAwait(MethodDeclarationSyntax method)
+    {
+        if (method.ExpressionBody != null)
+        {
+            // expression-bodied void method: e.g. void Foo() => Bar();
+            // transform to: Task Foo() { Bar(); return Task.CompletedTask; }
+            var exprStatement = ExpressionStatement(method.ExpressionBody.Expression)
+                .WithLeadingTrivia(Whitespace("        "))
+                .WithTrailingTrivia(CarriageReturnLineFeed);
+
+            var returnStatement = ReturnStatement(
+                MemberAccessExpression(
+                    SyntaxKind.SimpleMemberAccessExpression,
+                    IdentifierName("Task"),
+                    IdentifierName("CompletedTask")))
+                .WithLeadingTrivia(Whitespace("        "))
+                .WithTrailingTrivia(CarriageReturnLineFeed);
+
+            var body = Block(exprStatement, returnStatement);
+            return method
+                .WithExpressionBody(null)
+                .WithSemicolonToken(Token(SyntaxKind.None))
+                .WithBody(body);
+        }
+
+        if (method.Body != null)
+        {
+            var returnStatement = ReturnStatement(
+                MemberAccessExpression(
+                    SyntaxKind.SimpleMemberAccessExpression,
+                    IdentifierName("Task"),
+                    IdentifierName("CompletedTask")))
+                .WithLeadingTrivia(Whitespace("        "))
+                .WithTrailingTrivia(CarriageReturnLineFeed);
+
+            var newBody = method.Body.AddStatements(returnStatement);
+            return method.WithBody(newBody);
+        }
+
+        return method;
+    }
+
+    /// <summary>
+    /// Non-void method with no awaitable calls: wrap return expressions with Task.FromResult
+    /// </summary>
+    private static MethodDeclarationSyntax TransformReturningMethodNoAwait(
+        MethodDeclarationSyntax method,
+        string originalReturnType)
+    {
+        var rewriter = new ReturnValueWrapper(originalReturnType);
+
+        if (method.ExpressionBody != null)
+        {
+            var wrappedExpr = (ExpressionSyntax)rewriter.Visit(method.ExpressionBody.Expression);
+            return method.WithExpressionBody(method.ExpressionBody.WithExpression(wrappedExpr));
+        }
+
+        if (method.Body != null)
+        {
+            var newBody = (BlockSyntax)rewriter.Visit(method.Body);
+            return method.WithBody(newBody);
+        }
+
+        return method;
+    }
+
+    /// <summary>
+    /// Wraps return value expressions with Task.FromResult
+    /// </summary>
+    private class ReturnValueWrapper : CSharpSyntaxRewriter
+    {
+        private readonly string _originalReturnType;
+
+        public ReturnValueWrapper(string originalReturnType)
+        {
+            _originalReturnType = originalReturnType;
+        }
+
+        public override SyntaxNode? VisitReturnStatement(ReturnStatementSyntax node)
+        {
+            if (node.Expression == null)
+                return node;
+
+            var taskFromResult = InvocationExpression(
+                MemberAccessExpression(
+                    SyntaxKind.SimpleMemberAccessExpression,
+                    IdentifierName("Task"),
+                    GenericName(Identifier("FromResult"))
+                        .WithTypeArgumentList(
+                            TypeArgumentList(
+                                SingletonSeparatedList(
+                                    ParseTypeName(_originalReturnType))))))
+                .WithArgumentList(
+                    ArgumentList(
+                        SingletonSeparatedList(
+                            Argument(node.Expression.WithoutLeadingTrivia()))))
+                .WithLeadingTrivia(node.Expression.GetLeadingTrivia());
+
+            return node.WithExpression(taskFromResult);
+        }
+    }
+}
+
+/// <summary>
+/// Info about a method that needs transformation, keyed by start line
+/// </summary>
+public class MethodTransformInfo
+{
+    public required string MethodId { get; init; }
+    public required string MethodName { get; init; }
+    public required string ContainingType { get; init; }
+    public required string OriginalReturnType { get; init; }
+    public required string NewReturnType { get; init; }
+    public required int StartLine { get; init; }
+    public required int EndLine { get; init; }
+}
+
+/// <summary>
+/// Info about a call site that needs await, keyed by line number
+/// </summary>
+public class CallSiteInfo
+{
+    public required string CalleeMethodId { get; init; }
+    public required int LineNumber { get; init; }
+}

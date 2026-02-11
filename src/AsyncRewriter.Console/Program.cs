@@ -2,6 +2,7 @@ using System.CommandLine;
 using AsyncRewriter.Analyzer;
 using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Neo4j;
+using AsyncRewriter.Transformation;
 using Microsoft.Build.Locator;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -86,6 +87,7 @@ class Program
                 services.GetRequiredService<ICallGraphBuilder>(),
                 services.GetRequiredService<ITaskWrapperExtractor>(),
                 services.GetRequiredService<IAsyncFloodingAnalyzer>(),
+                services.GetRequiredService<IAsyncTransformer>(),
                 solutionPath, neo4jUri, neo4jUser, neo4jPassword);
         }, analyzeSolutionPathArgument, analyzeNeo4jUriOption, analyzeNeo4jUserOption, analyzeNeo4jPasswordOption);
 
@@ -150,6 +152,41 @@ class Program
 
         rootCommand.AddCommand(floodCommand);
 
+        // Transform command - apply async transformations to source files
+        var transformCommand = new Command("transform", "Apply async transformations to source files based on flooded call graph");
+        var transformProjectNameArgument = new Argument<string>("project-name", "The project name of the flooded (async) call graph");
+        var transformNeo4jUriOption = new Option<string>(
+            aliases: new[] { "--uri", "-u" },
+            description: "Neo4j Bolt URI",
+            getDefaultValue: () => "bolt://localhost:7687");
+        var transformNeo4jUserOption = new Option<string>(
+            aliases: new[] { "--neo4j-user" },
+            description: "Neo4j username",
+            getDefaultValue: () => "neo4j");
+        var transformNeo4jPasswordOption = new Option<string>(
+            aliases: new[] { "--neo4j-password" },
+            description: "Neo4j password",
+            getDefaultValue: () => "asyncrewriter");
+        var dryRunOption = new Option<bool>(
+            aliases: new[] { "--dry-run", "-n" },
+            description: "Preview changes without writing to disk",
+            getDefaultValue: () => false);
+
+        transformCommand.AddArgument(transformProjectNameArgument);
+        transformCommand.AddOption(transformNeo4jUriOption);
+        transformCommand.AddOption(transformNeo4jUserOption);
+        transformCommand.AddOption(transformNeo4jPasswordOption);
+        transformCommand.AddOption(dryRunOption);
+
+        transformCommand.SetHandler(async (projectName, neo4jUri, neo4jUser, neo4jPassword, dryRun) =>
+        {
+            await TransformAsync(
+                services.GetRequiredService<IAsyncTransformer>(),
+                projectName, neo4jUri, neo4jUser, neo4jPassword, dryRun);
+        }, transformProjectNameArgument, transformNeo4jUriOption, transformNeo4jUserOption, transformNeo4jPasswordOption, dryRunOption);
+
+        rootCommand.AddCommand(transformCommand);
+
         return await rootCommand.InvokeAsync(args);
     }
 
@@ -163,6 +200,7 @@ class Program
 
         serviceCollection.AddTransient<ITaskWrapperExtractor, TaskWrapperExtractor>();
         serviceCollection.AddTransient<IAsyncFloodingAnalyzer, AsyncFloodingAnalyzer>();
+        serviceCollection.AddTransient<IAsyncTransformer, AsyncTransformer>();
         serviceCollection.AddSingleton<ICallGraphRepository, Neo4jCallGraphRepository>();
         serviceCollection.AddLogging();
     }
@@ -214,7 +252,7 @@ class Program
         }
     }
 
-    static async Task AnalyzeSolutionAsync(ICallGraphBuilder callGraphBuilder, ITaskWrapperExtractor taskWrapperExtractor, IAsyncFloodingAnalyzer floodingAnalyzer, string solutionPath, string neo4jUri, string neo4jUser, string neo4jPassword)
+    static async Task AnalyzeSolutionAsync(ICallGraphBuilder callGraphBuilder, ITaskWrapperExtractor taskWrapperExtractor, IAsyncFloodingAnalyzer floodingAnalyzer, IAsyncTransformer transformer, string solutionPath, string neo4jUri, string neo4jUser, string neo4jPassword)
     {
         try
         {
@@ -277,6 +315,80 @@ class Program
                         var asyncGraph = await floodingAnalyzer.AnalyzeFloodingAsync(callGraph, rootMethodIds);
                         PrintFloodingStatistics(callGraph, asyncGraph);
                         PrintProblematicInterfaces(callGraph, asyncGraph);
+
+                        System.Console.Write("Would you like to transform the source files? [Y/n] ");
+                        var transformResponse = System.Console.ReadLine()?.Trim();
+                        if (string.IsNullOrEmpty(transformResponse) || transformResponse.Equals("y", StringComparison.OrdinalIgnoreCase) || transformResponse.Equals("yes", StringComparison.OrdinalIgnoreCase))
+                        {
+                            System.Console.Write("Dry run (preview only, no files written)? [Y/n] ");
+                            var dryRunResponse = System.Console.ReadLine()?.Trim();
+                            var dryRun = string.IsNullOrEmpty(dryRunResponse) || dryRunResponse.Equals("y", StringComparison.OrdinalIgnoreCase) || dryRunResponse.Equals("yes", StringComparison.OrdinalIgnoreCase);
+
+                            if (dryRun)
+                            {
+                                System.Console.ForegroundColor = ConsoleColor.Yellow;
+                                System.Console.WriteLine("DRY RUN - no files will be modified");
+                                System.Console.ResetColor();
+                                System.Console.WriteLine();
+                            }
+
+                            System.Console.WriteLine("Transforming source files...");
+                            var transformResult = await transformer.TransformProjectAsync(".", asyncGraph, (file, current, total) =>
+                            {
+                                System.Console.WriteLine($"  [{current}/{total}] {file}");
+                            });
+
+                            if (!transformResult.Success)
+                            {
+                                System.Console.ForegroundColor = ConsoleColor.Red;
+                                System.Console.WriteLine("Transformation failed:");
+                                foreach (var error in transformResult.Errors)
+                                    System.Console.WriteLine($"  {error}");
+                                System.Console.ResetColor();
+                            }
+                            else
+                            {
+                                foreach (var warning in transformResult.Warnings)
+                                {
+                                    System.Console.ForegroundColor = ConsoleColor.Yellow;
+                                    System.Console.WriteLine($"  Warning: {warning}");
+                                    System.Console.ResetColor();
+                                }
+
+                                System.Console.WriteLine();
+                                System.Console.ForegroundColor = ConsoleColor.Green;
+                                System.Console.WriteLine($"✓ Transformation complete:");
+                                System.Console.ResetColor();
+                                System.Console.WriteLine($"  Files modified:      {transformResult.ModifiedFiles.Count}");
+                                System.Console.WriteLine($"  Methods transformed: {transformResult.TotalMethodsTransformed}");
+                                System.Console.WriteLine($"  Call sites awaited:  {transformResult.TotalCallSitesTransformed}");
+                                System.Console.WriteLine();
+
+                                if (!dryRun)
+                                {
+                                    foreach (var file in transformResult.ModifiedFiles)
+                                    {
+                                        await File.WriteAllTextAsync(file.FilePath, file.TransformedContent);
+                                        System.Console.WriteLine($"  Written: {file.FilePath}");
+                                    }
+                                }
+                                else
+                                {
+                                    foreach (var file in transformResult.ModifiedFiles)
+                                    {
+                                        System.Console.ForegroundColor = ConsoleColor.Cyan;
+                                        System.Console.WriteLine($"  Would modify: {file.FilePath}");
+                                        System.Console.ResetColor();
+                                        foreach (var method in file.MethodTransformations)
+                                        {
+                                            System.Console.WriteLine($"    {method.MethodSignature}: {method.OriginalReturnType} → {method.NewReturnType}");
+                                            if (method.AwaitAddedAtLines.Count > 0)
+                                                System.Console.WriteLine($"      await added at lines: {string.Join(", ", method.AwaitAddedAtLines)}");
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -384,6 +496,100 @@ class Program
             System.Console.ForegroundColor = ConsoleColor.Green;
             System.Console.WriteLine($"✓ Async call graph stored as '{asyncGraph.ProjectName}'");
             System.Console.ResetColor();
+        }
+        catch (Exception ex)
+        {
+            System.Console.ForegroundColor = ConsoleColor.Red;
+            System.Console.WriteLine($"Error: {ex.Message}");
+            System.Console.WriteLine(ex.StackTrace);
+            System.Console.ResetColor();
+        }
+    }
+
+    static async Task TransformAsync(IAsyncTransformer transformer, string projectName, string neo4jUri, string neo4jUser, string neo4jPassword, bool dryRun)
+    {
+        try
+        {
+            System.Console.WriteLine($"Loading flooded call graph for project: {projectName}");
+
+            await using var repository = new Neo4jCallGraphRepository(neo4jUri, neo4jUser, neo4jPassword);
+            var callGraph = await repository.GetCallGraphByProjectAsync(projectName);
+
+            if (callGraph == null)
+            {
+                System.Console.ForegroundColor = ConsoleColor.Red;
+                System.Console.WriteLine($"No call graph found for project '{projectName}'.");
+                System.Console.WriteLine("Run 'flood' first to create a flooded call graph.");
+                System.Console.ResetColor();
+                return;
+            }
+
+            System.Console.WriteLine($"Call graph loaded: {callGraph.Methods.Count} methods, {callGraph.Calls.Count} calls");
+            System.Console.WriteLine();
+
+            if (dryRun)
+            {
+                System.Console.ForegroundColor = ConsoleColor.Yellow;
+                System.Console.WriteLine("DRY RUN - no files will be modified");
+                System.Console.ResetColor();
+                System.Console.WriteLine();
+            }
+
+            System.Console.WriteLine("Transforming source files...");
+            var result = await transformer.TransformProjectAsync(".", callGraph, (file, current, total) =>
+            {
+                System.Console.WriteLine($"  [{current}/{total}] {file}");
+            });
+
+            if (!result.Success)
+            {
+                System.Console.ForegroundColor = ConsoleColor.Red;
+                System.Console.WriteLine("Transformation failed:");
+                foreach (var error in result.Errors)
+                    System.Console.WriteLine($"  {error}");
+                System.Console.ResetColor();
+                return;
+            }
+
+            foreach (var warning in result.Warnings)
+            {
+                System.Console.ForegroundColor = ConsoleColor.Yellow;
+                System.Console.WriteLine($"  Warning: {warning}");
+                System.Console.ResetColor();
+            }
+
+            System.Console.WriteLine();
+            System.Console.ForegroundColor = ConsoleColor.Green;
+            System.Console.WriteLine($"✓ Transformation complete:");
+            System.Console.ResetColor();
+            System.Console.WriteLine($"  Files modified:      {result.ModifiedFiles.Count}");
+            System.Console.WriteLine($"  Methods transformed: {result.TotalMethodsTransformed}");
+            System.Console.WriteLine($"  Call sites awaited:  {result.TotalCallSitesTransformed}");
+            System.Console.WriteLine();
+
+            if (!dryRun)
+            {
+                foreach (var file in result.ModifiedFiles)
+                {
+                    await File.WriteAllTextAsync(file.FilePath, file.TransformedContent);
+                    System.Console.WriteLine($"  Written: {file.FilePath}");
+                }
+            }
+            else
+            {
+                foreach (var file in result.ModifiedFiles)
+                {
+                    System.Console.ForegroundColor = ConsoleColor.Cyan;
+                    System.Console.WriteLine($"  Would modify: {file.FilePath}");
+                    System.Console.ResetColor();
+                    foreach (var method in file.MethodTransformations)
+                    {
+                        System.Console.WriteLine($"    {method.MethodSignature}: {method.OriginalReturnType} → {method.NewReturnType}");
+                        if (method.AwaitAddedAtLines.Count > 0)
+                            System.Console.WriteLine($"      await added at lines: {string.Join(", ", method.AwaitAddedAtLines)}");
+                    }
+                }
+            }
         }
         catch (Exception ex)
         {
