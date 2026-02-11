@@ -429,16 +429,6 @@ class Program
             System.Console.WriteLine($"    {group.Key}: {group.Count()}");
         }
         System.Console.WriteLine();
-
-        // Print flooded methods
-        foreach (var (_, original, flooded) in floodedMethods.OrderBy(m => m.Flooded.ContainingType).ThenBy(m => m.Flooded.Name))
-        {
-            System.Console.ForegroundColor = ConsoleColor.Cyan;
-            System.Console.Write($"  {flooded.ContainingType}.{flooded.Name}");
-            System.Console.ResetColor();
-            System.Console.WriteLine($": {original.ReturnType} → {flooded.ReturnType}");
-        }
-        System.Console.WriteLine();
     }
 
     static void PrintProblematicInterfaces(AsyncRewriter.Core.Models.CallGraph callGraph, AsyncRewriter.Core.Models.CallGraph asyncGraph)
