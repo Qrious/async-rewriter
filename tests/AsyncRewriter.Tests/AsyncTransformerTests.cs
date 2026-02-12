@@ -435,6 +435,206 @@ class MyService
         AssertCompiles(result);
     }
 
+    [Fact]
+    public async Task TransformSourceAsync_FullyQualifiedReturnType_IsPreserved()
+    {
+        var source = @"using System.Collections.Generic;
+
+class MyService
+{
+    private IRepo _repo;
+    System.Collections.Generic.List<int> GetItems()
+    {
+        return _repo.GetValue();
+    }
+}";
+
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.GetItems()",
+                OriginalReturnType = "System.Collections.Generic.List<int>",
+                NewReturnType = "Task<System.Collections.Generic.List<int>>",
+                NeedsAsyncKeyword = true,
+                CallSitesToTransform = new List<CallSiteTransformation>
+                {
+                    new() { LineNumber = 8, OriginalCallExpression = "_repo.GetValue()" }
+                }
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(source, transformations);
+
+        result.Should().Contain("Task<System.Collections.Generic.List<int>> GetItems()");
+        result.Should().NotContain("Task<List<int>> GetItems()");
+    }
+
+    [Fact]
+    public async Task TransformSourceAsync_FullyQualifiedReturnType_PreservedInTaskFromResult()
+    {
+        var source = @"using System.Collections.Generic;
+
+class MyService
+{
+    System.Collections.Generic.List<string> GetNames()
+    {
+        return new System.Collections.Generic.List<string>();
+    }
+}";
+
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.GetNames()",
+                OriginalReturnType = "System.Collections.Generic.List<string>",
+                NewReturnType = "Task<System.Collections.Generic.List<string>>",
+                NeedsAsyncKeyword = false,
+                CallSitesToTransform = new List<CallSiteTransformation>()
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(source, transformations);
+
+        result.Should().Contain("Task<System.Collections.Generic.List<string>> GetNames()");
+        result.Should().Contain("Task.FromResult<System.Collections.Generic.List<string>>");
+    }
+
+    [Fact]
+    public async Task TransformSourceAsync_TypeAlias_IsPreserved()
+    {
+        var source = @"using System.Collections.Generic;
+using StringList = System.Collections.Generic.List<string>;
+
+class MyService
+{
+    private IRepo _repo;
+    StringList GetNames()
+    {
+        return _repo.GetValue();
+    }
+}";
+
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.GetNames()",
+                OriginalReturnType = "StringList",
+                NewReturnType = "Task<StringList>",
+                NeedsAsyncKeyword = true,
+                CallSitesToTransform = new List<CallSiteTransformation>
+                {
+                    new() { LineNumber = 9, OriginalCallExpression = "_repo.GetValue()" }
+                }
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(source, transformations);
+
+        result.Should().Contain("Task<StringList> GetNames()");
+        result.Should().NotContain("Task<List<string>> GetNames()");
+    }
+
+    [Fact]
+    public async Task TransformSourceAsync_TypeAlias_PreservedInTaskFromResult()
+    {
+        var source = @"using System.Collections.Generic;
+using StringList = System.Collections.Generic.List<string>;
+
+class MyService
+{
+    StringList GetNames()
+    {
+        return new List<string>();
+    }
+}";
+
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.GetNames()",
+                OriginalReturnType = "StringList",
+                NewReturnType = "Task<StringList>",
+                NeedsAsyncKeyword = false,
+                CallSitesToTransform = new List<CallSiteTransformation>()
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(source, transformations);
+
+        result.Should().Contain("Task<StringList> GetNames()");
+        result.Should().Contain("Task.FromResult<StringList>");
+    }
+
+    [Fact]
+    public async Task TransformSourceAsync_NamespaceAlias_IsPreserved()
+    {
+        var source = @"using Col = System.Collections.Generic;
+
+class MyService
+{
+    private IRepo _repo;
+    Col.List<int> GetItems()
+    {
+        return _repo.GetValue();
+    }
+}";
+
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.GetItems()",
+                OriginalReturnType = "Col.List<int>",
+                NewReturnType = "Task<Col.List<int>>",
+                NeedsAsyncKeyword = true,
+                CallSitesToTransform = new List<CallSiteTransformation>
+                {
+                    new() { LineNumber = 8, OriginalCallExpression = "_repo.GetValue()" }
+                }
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(source, transformations);
+
+        result.Should().Contain("Task<Col.List<int>> GetItems()");
+        result.Should().NotContain("Task<List<int>> GetItems()");
+    }
+
+    [Fact]
+    public async Task TransformSourceAsync_NamespaceAlias_PreservedInTaskFromResult()
+    {
+        var source = @"using Col = System.Collections.Generic;
+
+class MyService
+{
+    Col.List<int> GetItems()
+    {
+        return new Col.List<int>();
+    }
+}";
+
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.GetItems()",
+                OriginalReturnType = "Col.List<int>",
+                NewReturnType = "Task<Col.List<int>>",
+                NeedsAsyncKeyword = false,
+                CallSitesToTransform = new List<CallSiteTransformation>()
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(source, transformations);
+
+        result.Should().Contain("Task<Col.List<int>> GetItems()");
+        result.Should().Contain("Task.FromResult<Col.List<int>>");
+    }
+
     private static CallGraph CreateFloodedCallGraph(string tempFile)
     {
         var methods = new ConcurrentDictionary<string, MethodNode>();
