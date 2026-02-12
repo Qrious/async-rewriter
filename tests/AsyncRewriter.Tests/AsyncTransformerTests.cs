@@ -216,6 +216,42 @@ class MyService
     }
 
     [Fact]
+    public async Task TransformSourceAsync_VoidMethodWithEarlyReturn_NoAwaitableCalls_ReturnsTaskCompletedTask()
+    {
+        var source = @"class MyService
+{
+    void Process(string? input)
+    {
+        if (input == null)
+            return;
+        Console.WriteLine(input);
+    }
+}";
+
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.Process(string?)",
+                OriginalReturnType = "void",
+                NewReturnType = "Task",
+                NeedsAsyncKeyword = false,
+                CallSitesToTransform = new List<CallSiteTransformation>()
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(source, transformations);
+
+        result.Should().Contain("Task Process(");
+        result.Should().NotContain("async");
+        // The early return should become "return Task.CompletedTask;"
+        result.Should().NotContain("\n            return;\n");
+        // Should have Task.CompletedTask for both early return and end of method
+        var count = result.Split("Task.CompletedTask").Length - 1;
+        count.Should().Be(2, "both the early return and the appended return should use Task.CompletedTask");
+    }
+
+    [Fact]
     public async Task TransformSourceAsync_FloodedMethod_NoAwaitableCalls_UsesTaskFromResult()
     {
         var source = @"class MyService

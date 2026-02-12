@@ -156,7 +156,8 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
     }
 
     /// <summary>
-    /// void method with no awaitable calls: append "return Task.CompletedTask;" at end
+    /// void method with no awaitable calls: transform bare "return;" to "return Task.CompletedTask;"
+    /// and append "return Task.CompletedTask;" at end
     /// </summary>
     private static MethodDeclarationSyntax TransformVoidMethodNoAwait(MethodDeclarationSyntax method)
     {
@@ -169,10 +170,7 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
                 .WithTrailingTrivia(CarriageReturnLineFeed);
 
             var returnStatement = ReturnStatement(
-                MemberAccessExpression(
-                    SyntaxKind.SimpleMemberAccessExpression,
-                    IdentifierName("Task"),
-                    IdentifierName("CompletedTask")))
+                MakeTaskCompletedTaskExpression())
                 .WithLeadingTrivia(Whitespace("        "))
                 .WithTrailingTrivia(CarriageReturnLineFeed);
 
@@ -185,19 +183,45 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
 
         if (method.Body != null)
         {
+            // First, rewrite existing bare "return;" statements to "return Task.CompletedTask;"
+            var rewriter = new BareReturnRewriter();
+            var newBody = (BlockSyntax)rewriter.Visit(method.Body);
+
             var returnStatement = ReturnStatement(
-                MemberAccessExpression(
-                    SyntaxKind.SimpleMemberAccessExpression,
-                    IdentifierName("Task"),
-                    IdentifierName("CompletedTask")))
+                MakeTaskCompletedTaskExpression())
                 .WithLeadingTrivia(Whitespace("        "))
                 .WithTrailingTrivia(CarriageReturnLineFeed);
 
-            var newBody = method.Body.AddStatements(returnStatement);
+            newBody = newBody.AddStatements(returnStatement);
             return method.WithBody(newBody);
         }
 
         return method;
+    }
+
+    private static ExpressionSyntax MakeTaskCompletedTaskExpression()
+    {
+        return MemberAccessExpression(
+            SyntaxKind.SimpleMemberAccessExpression,
+            IdentifierName("Task"),
+            IdentifierName("CompletedTask"));
+    }
+
+    /// <summary>
+    /// Rewrites bare "return;" statements to "return Task.CompletedTask;"
+    /// </summary>
+    private class BareReturnRewriter : CSharpSyntaxRewriter
+    {
+        public override SyntaxNode? VisitReturnStatement(ReturnStatementSyntax node)
+        {
+            if (node.Expression == null)
+            {
+                return node.WithExpression(
+                    MakeTaskCompletedTaskExpression()
+                        .WithLeadingTrivia(Space));
+            }
+            return base.VisitReturnStatement(node);
+        }
     }
 
     /// <summary>
