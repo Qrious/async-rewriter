@@ -659,6 +659,11 @@ class Program
             if (!isExternal)
                 continue;
 
+            // Skip interfaces where the return type is a generic type parameter (e.g., IMapper<TSource, TDestination>)
+            // since the type parameter can be instantiated with Task<T>
+            if (interfaceMethod?.IsReturnTypeParameter == true)
+                continue;
+
             var interfaceType = interfaceMethod?.ContainingType
                 ?? impl.InterfaceMethodId.Split('.').LastOrDefault()
                 ?? impl.InterfaceMethodId;

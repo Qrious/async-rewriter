@@ -144,11 +144,34 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                     var implementation = containingType.FindImplementationForInterfaceMember(interfaceMember);
                     if (SymbolEqualityComparer.Default.Equals(implementation, methodSymbol))
                     {
+                        var interfaceMethodId = GetMethodId(interfaceMember);
                         _interfaceImplementations.Add(new InterfaceImplementation
                         {
                             CallGraphId = _callGraphId.ToString(),
                             ImplementingMethodId = methodId,
-                            InterfaceMethodId = GetMethodId(interfaceMember),
+                            InterfaceMethodId = interfaceMethodId,
+                        });
+
+                        // Ensure the interface method node exists (for external interfaces)
+                        var originalMember = interfaceMember.OriginalDefinition;
+                        var isReturnTypeParam = originalMember.ReturnType is ITypeParameterSymbol tp
+                            && originalMember.ContainingType is INamedTypeSymbol ci
+                            && ci.IsGenericType
+                            && ci.TypeParameters.Any(p =>
+                                SymbolEqualityComparer.Default.Equals(p, tp) && p.Variance == VarianceKind.Out);
+                        _methods.TryAdd(interfaceMethodId, new MethodNode
+                        {
+                            CallGraphId = _callGraphId.ToString(),
+                            Id = interfaceMethodId,
+                            Name = originalMember.Name,
+                            ContainingType = originalMember.ContainingType?.ToDisplayString() ?? "",
+                            ContainingNamespace = originalMember.ContainingNamespace?.ToDisplayString() ?? "",
+                            ReturnType = originalMember.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+                            Parameters = originalMember.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
+                            FilePath = interfaceMember.Locations.FirstOrDefault()?.SourceTree?.FilePath ?? "external",
+                            StartLine = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Line + 1 ?? 0,
+                            EndLine = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Line + 1 ?? 0,
+                            IsReturnTypeParameter = isReturnTypeParam,
                         });
                     }
                 }
@@ -241,6 +264,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
             FilePath = _filePath,
             StartLine = lineSpan.StartLinePosition.Line + 1,
             EndLine = lineSpan.EndLinePosition.Line + 1,
+            IsReturnTypeParameter = isReturnTypeParameter,
         };
     }
 

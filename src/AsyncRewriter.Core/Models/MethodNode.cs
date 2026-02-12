@@ -17,4 +17,5 @@ public record MethodNode
     public required string FilePath { get; init; } = string.Empty;
     public required int StartLine { get; init; }
     public required int EndLine { get; init; }
+    public bool IsReturnTypeParameter { get; init; }
 }
