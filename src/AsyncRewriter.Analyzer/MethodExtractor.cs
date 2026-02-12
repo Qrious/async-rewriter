@@ -21,9 +21,10 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
     private ConcurrentDictionary<string, MethodNode> _methods = null!;
     private ConcurrentBag<InterfaceImplementation> _interfaceImplementations = null!;
     private ConcurrentBag<MethodOverride> _methodOverrides = null!;
+    private ConcurrentBag<GenericInstantiation> _genericInstantiations = null!;
     private Guid _callGraphId;
 
-    public async Task Extract(
+    public Task Extract(
         Guid callGraphId,
         SyntaxNode root,
         SemanticModel semanticModel,
@@ -33,10 +34,25 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
         ConcurrentBag<MethodOverride> methodOverrides,
         CancellationToken cancellationToken = default)
     {
+        return Extract(callGraphId, root, semanticModel, filePath, methods, interfaceImplementations, methodOverrides, new ConcurrentBag<GenericInstantiation>(), cancellationToken);
+    }
+
+    public async Task Extract(
+        Guid callGraphId,
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        string filePath,
+        ConcurrentDictionary<string, MethodNode> methods,
+        ConcurrentBag<InterfaceImplementation> interfaceImplementations,
+        ConcurrentBag<MethodOverride> methodOverrides,
+        ConcurrentBag<GenericInstantiation> genericInstantiations,
+        CancellationToken cancellationToken = default)
+    {
         _callGraphId = callGraphId;
         _methods = methods;
         _interfaceImplementations = interfaceImplementations;
         _methodOverrides = methodOverrides;
+        _genericInstantiations = genericInstantiations;
         _semanticModel = semanticModel;
         _filePath = filePath;
 
@@ -126,12 +142,37 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
 
         foreach (var explicitImpl in methodSymbol.ExplicitInterfaceImplementations)
         {
-            _interfaceImplementations.Add(new InterfaceImplementation
+            var explicitContainingType = explicitImpl.ContainingType;
+            var isGenericInstantiation = explicitContainingType is INamedTypeSymbol nt
+                && nt.IsGenericType
+                && !SymbolEqualityComparer.Default.Equals(nt, nt.OriginalDefinition);
+
+            if (isGenericInstantiation)
             {
-                CallGraphId = _callGraphId.ToString(),
-                ImplementingMethodId = methodId,
-                InterfaceMethodId = GetMethodId(explicitImpl),
-            });
+                var instantiatedId = GetInstantiatedMethodId(explicitImpl);
+                var genericId = GetMethodId(explicitImpl);
+                _interfaceImplementations.Add(new InterfaceImplementation
+                {
+                    CallGraphId = _callGraphId.ToString(),
+                    ImplementingMethodId = methodId,
+                    InterfaceMethodId = instantiatedId,
+                });
+                _genericInstantiations.Add(new GenericInstantiation
+                {
+                    CallGraphId = _callGraphId.ToString(),
+                    InstantiatedMethodId = instantiatedId,
+                    GenericMethodId = genericId,
+                });
+            }
+            else
+            {
+                _interfaceImplementations.Add(new InterfaceImplementation
+                {
+                    CallGraphId = _callGraphId.ToString(),
+                    ImplementingMethodId = methodId,
+                    InterfaceMethodId = GetMethodId(explicitImpl),
+                });
+            }
         }
 
         var containingType = methodSymbol.ContainingType;
@@ -144,25 +185,69 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                     var implementation = containingType.FindImplementationForInterfaceMember(interfaceMember);
                     if (SymbolEqualityComparer.Default.Equals(implementation, methodSymbol))
                     {
-                        var interfaceMethodId = GetMethodId(interfaceMember);
-                        _interfaceImplementations.Add(new InterfaceImplementation
-                        {
-                            CallGraphId = _callGraphId.ToString(),
-                            ImplementingMethodId = methodId,
-                            InterfaceMethodId = interfaceMethodId,
-                        });
-
-                        // Ensure the interface method node exists (for external interfaces)
+                        var genericMethodId = GetMethodId(interfaceMember);
                         var originalMember = interfaceMember.OriginalDefinition;
+
+                        // Check if this is a generic interface with instantiated type args
+                        var isGenericInstantiation = iface.IsGenericType
+                            && !SymbolEqualityComparer.Default.Equals(iface, iface.OriginalDefinition);
+
+                        if (isGenericInstantiation)
+                        {
+                            // Create instantiated node: IMapper<Foo, Bar>.Map(Foo)
+                            var instantiatedMethodId = GetInstantiatedMethodId(interfaceMember);
+
+                            _methods.TryAdd(instantiatedMethodId, new MethodNode
+                            {
+                                CallGraphId = _callGraphId.ToString(),
+                                Id = instantiatedMethodId,
+                                Name = interfaceMember.Name,
+                                ContainingType = interfaceMember.ContainingType?.ToDisplayString() ?? "",
+                                ContainingNamespace = interfaceMember.ContainingNamespace?.ToDisplayString() ?? "",
+                                ReturnType = interfaceMember.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+                                Parameters = interfaceMember.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
+                                FilePath = interfaceMember.Locations.FirstOrDefault()?.SourceTree?.FilePath ?? "external",
+                                StartLine = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Line + 1 ?? 0,
+                                EndLine = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Line + 1 ?? 0,
+                            });
+
+                            // InterfaceImplementation: implementing method → instantiated
+                            _interfaceImplementations.Add(new InterfaceImplementation
+                            {
+                                CallGraphId = _callGraphId.ToString(),
+                                ImplementingMethodId = methodId,
+                                InterfaceMethodId = instantiatedMethodId,
+                            });
+
+                            // GenericInstantiation: instantiated → generic
+                            _genericInstantiations.Add(new GenericInstantiation
+                            {
+                                CallGraphId = _callGraphId.ToString(),
+                                InstantiatedMethodId = instantiatedMethodId,
+                                GenericMethodId = genericMethodId,
+                            });
+                        }
+                        else
+                        {
+                            // Non-generic interface: link directly
+                            _interfaceImplementations.Add(new InterfaceImplementation
+                            {
+                                CallGraphId = _callGraphId.ToString(),
+                                ImplementingMethodId = methodId,
+                                InterfaceMethodId = genericMethodId,
+                            });
+                        }
+
+                        // Ensure the generic interface method node exists
                         var isReturnTypeParam = originalMember.ReturnType is ITypeParameterSymbol tp
                             && originalMember.ContainingType is INamedTypeSymbol ci
                             && ci.IsGenericType
                             && ci.TypeParameters.Any(p =>
                                 SymbolEqualityComparer.Default.Equals(p, tp) && p.Variance == VarianceKind.Out);
-                        _methods.TryAdd(interfaceMethodId, new MethodNode
+                        _methods.TryAdd(genericMethodId, new MethodNode
                         {
                             CallGraphId = _callGraphId.ToString(),
-                            Id = interfaceMethodId,
+                            Id = genericMethodId,
                             Name = originalMember.Name,
                             ContainingType = originalMember.ContainingType?.ToDisplayString() ?? "",
                             ContainingNamespace = originalMember.ContainingNamespace?.ToDisplayString() ?? "",
@@ -266,6 +351,17 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
             EndLine = lineSpan.EndLinePosition.Line + 1,
             IsReturnTypeParameter = isReturnTypeParameter,
         };
+    }
+
+    /// <summary>
+    /// Gets a method ID that preserves the instantiated containing type (e.g. IMapper&lt;Foo, Bar&gt;.Map(Foo))
+    /// instead of using OriginalDefinition for the containing type.
+    /// </summary>
+    internal static string GetInstantiatedMethodId(IMethodSymbol methodSymbol)
+    {
+        var containingType = methodSymbol.ContainingType?.ToDisplayString() ?? "";
+        var parameters = string.Join(", ", methodSymbol.Parameters.Select(p => p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)));
+        return $"{containingType}.{methodSymbol.Name}({parameters})";
     }
 
     internal static string GetMethodId(IMethodSymbol methodSymbol)

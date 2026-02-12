@@ -21,6 +21,8 @@ public class CallGraph
 
     public ConcurrentBag<MethodOverride> MethodOverrides { get; } = new();
 
+    public ConcurrentBag<GenericInstantiation> GenericInstantiations { get; } = new();
+
     /// <summary>
     /// Interface mappings from problematic interface analysis (sync → async interface names).
     /// When set, the transformer will replace interface references in source files.
@@ -42,7 +44,11 @@ public class CallGraph
 
     private ConcurrentDictionary<string, List<MethodOverride>> _overridesByBase { get; init; } = new();
 
-    public CallGraph(ConcurrentBag<MethodCall> methodCalls, ConcurrentBag<InterfaceImplementation>? interfaceImplementations = null, ConcurrentBag<MethodOverride>? methodOverrides = null)
+    private ConcurrentDictionary<string, List<GenericInstantiation>> _instantiationsByInstantiated { get; init; } = new();
+
+    private ConcurrentDictionary<string, List<GenericInstantiation>> _instantiationsByGeneric { get; init; } = new();
+
+    public CallGraph(ConcurrentBag<MethodCall> methodCalls, ConcurrentBag<InterfaceImplementation>? interfaceImplementations = null, ConcurrentBag<MethodOverride>? methodOverrides = null, ConcurrentBag<GenericInstantiation>? genericInstantiations = null)
     {
         Calls = methodCalls;
         _callsByCaller = new ConcurrentDictionary<string, List<MethodCall>>(methodCalls
@@ -72,6 +78,17 @@ public class CallGraph
             _overridesByBase = new ConcurrentDictionary<string, List<MethodOverride>>(methodOverrides
                 .GroupBy(o => o.BaseMethodId)
                 .Select(g => new KeyValuePair<string, List<MethodOverride>>(g.Key, g.ToList())));
+        }
+
+        if (genericInstantiations != null)
+        {
+            GenericInstantiations = genericInstantiations;
+            _instantiationsByInstantiated = new ConcurrentDictionary<string, List<GenericInstantiation>>(genericInstantiations
+                .GroupBy(gi => gi.InstantiatedMethodId)
+                .Select(g => new KeyValuePair<string, List<GenericInstantiation>>(g.Key, g.ToList())));
+            _instantiationsByGeneric = new ConcurrentDictionary<string, List<GenericInstantiation>>(genericInstantiations
+                .GroupBy(gi => gi.GenericMethodId)
+                .Select(g => new KeyValuePair<string, List<GenericInstantiation>>(g.Key, g.ToList())));
         }
     }
     
@@ -149,5 +166,29 @@ public class CallGraph
             return [];
         }
         return overrides;
+    }
+
+    /// <summary>
+    /// Get the generic method(s) for an instantiated interface method
+    /// </summary>
+    public IEnumerable<GenericInstantiation> GetGenericMethodsFor(string instantiatedMethodId)
+    {
+        if (!_instantiationsByInstantiated.TryGetValue(instantiatedMethodId, out var instantiations))
+        {
+            return [];
+        }
+        return instantiations;
+    }
+
+    /// <summary>
+    /// Get all instantiations of a generic interface method
+    /// </summary>
+    public IEnumerable<GenericInstantiation> GetInstantiationsOf(string genericMethodId)
+    {
+        if (!_instantiationsByGeneric.TryGetValue(genericMethodId, out var instantiations))
+        {
+            return [];
+        }
+        return instantiations;
     }
 }

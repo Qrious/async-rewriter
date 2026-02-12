@@ -25,4 +25,18 @@ public interface IMethodExtractor
         ConcurrentBag<InterfaceImplementation> interfaceImplementations,
         ConcurrentBag<MethodOverride> methodOverrides,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Resolves all method declarations in a syntax tree, including interface methods and generic instantiations
+    /// </summary>
+    Task Extract(
+        Guid callGraphId,
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        string filePath,
+        ConcurrentDictionary<string, MethodNode> methods,
+        ConcurrentBag<InterfaceImplementation> interfaceImplementations,
+        ConcurrentBag<MethodOverride> methodOverrides,
+        ConcurrentBag<GenericInstantiation> genericInstantiations,
+        CancellationToken cancellationToken = default);
 }

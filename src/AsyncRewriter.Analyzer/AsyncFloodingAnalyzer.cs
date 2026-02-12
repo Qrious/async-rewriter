@@ -46,19 +46,29 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                     queue.Enqueue(caller.Id);
             }
 
-            // Flood through interface implementations, but only when the return type
-            // is NOT a generic type parameter of the interface. When it IS a type parameter,
-            // the implementation can adjust which interface variant it implements
-            // (e.g. IMapper<X, Y> → IMapper<X, Task<Y>>) instead of flooding.
+            // Flood through interface implementations (both directions)
             foreach (var impl in callGraph.GetInterfaceMethodsFor(methodId))
             {
-                if (!HasGenericReturnType(callGraph, impl.InterfaceMethodId) && floodedIds.Add(impl.InterfaceMethodId))
+                if (floodedIds.Add(impl.InterfaceMethodId))
                     queue.Enqueue(impl.InterfaceMethodId);
             }
             foreach (var impl in callGraph.GetImplementationsOf(methodId))
             {
-                if (!HasGenericReturnType(callGraph, methodId) && floodedIds.Add(impl.ImplementingMethodId))
+                if (floodedIds.Add(impl.ImplementingMethodId))
                     queue.Enqueue(impl.ImplementingMethodId);
+            }
+
+            // Flood through generic instantiations:
+            // Only traverse when the return type on the generic node is NOT a type parameter
+            foreach (var gi in callGraph.GetGenericMethodsFor(methodId))
+            {
+                if (!HasGenericReturnType(callGraph, gi.GenericMethodId) && floodedIds.Add(gi.GenericMethodId))
+                    queue.Enqueue(gi.GenericMethodId);
+            }
+            foreach (var gi in callGraph.GetInstantiationsOf(methodId))
+            {
+                if (!HasGenericReturnType(callGraph, methodId) && floodedIds.Add(gi.InstantiatedMethodId))
+                    queue.Enqueue(gi.InstantiatedMethodId);
             }
 
             // Flood through overrides (both directions)
@@ -110,7 +120,15 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                 BaseMethodId = o.BaseMethodId
             }));
 
-        var newGraph = new CallGraph(newCalls, newImpls, newOverrides)
+        var newGenericInstantiations = new ConcurrentBag<GenericInstantiation>(
+            callGraph.GenericInstantiations.Select(gi => new GenericInstantiation
+            {
+                CallGraphId = newGraphId,
+                InstantiatedMethodId = gi.InstantiatedMethodId,
+                GenericMethodId = gi.GenericMethodId
+            }));
+
+        var newGraph = new CallGraph(newCalls, newImpls, newOverrides, newGenericInstantiations)
         {
             Id = newGraphId,
             ProjectName = callGraph.ProjectName + "-async",

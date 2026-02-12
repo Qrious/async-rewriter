@@ -306,7 +306,7 @@ public class MethodCallExtractor : AsyncCSharpSyntaxWalker, IMethodCallExtractor
             if (invokedSymbol != null)
             {
                 var callerId = MethodExtractor.GetMethodId(_currentMethodSymbol);
-                var calleeId = MethodExtractor.GetMethodId(invokedSymbol);
+                var calleeId = GetCalleeId(invokedSymbol);
 
                 // Create a method node for the callee if it doesn't exist in known methods
                 if (!_methods.ContainsKey(calleeId))
@@ -330,6 +330,23 @@ public class MethodCallExtractor : AsyncCSharpSyntaxWalker, IMethodCallExtractor
 
         // Continue walking into children to find nested invocations (e.g., inside lambdas)
         await DefaultVisitAsync(node, cancellationToken);
+    }
+
+    /// <summary>
+    /// Gets the callee ID for an invoked method. If the method is on an instantiated generic interface,
+    /// uses the instantiated ID so the call flows through the instantiated node.
+    /// </summary>
+    private static string GetCalleeId(IMethodSymbol invokedSymbol)
+    {
+        if (invokedSymbol.ContainingType is INamedTypeSymbol containingType
+            && containingType.TypeKind == TypeKind.Interface
+            && containingType.IsGenericType
+            && !SymbolEqualityComparer.Default.Equals(containingType, containingType.OriginalDefinition))
+        {
+            return MethodExtractor.GetInstantiatedMethodId(invokedSymbol);
+        }
+
+        return MethodExtractor.GetMethodId(invokedSymbol);
     }
 
     private MethodNode CreateMethodNodeFromSymbol(IMethodSymbol methodSymbol, string filePath)
