@@ -35,6 +35,15 @@ public interface IAsyncFloodingAnalyzer
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Determines which methods need to be async, also returning debug flooding information
+    /// </summary>
+    Task<(CallGraph, FloodingResult)> AnalyzeFloodingWithDebugAsync(
+        CallGraph callGraph,
+        HashSet<string> rootMethodIds,
+        Action<string, int, int>? progressCallback = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Gets detailed transformation information for each method that needs to be changed
     /// </summary>
     Task<List<AsyncTransformationInfo>> GetTransformationInfoAsync(CallGraph callGraph, CancellationToken cancellationToken = default);

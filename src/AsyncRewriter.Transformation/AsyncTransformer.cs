@@ -19,20 +19,12 @@ public class AsyncTransformer : IAsyncTransformer
         string projectPath,
         CallGraph callGraph,
         CancellationToken cancellationToken = default)
-        => TransformProjectAsync(projectPath, callGraph, null, false, cancellationToken);
-
-    public Task<TransformationResult> TransformProjectAsync(
-        string projectPath,
-        CallGraph callGraph,
-        Action<string, int, int>? progressCallback,
-        CancellationToken cancellationToken = default)
-        => TransformProjectAsync(projectPath, callGraph, progressCallback, false, cancellationToken);
+        => TransformProjectAsync(projectPath, callGraph, null, cancellationToken);
 
     public async Task<TransformationResult> TransformProjectAsync(
         string projectPath,
         CallGraph callGraph,
         Action<string, int, int>? progressCallback,
-        bool debugComments,
         CancellationToken cancellationToken = default)
     {
         var result = new TransformationResult { CallGraph = callGraph };
@@ -59,7 +51,7 @@ public class AsyncTransformer : IAsyncTransformer
 
                 var sourceCode = await File.ReadAllTextAsync(filePath, cancellationToken);
                 var fileTransformation = await TransformFileInternalAsync(
-                    filePath, sourceCode, transformations, callGraph, debugComments, cancellationToken);
+                    filePath, sourceCode, transformations, callGraph, cancellationToken);
 
                 if (fileTransformation != null)
                 {
@@ -249,7 +241,6 @@ public class AsyncTransformer : IAsyncTransformer
         string sourceCode,
         List<(MethodNode Method, string OriginalReturnType, List<MethodCall> CallsToAwait)> methodInfos,
         CallGraph callGraph,
-        bool debugComments,
         CancellationToken cancellationToken)
     {
         var tree = CSharpSyntaxTree.ParseText(sourceCode);
@@ -268,10 +259,6 @@ public class AsyncTransformer : IAsyncTransformer
 
         foreach (var (method, originalReturnType, callsToAwait) in methodInfos)
         {
-            string? floodingReason = null;
-            if (debugComments)
-                floodingReason = DeriveFloodingReason(method, callsToAwait, callGraph, floodedMethodIds);
-
             methodsByStartLine[method.StartLine] = new MethodTransformInfo
             {
                 MethodId = method.Id,
@@ -280,8 +267,7 @@ public class AsyncTransformer : IAsyncTransformer
                 OriginalReturnType = originalReturnType,
                 NewReturnType = method.ReturnType,
                 StartLine = method.StartLine,
-                EndLine = method.EndLine,
-                FloodingReason = floodingReason
+                EndLine = method.EndLine
             };
 
             foreach (var call in callsToAwait)
@@ -297,7 +283,7 @@ public class AsyncTransformer : IAsyncTransformer
             }
         }
 
-        var rewriter = new AsyncMethodRewriter(methodsByStartLine, callSitesByLine, debugComments: debugComments);
+        var rewriter = new AsyncMethodRewriter(methodsByStartLine, callSitesByLine);
         var newRoot = rewriter.Visit(root);
 
         if (!rewriter.AnyMethodTransformed)
@@ -321,147 +307,6 @@ public class AsyncTransformer : IAsyncTransformer
             TransformedContent = transformedSource,
             MethodTransformations = rewriter.Transformations.ToList()
         };
-    }
-
-    private static string DeriveFloodingReason(
-        MethodNode method,
-        List<MethodCall> callsToAwait,
-        CallGraph callGraph,
-        HashSet<string> floodedMethodIds)
-    {
-        // Check if it calls flooded methods
-        if (callsToAwait.Count > 0)
-        {
-            var calleeName = callsToAwait[0].CalleeId;
-            if (callGraph.Methods.TryGetValue(calleeName, out var calleeMethod))
-                calleeName = $"{calleeMethod.ContainingType}.{calleeMethod.Name}";
-            return callsToAwait.Count == 1
-                ? $"Calls async method {calleeName}"
-                : $"Calls async methods {calleeName} (+{callsToAwait.Count - 1} more)";
-        }
-
-        // Check interface implementations
-        foreach (var impl in callGraph.InterfaceImplementations)
-        {
-            if (impl.ImplementingMethodId == method.Id && floodedMethodIds.Contains(impl.InterfaceMethodId))
-            {
-                var ifaceName = impl.InterfaceMethodId;
-                if (callGraph.Methods.TryGetValue(impl.InterfaceMethodId, out var ifaceMethod))
-                    ifaceName = $"{ifaceMethod.ContainingType}.{ifaceMethod.Name}";
-
-                // For external interfaces, explain why the interface method was flooded
-                var isExternal = ifaceMethod != null
-                    && (string.IsNullOrEmpty(ifaceMethod.FilePath) || ifaceMethod.FilePath == "external");
-                if (isExternal)
-                {
-                    var ifaceReason = DeriveFloodingReasonForInterfaceMethod(
-                        impl.InterfaceMethodId, callGraph, floodedMethodIds);
-                    if (ifaceReason != null)
-                        return $"Implements {ifaceName} (flooded because: {ifaceReason})";
-                }
-
-                return $"Implements {ifaceName}";
-            }
-        }
-
-        // Check method overrides
-        foreach (var ovr in callGraph.MethodOverrides)
-        {
-            if (ovr.OverridingMethodId == method.Id && floodedMethodIds.Contains(ovr.BaseMethodId))
-            {
-                var baseName = ovr.BaseMethodId;
-                if (callGraph.Methods.TryGetValue(ovr.BaseMethodId, out var baseMethod))
-                    baseName = $"{baseMethod.ContainingType}.{baseMethod.Name}";
-
-                // For external base methods, explain why it was flooded
-                var isExternal = baseMethod != null
-                    && (string.IsNullOrEmpty(baseMethod.FilePath) || baseMethod.FilePath == "external");
-                if (isExternal)
-                {
-                    var baseReason = DeriveFloodingReasonForExternalMethod(
-                        ovr.BaseMethodId, callGraph, floodedMethodIds);
-                    if (baseReason != null)
-                        return $"Overrides {baseName} (flooded because: {baseReason})";
-                }
-
-                return $"Overrides {baseName}";
-            }
-        }
-
-        return "Flooded via async call graph";
-    }
-
-    /// <summary>
-    /// Determines why an external interface method was flooded by finding a flooded
-    /// implementation and explaining its reason.
-    /// </summary>
-    private static string? DeriveFloodingReasonForInterfaceMethod(
-        string interfaceMethodId,
-        CallGraph callGraph,
-        HashSet<string> floodedMethodIds)
-    {
-        // An interface method is flooded because one of its implementations was flooded.
-        // Find a flooded implementation and report its reason.
-        foreach (var impl in callGraph.InterfaceImplementations)
-        {
-            if (impl.InterfaceMethodId == interfaceMethodId
-                && floodedMethodIds.Contains(impl.ImplementingMethodId)
-                && callGraph.Methods.TryGetValue(impl.ImplementingMethodId, out var implMethod))
-            {
-                // Find why this implementation was flooded (its outgoing calls)
-                var implCalls = callGraph.Calls
-                    .Where(c => c.CallerId == impl.ImplementingMethodId && floodedMethodIds.Contains(c.CalleeId))
-                    .ToList();
-
-                if (implCalls.Count > 0)
-                {
-                    var calleeName = implCalls[0].CalleeId;
-                    if (callGraph.Methods.TryGetValue(calleeName, out var calleeMethod))
-                        calleeName = $"{calleeMethod.ContainingType}.{calleeMethod.Name}";
-                    return $"{implMethod.ContainingType}.{implMethod.Name} calls async method {calleeName}";
-                }
-
-                return $"{implMethod.ContainingType}.{implMethod.Name} is flooded";
-            }
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    /// Determines why an external base method was flooded by checking its callers
-    /// or implementations.
-    /// </summary>
-    private static string? DeriveFloodingReasonForExternalMethod(
-        string methodId,
-        CallGraph callGraph,
-        HashSet<string> floodedMethodIds)
-    {
-        // Check if the base method has flooded callers with async calls
-        var outgoingCalls = callGraph.Calls
-            .Where(c => c.CallerId == methodId && floodedMethodIds.Contains(c.CalleeId))
-            .ToList();
-
-        if (outgoingCalls.Count > 0)
-        {
-            var calleeName = outgoingCalls[0].CalleeId;
-            if (callGraph.Methods.TryGetValue(calleeName, out var calleeMethod))
-                calleeName = $"{calleeMethod.ContainingType}.{calleeMethod.Name}";
-            return $"calls async method {calleeName}";
-        }
-
-        // Check overrides of this base method
-        foreach (var ovr in callGraph.MethodOverrides)
-        {
-            if (ovr.BaseMethodId == methodId
-                && floodedMethodIds.Contains(ovr.OverridingMethodId)
-                && callGraph.Methods.TryGetValue(ovr.OverridingMethodId, out var overrideMethod))
-            {
-                return $"override {overrideMethod.ContainingType}.{overrideMethod.Name} is flooded";
-            }
-        }
-
-        return null;
     }
 
     private static SyntaxNode EnsureUsingDirective(SyntaxNode root, string namespaceName)

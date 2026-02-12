@@ -138,6 +138,130 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
         return Task.FromResult(newGraph);
     }
 
+    public Task<(CallGraph, FloodingResult)> AnalyzeFloodingWithDebugAsync(
+        CallGraph callGraph,
+        HashSet<string> rootMethodIds,
+        Action<string, int, int>? progressCallback = null,
+        CancellationToken cancellationToken = default)
+    {
+        var floodingResult = new FloodingResult();
+        var floodedIds = new HashSet<string>();
+        var queue = new Queue<string>();
+        var processed = 0;
+
+        // Seed roots
+        foreach (var rootId in rootMethodIds)
+        {
+            floodedIds.Add(rootId);
+            queue.Enqueue(rootId);
+            floodingResult.FloodedMethods[rootId] = new FloodedMethodInfo(rootId, null, 0, FloodReason.Root);
+        }
+
+        while (queue.Count > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var methodId = queue.Dequeue();
+            processed++;
+            var currentDepth = floodingResult.FloodedMethods[methodId].Depth;
+
+            if (callGraph.Methods.TryGetValue(methodId, out var method))
+            {
+                progressCallback?.Invoke(
+                    $"{method.ContainingType}.{method.Name}",
+                    processed,
+                    processed + queue.Count);
+            }
+
+            void TryEnqueue(string targetId, FloodReason reason)
+            {
+                if (floodedIds.Add(targetId))
+                {
+                    queue.Enqueue(targetId);
+                    floodingResult.FloodedMethods[targetId] = new FloodedMethodInfo(targetId, methodId, currentDepth + 1, reason);
+                }
+            }
+
+            foreach (var caller in callGraph.GetCallers(methodId))
+                TryEnqueue(caller.Id, FloodReason.Caller);
+
+            foreach (var impl in callGraph.GetInterfaceMethodsFor(methodId))
+                TryEnqueue(impl.InterfaceMethodId, FloodReason.InterfaceMethod);
+
+            foreach (var impl in callGraph.GetImplementationsOf(methodId))
+                TryEnqueue(impl.ImplementingMethodId, FloodReason.InterfaceImpl);
+
+            foreach (var gi in callGraph.GetGenericMethodsFor(methodId))
+            {
+                if (!HasGenericReturnType(callGraph, gi.GenericMethodId))
+                    TryEnqueue(gi.GenericMethodId, FloodReason.GenericInstantiation);
+            }
+            foreach (var gi in callGraph.GetInstantiationsOf(methodId))
+            {
+                if (!HasGenericReturnType(callGraph, methodId))
+                    TryEnqueue(gi.InstantiatedMethodId, FloodReason.GenericInstantiation);
+            }
+
+            foreach (var ovr in callGraph.GetBaseMethodsFor(methodId))
+                TryEnqueue(ovr.BaseMethodId, FloodReason.BaseMethod);
+
+            foreach (var ovr in callGraph.GetOverridesOf(methodId))
+                TryEnqueue(ovr.OverridingMethodId, FloodReason.Override);
+        }
+
+        // Build new call graph with transformed return types (same as AnalyzeFloodingAsync)
+        var newGraphId = Guid.NewGuid().ToString();
+        var newMethods = new ConcurrentDictionary<string, MethodNode>();
+
+        foreach (var (id, m) in callGraph.Methods)
+        {
+            var newReturnType = floodedIds.Contains(id)
+                ? TransformReturnType(m.ReturnType)
+                : m.ReturnType;
+
+            newMethods[id] = m with
+            {
+                CallGraphId = newGraphId,
+                ReturnType = newReturnType
+            };
+        }
+
+        var newCalls = new ConcurrentBag<MethodCall>(
+            callGraph.Calls.Select(c => c with { CallGraphId = newGraphId }));
+
+        var newImpls = new ConcurrentBag<InterfaceImplementation>(
+            callGraph.InterfaceImplementations.Select(i => new InterfaceImplementation
+            {
+                CallGraphId = newGraphId,
+                ImplementingMethodId = i.ImplementingMethodId,
+                InterfaceMethodId = i.InterfaceMethodId
+            }));
+
+        var newOverrides = new ConcurrentBag<MethodOverride>(
+            callGraph.MethodOverrides.Select(o => new MethodOverride
+            {
+                CallGraphId = newGraphId,
+                OverridingMethodId = o.OverridingMethodId,
+                BaseMethodId = o.BaseMethodId
+            }));
+
+        var newGenericInstantiations = new ConcurrentBag<GenericInstantiation>(
+            callGraph.GenericInstantiations.Select(gi => new GenericInstantiation
+            {
+                CallGraphId = newGraphId,
+                InstantiatedMethodId = gi.InstantiatedMethodId,
+                GenericMethodId = gi.GenericMethodId
+            }));
+
+        var newGraph = new CallGraph(newCalls, newImpls, newOverrides, newGenericInstantiations)
+        {
+            Id = newGraphId,
+            ProjectName = callGraph.ProjectName + "-async",
+            Methods = newMethods
+        };
+
+        return Task.FromResult((newGraph, floodingResult));
+    }
+
     public Task<List<AsyncTransformationInfo>> GetTransformationInfoAsync(CallGraph callGraph, CancellationToken cancellationToken = default)
     {
         var results = new List<AsyncTransformationInfo>();

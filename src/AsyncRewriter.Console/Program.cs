@@ -77,26 +77,26 @@ class Program
             description: "Neo4j password",
             getDefaultValue: () => "asyncrewriter");
 
-        var analyzeDebugOption = new Option<bool>(
-            aliases: new[] { "--debug" },
-            description: "Add debug comments explaining why each method was transformed",
+        var analyzeDebugGraphOption = new Option<bool>(
+            aliases: new[] { "--debug-graph" },
+            description: "Store flooding debug data in Neo4j as a separate graph",
             getDefaultValue: () => false);
 
         analyzeCommand.AddArgument(analyzeSolutionPathArgument);
         analyzeCommand.AddOption(analyzeNeo4jUriOption);
         analyzeCommand.AddOption(analyzeNeo4jUserOption);
         analyzeCommand.AddOption(analyzeNeo4jPasswordOption);
-        analyzeCommand.AddOption(analyzeDebugOption);
+        analyzeCommand.AddOption(analyzeDebugGraphOption);
 
-        analyzeCommand.SetHandler(async (solutionPath, neo4jUri, neo4jUser, neo4jPassword, debug) =>
+        analyzeCommand.SetHandler(async (solutionPath, neo4jUri, neo4jUser, neo4jPassword, debugGraph) =>
         {
             await AnalyzeSolutionAsync(
                 services.GetRequiredService<ICallGraphBuilder>(),
                 services.GetRequiredService<ITaskWrapperExtractor>(),
                 services.GetRequiredService<IAsyncFloodingAnalyzer>(),
                 services.GetRequiredService<IAsyncTransformer>(),
-                solutionPath, neo4jUri, neo4jUser, neo4jPassword, debug);
-        }, analyzeSolutionPathArgument, analyzeNeo4jUriOption, analyzeNeo4jUserOption, analyzeNeo4jPasswordOption, analyzeDebugOption);
+                solutionPath, neo4jUri, neo4jUser, neo4jPassword, debugGraph);
+        }, analyzeSolutionPathArgument, analyzeNeo4jUriOption, analyzeNeo4jUserOption, analyzeNeo4jPasswordOption, analyzeDebugGraphOption);
 
         rootCommand.AddCommand(analyzeCommand);
 
@@ -144,18 +144,24 @@ class Program
             description: "Neo4j password",
             getDefaultValue: () => "asyncrewriter");
 
+        var floodDebugGraphOption = new Option<bool>(
+            aliases: new[] { "--debug-graph" },
+            description: "Store flooding debug data in Neo4j as a separate graph",
+            getDefaultValue: () => false);
+
         floodCommand.AddArgument(floodProjectNameArgument);
         floodCommand.AddOption(floodNeo4jUriOption);
         floodCommand.AddOption(floodNeo4jUserOption);
         floodCommand.AddOption(floodNeo4jPasswordOption);
+        floodCommand.AddOption(floodDebugGraphOption);
 
-        floodCommand.SetHandler(async (projectName, neo4jUri, neo4jUser, neo4jPassword) =>
+        floodCommand.SetHandler(async (projectName, neo4jUri, neo4jUser, neo4jPassword, debugGraph) =>
         {
             await FloodAsync(
                 services.GetRequiredService<ITaskWrapperExtractor>(),
                 services.GetRequiredService<IAsyncFloodingAnalyzer>(),
-                projectName, neo4jUri, neo4jUser, neo4jPassword);
-        }, floodProjectNameArgument, floodNeo4jUriOption, floodNeo4jUserOption, floodNeo4jPasswordOption);
+                projectName, neo4jUri, neo4jUser, neo4jPassword, debugGraph);
+        }, floodProjectNameArgument, floodNeo4jUriOption, floodNeo4jUserOption, floodNeo4jPasswordOption, floodDebugGraphOption);
 
         rootCommand.AddCommand(floodCommand);
 
@@ -178,24 +184,18 @@ class Program
             aliases: new[] { "--dry-run", "-n" },
             description: "Preview changes without writing to disk",
             getDefaultValue: () => false);
-        var debugOption = new Option<bool>(
-            aliases: new[] { "--debug" },
-            description: "Add debug comments explaining why each method was transformed",
-            getDefaultValue: () => false);
-
         transformCommand.AddArgument(transformProjectNameArgument);
         transformCommand.AddOption(transformNeo4jUriOption);
         transformCommand.AddOption(transformNeo4jUserOption);
         transformCommand.AddOption(transformNeo4jPasswordOption);
         transformCommand.AddOption(dryRunOption);
-        transformCommand.AddOption(debugOption);
 
-        transformCommand.SetHandler(async (projectName, neo4jUri, neo4jUser, neo4jPassword, dryRun, debug) =>
+        transformCommand.SetHandler(async (projectName, neo4jUri, neo4jUser, neo4jPassword, dryRun) =>
         {
             await TransformAsync(
                 services.GetRequiredService<IAsyncTransformer>(),
-                projectName, neo4jUri, neo4jUser, neo4jPassword, dryRun, debug);
-        }, transformProjectNameArgument, transformNeo4jUriOption, transformNeo4jUserOption, transformNeo4jPasswordOption, dryRunOption, debugOption);
+                projectName, neo4jUri, neo4jUser, neo4jPassword, dryRun);
+        }, transformProjectNameArgument, transformNeo4jUriOption, transformNeo4jUserOption, transformNeo4jPasswordOption, dryRunOption);
 
         rootCommand.AddCommand(transformCommand);
 
@@ -264,7 +264,7 @@ class Program
         }
     }
 
-    static async Task AnalyzeSolutionAsync(ICallGraphBuilder callGraphBuilder, ITaskWrapperExtractor taskWrapperExtractor, IAsyncFloodingAnalyzer floodingAnalyzer, IAsyncTransformer transformer, string solutionPath, string neo4jUri, string neo4jUser, string neo4jPassword, bool debug = false)
+    static async Task AnalyzeSolutionAsync(ICallGraphBuilder callGraphBuilder, ITaskWrapperExtractor taskWrapperExtractor, IAsyncFloodingAnalyzer floodingAnalyzer, IAsyncTransformer transformer, string solutionPath, string neo4jUri, string neo4jUser, string neo4jPassword, bool debugGraph = false)
     {
         try
         {
@@ -324,7 +324,29 @@ class Program
                     {
                         var rootMethodIds = new HashSet<string>(wrappers.Select(w => w.MethodId));
                         System.Console.WriteLine("Running async flooding analysis...");
-                        var asyncGraph = await floodingAnalyzer.AnalyzeFloodingAsync(callGraph, rootMethodIds);
+
+                        CallGraph asyncGraph;
+                        if (debugGraph)
+                        {
+                            var (graph, floodingResult) = await floodingAnalyzer.AnalyzeFloodingWithDebugAsync(callGraph, rootMethodIds);
+                            asyncGraph = graph;
+
+                            System.Console.WriteLine("Storing flooding debug graph in Neo4j...");
+                            await using var debugRepo = new Neo4jFloodingDebugRepository(neo4jUri, neo4jUser, neo4jPassword);
+                            await debugRepo.EnsureIndexesAsync();
+                            await debugRepo.StoreFloodingResultAsync(floodingResult, callGraph, asyncGraph, (phase, current, total) =>
+                            {
+                                System.Console.WriteLine($"  {phase}: {current}/{total}");
+                            });
+                            System.Console.ForegroundColor = ConsoleColor.Green;
+                            System.Console.WriteLine($"✓ Flooding debug graph stored (id: {floodingResult.Id})");
+                            System.Console.ResetColor();
+                        }
+                        else
+                        {
+                            asyncGraph = await floodingAnalyzer.AnalyzeFloodingAsync(callGraph, rootMethodIds);
+                        }
+
                         PrintFloodingStatistics(callGraph, asyncGraph);
                         var interfaceMappings = await ResolveProblematicInterfacesAsync(callGraph, asyncGraph);
                         asyncGraph.InterfaceMappings = interfaceMappings;
@@ -349,7 +371,7 @@ class Program
                             var transformResult = await transformer.TransformProjectAsync(".", asyncGraph, (file, current, total) =>
                             {
                                 System.Console.WriteLine($"  [{current}/{total}] {file}");
-                            }, debug);
+                            });
 
                             if (!transformResult.Success)
                             {
@@ -446,7 +468,7 @@ class Program
         }
     }
 
-    static async Task FloodAsync(ITaskWrapperExtractor extractor, IAsyncFloodingAnalyzer floodingAnalyzer, string projectName, string neo4jUri, string neo4jUser, string neo4jPassword)
+    static async Task FloodAsync(ITaskWrapperExtractor extractor, IAsyncFloodingAnalyzer floodingAnalyzer, string projectName, string neo4jUri, string neo4jUser, string neo4jPassword, bool debugGraph = false)
     {
         try
         {
@@ -487,10 +509,34 @@ class Program
 
             // Run flooding analysis
             System.Console.WriteLine("Running async flooding analysis...");
-            var asyncGraph = await floodingAnalyzer.AnalyzeFloodingAsync(callGraph, rootMethodIds, (method, current, total) =>
+
+            CallGraph asyncGraph;
+            if (debugGraph)
             {
-                System.Console.WriteLine($"  Flooding: {method} ({current}/{total})");
-            });
+                var (graph, floodingResult) = await floodingAnalyzer.AnalyzeFloodingWithDebugAsync(callGraph, rootMethodIds, (method, current, total) =>
+                {
+                    System.Console.WriteLine($"  Flooding: {method} ({current}/{total})");
+                });
+                asyncGraph = graph;
+
+                System.Console.WriteLine("Storing flooding debug graph in Neo4j...");
+                await using var debugRepo = new Neo4jFloodingDebugRepository(neo4jUri, neo4jUser, neo4jPassword);
+                await debugRepo.EnsureIndexesAsync();
+                await debugRepo.StoreFloodingResultAsync(floodingResult, callGraph, asyncGraph, (phase, current, total) =>
+                {
+                    System.Console.WriteLine($"  {phase}: {current}/{total}");
+                });
+                System.Console.ForegroundColor = ConsoleColor.Green;
+                System.Console.WriteLine($"✓ Flooding debug graph stored (id: {floodingResult.Id})");
+                System.Console.ResetColor();
+            }
+            else
+            {
+                asyncGraph = await floodingAnalyzer.AnalyzeFloodingAsync(callGraph, rootMethodIds, (method, current, total) =>
+                {
+                    System.Console.WriteLine($"  Flooding: {method} ({current}/{total})");
+                });
+            }
 
             System.Console.WriteLine();
             PrintFloodingStatistics(callGraph, asyncGraph);
@@ -520,7 +566,7 @@ class Program
         }
     }
 
-    static async Task TransformAsync(IAsyncTransformer transformer, string projectName, string neo4jUri, string neo4jUser, string neo4jPassword, bool dryRun, bool debug = false)
+    static async Task TransformAsync(IAsyncTransformer transformer, string projectName, string neo4jUri, string neo4jUser, string neo4jPassword, bool dryRun)
     {
         try
         {
@@ -549,19 +595,11 @@ class Program
                 System.Console.WriteLine();
             }
 
-            if (debug)
-            {
-                System.Console.ForegroundColor = ConsoleColor.Cyan;
-                System.Console.WriteLine("DEBUG MODE - comments will be added to transformed code");
-                System.Console.ResetColor();
-                System.Console.WriteLine();
-            }
-
             System.Console.WriteLine("Transforming source files...");
             var result = await transformer.TransformProjectAsync(".", callGraph, (file, current, total) =>
             {
                 System.Console.WriteLine($"  [{current}/{total}] {file}");
-            }, debug);
+            });
 
             if (!result.Success)
             {
