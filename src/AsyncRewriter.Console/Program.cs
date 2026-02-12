@@ -172,19 +172,24 @@ class Program
             aliases: new[] { "--dry-run", "-n" },
             description: "Preview changes without writing to disk",
             getDefaultValue: () => false);
+        var debugOption = new Option<bool>(
+            aliases: new[] { "--debug" },
+            description: "Add debug comments explaining why each method was transformed",
+            getDefaultValue: () => false);
 
         transformCommand.AddArgument(transformProjectNameArgument);
         transformCommand.AddOption(transformNeo4jUriOption);
         transformCommand.AddOption(transformNeo4jUserOption);
         transformCommand.AddOption(transformNeo4jPasswordOption);
         transformCommand.AddOption(dryRunOption);
+        transformCommand.AddOption(debugOption);
 
-        transformCommand.SetHandler(async (projectName, neo4jUri, neo4jUser, neo4jPassword, dryRun) =>
+        transformCommand.SetHandler(async (projectName, neo4jUri, neo4jUser, neo4jPassword, dryRun, debug) =>
         {
             await TransformAsync(
                 services.GetRequiredService<IAsyncTransformer>(),
-                projectName, neo4jUri, neo4jUser, neo4jPassword, dryRun);
-        }, transformProjectNameArgument, transformNeo4jUriOption, transformNeo4jUserOption, transformNeo4jPasswordOption, dryRunOption);
+                projectName, neo4jUri, neo4jUser, neo4jPassword, dryRun, debug);
+        }, transformProjectNameArgument, transformNeo4jUriOption, transformNeo4jUserOption, transformNeo4jPasswordOption, dryRunOption, debugOption);
 
         rootCommand.AddCommand(transformCommand);
 
@@ -509,7 +514,7 @@ class Program
         }
     }
 
-    static async Task TransformAsync(IAsyncTransformer transformer, string projectName, string neo4jUri, string neo4jUser, string neo4jPassword, bool dryRun)
+    static async Task TransformAsync(IAsyncTransformer transformer, string projectName, string neo4jUri, string neo4jUser, string neo4jPassword, bool dryRun, bool debug = false)
     {
         try
         {
@@ -538,11 +543,19 @@ class Program
                 System.Console.WriteLine();
             }
 
+            if (debug)
+            {
+                System.Console.ForegroundColor = ConsoleColor.Cyan;
+                System.Console.WriteLine("DEBUG MODE - comments will be added to transformed code");
+                System.Console.ResetColor();
+                System.Console.WriteLine();
+            }
+
             System.Console.WriteLine("Transforming source files...");
             var result = await transformer.TransformProjectAsync(".", callGraph, (file, current, total) =>
             {
                 System.Console.WriteLine($"  [{current}/{total}] {file}");
-            });
+            }, debug);
 
             if (!result.Success)
             {

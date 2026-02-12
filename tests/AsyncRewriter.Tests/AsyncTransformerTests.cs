@@ -848,6 +848,78 @@ class MyService : IMyService
         }
     }
 
+    [Fact]
+    public async Task TransformProjectAsync_WithDebugComments_AddsReasonComments()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "async-rewriter-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        var tempFile = Path.Combine(tempDir, "TestService.cs");
+
+        try
+        {
+            var source = @"class TestService
+{
+    private IRepo _repo;
+    void DoWork()
+    {
+        _repo.Connect();
+    }
+}";
+            await File.WriteAllTextAsync(tempFile, source);
+
+            var callGraph = CreateFloodedCallGraph(tempFile);
+            var result = await _transformer.TransformProjectAsync(tempDir, callGraph, null, true);
+
+            result.Success.Should().BeTrue();
+            result.ModifiedFiles.Should().HaveCount(1);
+            var transformed = result.ModifiedFiles[0].TransformedContent;
+
+            // Method-level debug comment
+            transformed.Should().Contain("// [AsyncRewriter] Calls async method IRepo.Connect");
+            // Call-site debug comment
+            transformed.Should().Contain("/* await: IRepo.Connect() */");
+            AssertCompiles(result.ModifiedFiles[0].TransformedContent);
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
+    [Fact]
+    public async Task TransformProjectAsync_WithoutDebugComments_NoReasonComments()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "async-rewriter-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        var tempFile = Path.Combine(tempDir, "TestService.cs");
+
+        try
+        {
+            var source = @"class TestService
+{
+    private IRepo _repo;
+    void DoWork()
+    {
+        _repo.Connect();
+    }
+}";
+            await File.WriteAllTextAsync(tempFile, source);
+
+            var callGraph = CreateFloodedCallGraph(tempFile);
+            var result = await _transformer.TransformProjectAsync(tempDir, callGraph);
+
+            result.Success.Should().BeTrue();
+            var transformed = result.ModifiedFiles[0].TransformedContent;
+
+            transformed.Should().NotContain("[AsyncRewriter]");
+            transformed.Should().NotContain("/* await:");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
     private static CallGraph CreateFloodedCallGraphWithInterface(string tempFile)
     {
         var methods = new ConcurrentDictionary<string, MethodNode>();

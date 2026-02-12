@@ -19,12 +19,20 @@ public class AsyncTransformer : IAsyncTransformer
         string projectPath,
         CallGraph callGraph,
         CancellationToken cancellationToken = default)
-        => TransformProjectAsync(projectPath, callGraph, null, cancellationToken);
+        => TransformProjectAsync(projectPath, callGraph, null, false, cancellationToken);
+
+    public Task<TransformationResult> TransformProjectAsync(
+        string projectPath,
+        CallGraph callGraph,
+        Action<string, int, int>? progressCallback,
+        CancellationToken cancellationToken = default)
+        => TransformProjectAsync(projectPath, callGraph, progressCallback, false, cancellationToken);
 
     public async Task<TransformationResult> TransformProjectAsync(
         string projectPath,
         CallGraph callGraph,
         Action<string, int, int>? progressCallback,
+        bool debugComments,
         CancellationToken cancellationToken = default)
     {
         var result = new TransformationResult { CallGraph = callGraph };
@@ -51,7 +59,7 @@ public class AsyncTransformer : IAsyncTransformer
 
                 var sourceCode = await File.ReadAllTextAsync(filePath, cancellationToken);
                 var fileTransformation = await TransformFileInternalAsync(
-                    filePath, sourceCode, transformations, callGraph, cancellationToken);
+                    filePath, sourceCode, transformations, callGraph, debugComments, cancellationToken);
 
                 if (fileTransformation != null)
                 {
@@ -241,6 +249,7 @@ public class AsyncTransformer : IAsyncTransformer
         string sourceCode,
         List<(MethodNode Method, string OriginalReturnType, List<MethodCall> CallsToAwait)> methodInfos,
         CallGraph callGraph,
+        bool debugComments,
         CancellationToken cancellationToken)
     {
         var tree = CSharpSyntaxTree.ParseText(sourceCode);
@@ -259,6 +268,10 @@ public class AsyncTransformer : IAsyncTransformer
 
         foreach (var (method, originalReturnType, callsToAwait) in methodInfos)
         {
+            string? floodingReason = null;
+            if (debugComments)
+                floodingReason = DeriveFloodingReason(method, callsToAwait, callGraph, floodedMethodIds);
+
             methodsByStartLine[method.StartLine] = new MethodTransformInfo
             {
                 MethodId = method.Id,
@@ -267,7 +280,8 @@ public class AsyncTransformer : IAsyncTransformer
                 OriginalReturnType = originalReturnType,
                 NewReturnType = method.ReturnType,
                 StartLine = method.StartLine,
-                EndLine = method.EndLine
+                EndLine = method.EndLine,
+                FloodingReason = floodingReason
             };
 
             foreach (var call in callsToAwait)
@@ -283,7 +297,7 @@ public class AsyncTransformer : IAsyncTransformer
             }
         }
 
-        var rewriter = new AsyncMethodRewriter(methodsByStartLine, callSitesByLine);
+        var rewriter = new AsyncMethodRewriter(methodsByStartLine, callSitesByLine, debugComments: debugComments);
         var newRoot = rewriter.Visit(root);
 
         if (!rewriter.AnyMethodTransformed)
@@ -307,6 +321,48 @@ public class AsyncTransformer : IAsyncTransformer
             TransformedContent = transformedSource,
             MethodTransformations = rewriter.Transformations.ToList()
         };
+    }
+
+    private static string DeriveFloodingReason(
+        MethodNode method,
+        List<MethodCall> callsToAwait,
+        CallGraph callGraph,
+        HashSet<string> floodedMethodIds)
+    {
+        // Check if it calls flooded methods
+        if (callsToAwait.Count > 0)
+        {
+            var calleeName = callsToAwait[0].CalleeId;
+            if (callGraph.Methods.TryGetValue(calleeName, out var calleeMethod))
+                calleeName = $"{calleeMethod.ContainingType}.{calleeMethod.Name}";
+            return callsToAwait.Count == 1
+                ? $"Calls async method {calleeName}"
+                : $"Calls async methods {calleeName} (+{callsToAwait.Count - 1} more)";
+        }
+
+        // Check interface implementations
+        foreach (var impl in callGraph.InterfaceImplementations)
+        {
+            if (impl.ImplementingMethodId == method.Id && floodedMethodIds.Contains(impl.InterfaceMethodId))
+            {
+                if (callGraph.Methods.TryGetValue(impl.InterfaceMethodId, out var ifaceMethod))
+                    return $"Implements {ifaceMethod.ContainingType}.{ifaceMethod.Name}";
+                return $"Implements interface method {impl.InterfaceMethodId}";
+            }
+        }
+
+        // Check method overrides
+        foreach (var ovr in callGraph.MethodOverrides)
+        {
+            if (ovr.OverridingMethodId == method.Id && floodedMethodIds.Contains(ovr.BaseMethodId))
+            {
+                if (callGraph.Methods.TryGetValue(ovr.BaseMethodId, out var baseMethod))
+                    return $"Overrides {baseMethod.ContainingType}.{baseMethod.Name}";
+                return $"Overrides base method {ovr.BaseMethodId}";
+            }
+        }
+
+        return "Flooded via async call graph";
     }
 
     private static SyntaxNode EnsureUsingDirective(SyntaxNode root, string namespaceName)

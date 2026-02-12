@@ -16,6 +16,7 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
     private readonly Dictionary<int, CallSiteInfo> _callSitesByLine;
     private readonly HashSet<string> _syncWrapperMethodIds;
     private readonly HashSet<string> _allAsyncMethodIds;
+    private readonly bool _debugComments;
     private readonly List<MethodTransformation> _transformations = new();
     private bool _anyMethodTransformed;
 
@@ -26,12 +27,14 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         Dictionary<int, MethodTransformInfo> methodsByStartLine,
         Dictionary<int, CallSiteInfo> callSitesByLine,
         HashSet<string>? syncWrapperMethodIds = null,
-        HashSet<string>? allAsyncMethodIds = null)
+        HashSet<string>? allAsyncMethodIds = null,
+        bool debugComments = false)
     {
         _methodsByStartLine = methodsByStartLine;
         _callSitesByLine = callSitesByLine;
         _syncWrapperMethodIds = syncWrapperMethodIds ?? new HashSet<string>();
         _allAsyncMethodIds = allAsyncMethodIds ?? new HashSet<string>();
+        _debugComments = debugComments;
     }
 
     public override SyntaxNode? VisitMethodDeclaration(MethodDeclarationSyntax node)
@@ -82,6 +85,11 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         {
             // No awaitable calls but method is flooded — wrap return values
             visited = TransformBodyForNoAwait(visited, originalReturnType, newReturnType);
+        }
+
+        if (_debugComments && info.FloodingReason != null)
+        {
+            visited = PrependDebugComment(visited, info.FloodingReason);
         }
 
         _anyMethodTransformed = true;
@@ -137,6 +145,11 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         else
         {
             visited = TransformLocalFunctionBodyForNoAwait(visited, originalReturnType, newReturnType);
+        }
+
+        if (_debugComments && info.FloodingReason != null)
+        {
+            visited = PrependDebugComment(visited, info.FloodingReason);
         }
 
         _anyMethodTransformed = true;
@@ -227,7 +240,7 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         var visited = (InvocationExpressionSyntax)base.VisitInvocationExpression(node)!;
 
         var line = node.GetLocation().GetLineSpan().StartLinePosition.Line + 1; // 1-based
-        if (!_callSitesByLine.TryGetValue(line, out _))
+        if (!_callSitesByLine.TryGetValue(line, out var callSiteInfo))
             return visited;
 
         // Wrap with await — but only if not already awaited
@@ -239,7 +252,31 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         var awaitExpr = AwaitExpression(
             Token(SyntaxKind.AwaitKeyword).WithTrailingTrivia(Space),
             visited.WithoutLeadingTrivia());
-        return awaitExpr.WithLeadingTrivia(leadingTrivia);
+        var result = awaitExpr.WithLeadingTrivia(leadingTrivia);
+
+        if (_debugComments)
+        {
+            var comment = Comment($" /* await: {callSiteInfo.CalleeMethodId} */");
+            result = result.WithTrailingTrivia(result.GetTrailingTrivia().Add(comment));
+        }
+
+        return result;
+    }
+
+    private static MethodDeclarationSyntax PrependDebugComment(MethodDeclarationSyntax method, string reason)
+    {
+        var commentTrivia = Comment($"// [AsyncRewriter] {reason}");
+        var leading = method.GetLeadingTrivia();
+        var newTrivia = leading.Add(commentTrivia).Add(LineFeed);
+        return method.WithLeadingTrivia(newTrivia);
+    }
+
+    private static LocalFunctionStatementSyntax PrependDebugComment(LocalFunctionStatementSyntax func, string reason)
+    {
+        var commentTrivia = Comment($"// [AsyncRewriter] {reason}");
+        var leading = func.GetLeadingTrivia();
+        var newTrivia = leading.Add(commentTrivia).Add(LineFeed);
+        return func.WithLeadingTrivia(newTrivia);
     }
 
     private static MethodDeclarationSyntax AddAsyncModifier(MethodDeclarationSyntax method)
@@ -439,6 +476,7 @@ public class MethodTransformInfo
     public required string NewReturnType { get; init; }
     public required int StartLine { get; init; }
     public required int EndLine { get; init; }
+    public string? FloodingReason { get; init; }
 }
 
 /// <summary>
