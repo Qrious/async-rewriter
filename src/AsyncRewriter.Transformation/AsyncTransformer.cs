@@ -263,11 +263,20 @@ public class AsyncTransformer : IAsyncTransformer
 
         newRoot = EnsureUsingDirective(newRoot, "System.Threading.Tasks");
 
+        var transformedSource = newRoot.ToFullString();
+
+        // Apply interface replacements if mappings are available
+        if (callGraph.InterfaceMappings.Count > 0)
+        {
+            transformedSource = InterfaceReplacer.Transform(transformedSource, callGraph.InterfaceMappings)
+                ?? transformedSource;
+        }
+
         return new FileTransformation
         {
             FilePath = filePath,
             OriginalContent = sourceCode,
-            TransformedContent = newRoot.ToFullString(),
+            TransformedContent = transformedSource,
             MethodTransformations = rewriter.Transformations.ToList()
         };
     }

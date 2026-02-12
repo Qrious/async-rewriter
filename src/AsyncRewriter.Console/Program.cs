@@ -316,6 +316,7 @@ class Program
                         var asyncGraph = await floodingAnalyzer.AnalyzeFloodingAsync(callGraph, rootMethodIds);
                         PrintFloodingStatistics(callGraph, asyncGraph);
                         var interfaceMappings = await ResolveProblematicInterfacesAsync(callGraph, asyncGraph);
+                        asyncGraph.InterfaceMappings = interfaceMappings;
 
                         System.Console.Write("Would you like to transform the source files? [Y/n] ");
                         var transformResponse = System.Console.ReadLine()?.Trim();
@@ -484,6 +485,7 @@ class Program
             PrintFloodingStatistics(callGraph, asyncGraph);
 
             var interfaceMappings = await ResolveProblematicInterfacesAsync(callGraph, asyncGraph);
+            asyncGraph.InterfaceMappings = interfaceMappings;
 
             // Store the async call graph in Neo4j
             System.Console.WriteLine($"Storing async call graph '{asyncGraph.ProjectName}' in Neo4j...");

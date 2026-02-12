@@ -22,6 +22,12 @@ public class CallGraph
     public ConcurrentBag<MethodOverride> MethodOverrides { get; } = new();
 
     /// <summary>
+    /// Interface mappings from problematic interface analysis (sync → async interface names).
+    /// When set, the transformer will replace interface references in source files.
+    /// </summary>
+    public List<InterfaceMapping> InterfaceMappings { get; set; } = new();
+
+    /// <summary>
     /// Calls indexed by the caller
     /// </summary>
     private ConcurrentDictionary<string, List<MethodCall>> _callsByCaller { get; init; } = new();

@@ -756,6 +756,98 @@ class MyService : IMyService
         result.Should().NotContain("Task<List<int>> GetItems()");
     }
 
+    [Fact]
+    public async Task TransformProjectAsync_WithInterfaceMappings_UpdatesBaseListAndMethods()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "async-rewriter-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        var tempFile = Path.Combine(tempDir, "RepoImpl.cs");
+
+        try
+        {
+            var source = @"class RepoImpl : IRepository
+{
+    private readonly object _db;
+    public string Get()
+    {
+        return _db.ToString();
+    }
+}";
+            await File.WriteAllTextAsync(tempFile, source);
+
+            var callGraph = CreateFloodedCallGraphWithInterface(tempFile);
+            var result = await _transformer.TransformProjectAsync(tempDir, callGraph);
+
+            result.Success.Should().BeTrue();
+            result.ModifiedFiles.Should().HaveCount(1);
+
+            var transformed = result.ModifiedFiles[0].TransformedContent;
+
+            // Method should be transformed
+            transformed.Should().Contain("Task<string> Get()");
+
+            // Base list should be updated to async interface
+            transformed.Should().Contain(": IRepositoryAsync");
+            transformed.Should().NotContain(": IRepository\r");
+            transformed.Should().NotContain(": IRepository\n");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
+    private static CallGraph CreateFloodedCallGraphWithInterface(string tempFile)
+    {
+        var methods = new ConcurrentDictionary<string, MethodNode>();
+        methods["RepoImpl.Get()"] = new MethodNode
+        {
+            CallGraphId = "test",
+            Id = "RepoImpl.Get()",
+            Name = "Get",
+            ContainingType = "RepoImpl",
+            ContainingNamespace = "",
+            ReturnType = "Task<string>", // flooded
+            Parameters = new List<string>(),
+            FilePath = tempFile,
+            StartLine = 4,
+            EndLine = 7
+        };
+        methods["IRepository.Get()"] = new MethodNode
+        {
+            CallGraphId = "test",
+            Id = "IRepository.Get()",
+            Name = "Get",
+            ContainingType = "IRepository",
+            ContainingNamespace = "",
+            ReturnType = "Task<string>", // flooded
+            Parameters = new List<string>(),
+            FilePath = "external",
+            StartLine = 0,
+            EndLine = 0
+        };
+
+        var calls = new ConcurrentBag<MethodCall>();
+        var impls = new ConcurrentBag<InterfaceImplementation>();
+        impls.Add(new InterfaceImplementation
+        {
+            CallGraphId = "test",
+            ImplementingMethodId = "RepoImpl.Get()",
+            InterfaceMethodId = "IRepository.Get()"
+        });
+
+        var graph = new CallGraph(calls, impls)
+        {
+            Methods = methods,
+            InterfaceMappings = new List<InterfaceMapping>
+            {
+                new() { SyncInterfaceName = "IRepository", AsyncInterfaceName = "IRepositoryAsync" }
+            }
+        };
+
+        return graph;
+    }
+
     private static CallGraph CreateFloodedCallGraph(string tempFile)
     {
         var methods = new ConcurrentDictionary<string, MethodNode>();
