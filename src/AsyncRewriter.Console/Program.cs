@@ -660,8 +660,27 @@ class Program
         System.Console.ResetColor();
         System.Console.WriteLine();
 
-        foreach (var (interfaceType, methods) in byInterfaceType.OrderBy(kv => kv.Key))
+        // Track choices made for generic base types to allow "apply to all instantiations"
+        var genericBaseChoices = new Dictionary<string, Func<string, List<ProblematicMethod>, Task>>();
+        var processedTypes = new HashSet<string>();
+        var orderedEntries = byInterfaceType.OrderBy(kv => kv.Key).ToList();
+
+        foreach (var (interfaceType, methods) in orderedEntries)
         {
+            if (processedTypes.Contains(interfaceType))
+                continue;
+            processedTypes.Add(interfaceType);
+
+            var genericBase = ProblematicInterfaceAnalyzer.GetGenericBaseType(interfaceType);
+
+            // Check if we already have a saved choice for this generic base
+            if (genericBase != null && genericBaseChoices.TryGetValue(genericBase, out var savedAction))
+            {
+                await savedAction(interfaceType, methods);
+                System.Console.WriteLine();
+                continue;
+            }
+
             System.Console.ForegroundColor = ConsoleColor.Yellow;
             System.Console.WriteLine($"⚠ Problematic interface: {interfaceType} ({methods.Count} method(s) flooded)");
             System.Console.ResetColor();
@@ -696,55 +715,140 @@ class Program
             if (!int.TryParse(choice, out var choiceNum))
                 choiceNum = ignoreOption;
 
+            // Capture the choice kind and associated data for potential reuse
+            string? chosenExistingAsync = null;
+            string? chosenNs = null;
+            string? chosenFilePath = null;
+            string choiceKind;
+
             if (existingAsync != null && choiceNum == 1)
             {
-                // Use existing async interface
-                var ns = ProblematicInterfaceAnalyzer.GetNamespaceFromCallGraph(callGraph, existingAsync);
+                choiceKind = "use-existing";
+                chosenExistingAsync = existingAsync;
+                var ns = ProblematicInterfaceAnalyzer.GetNamespaceFromCallGraph(callGraph, chosenExistingAsync);
+                chosenNs = ns;
                 mappings.Add(new InterfaceMapping
                 {
                     SyncInterfaceName = interfaceType,
-                    AsyncInterfaceName = existingAsync,
+                    AsyncInterfaceName = chosenExistingAsync,
                     RequiredNamespaces = ns != null ? new List<string> { ns } : new List<string>()
                 });
                 System.Console.ForegroundColor = ConsoleColor.Green;
-                System.Console.WriteLine($"  ✓ Will replace {interfaceType} → {existingAsync}");
+                System.Console.WriteLine($"  ✓ Will replace {interfaceType} → {chosenExistingAsync}");
                 System.Console.ResetColor();
             }
             else if (choiceNum == createOption)
             {
-                // Create new async interface
+                choiceKind = "create-new";
                 var asyncName = interfaceType + "Async";
                 var defaultPath = $"src/{asyncName}.cs";
 
                 System.Console.Write($"  File path [{defaultPath}]: ");
-                var filePath = System.Console.ReadLine()?.Trim();
-                if (string.IsNullOrEmpty(filePath))
-                    filePath = defaultPath;
+                chosenFilePath = System.Console.ReadLine()?.Trim();
+                if (string.IsNullOrEmpty(chosenFilePath))
+                    chosenFilePath = defaultPath;
 
                 System.Console.Write("  Namespace [AsyncInterfaces]: ");
-                var ns = System.Console.ReadLine()?.Trim();
-                if (string.IsNullOrEmpty(ns))
-                    ns = "AsyncInterfaces";
+                chosenNs = System.Console.ReadLine()?.Trim();
+                if (string.IsNullOrEmpty(chosenNs))
+                    chosenNs = "AsyncInterfaces";
 
-                var source = AsyncInterfaceGenerator.GenerateAsyncInterface(asyncName, ns, methods);
-                await File.WriteAllTextAsync(filePath, source);
+                var source = AsyncInterfaceGenerator.GenerateAsyncInterface(asyncName, chosenNs, methods);
+                await File.WriteAllTextAsync(chosenFilePath, source);
 
                 System.Console.ForegroundColor = ConsoleColor.Green;
-                System.Console.WriteLine($"  ✓ Created {filePath}");
+                System.Console.WriteLine($"  ✓ Created {chosenFilePath}");
                 System.Console.ResetColor();
 
                 mappings.Add(new InterfaceMapping
                 {
                     SyncInterfaceName = interfaceType,
                     AsyncInterfaceName = asyncName,
-                    RequiredNamespaces = new List<string> { ns }
+                    RequiredNamespaces = new List<string> { chosenNs }
                 });
             }
             else
             {
+                choiceKind = "ignore";
                 System.Console.ForegroundColor = ConsoleColor.DarkGray;
                 System.Console.WriteLine("  Ignored.");
                 System.Console.ResetColor();
+            }
+
+            // Offer to apply to remaining sibling instantiations
+            if (genericBase != null)
+            {
+                var remainingSiblings = orderedEntries
+                    .Where(kv => !processedTypes.Contains(kv.Key)
+                        && ProblematicInterfaceAnalyzer.GetGenericBaseType(kv.Key) == genericBase)
+                    .ToList();
+
+                if (remainingSiblings.Count > 0)
+                {
+                    System.Console.Write($"  {remainingSiblings.Count} more {genericBase}<...> instantiation(s) remain. Apply same choice to all? [Y/n]: ");
+                    var applyAll = System.Console.ReadLine()?.Trim();
+                    if (string.IsNullOrEmpty(applyAll) || applyAll.Equals("y", StringComparison.OrdinalIgnoreCase)
+                        || applyAll.Equals("yes", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var capturedChoiceKind = choiceKind;
+                        var capturedNs = chosenNs;
+
+                        genericBaseChoices[genericBase] = async (siblingType, siblingMethods) =>
+                        {
+                            switch (capturedChoiceKind)
+                            {
+                                case "use-existing":
+                                {
+                                    var siblingExisting = ProblematicInterfaceAnalyzer.FindExistingAsyncInterface(callGraph, siblingType, siblingMethods);
+                                    if (siblingExisting != null)
+                                    {
+                                        var ns = ProblematicInterfaceAnalyzer.GetNamespaceFromCallGraph(callGraph, siblingExisting);
+                                        mappings.Add(new InterfaceMapping
+                                        {
+                                            SyncInterfaceName = siblingType,
+                                            AsyncInterfaceName = siblingExisting,
+                                            RequiredNamespaces = ns != null ? new List<string> { ns } : new List<string>()
+                                        });
+                                        System.Console.ForegroundColor = ConsoleColor.Green;
+                                        System.Console.WriteLine($"  ✓ Will replace {siblingType} → {siblingExisting} (auto-applied)");
+                                        System.Console.ResetColor();
+                                    }
+                                    else
+                                    {
+                                        System.Console.ForegroundColor = ConsoleColor.DarkGray;
+                                        System.Console.WriteLine($"  No existing async interface found for {siblingType}, skipped.");
+                                        System.Console.ResetColor();
+                                    }
+                                    break;
+                                }
+                                case "create-new":
+                                {
+                                    var siblingAsyncName = siblingType + "Async";
+                                    var siblingPath = $"src/{siblingAsyncName}.cs";
+                                    var source = AsyncInterfaceGenerator.GenerateAsyncInterface(siblingAsyncName, capturedNs!, siblingMethods);
+                                    await File.WriteAllTextAsync(siblingPath, source);
+                                    System.Console.ForegroundColor = ConsoleColor.Green;
+                                    System.Console.WriteLine($"  ✓ Created {siblingPath} (auto-applied)");
+                                    System.Console.ResetColor();
+                                    mappings.Add(new InterfaceMapping
+                                    {
+                                        SyncInterfaceName = siblingType,
+                                        AsyncInterfaceName = siblingAsyncName,
+                                        RequiredNamespaces = new List<string> { capturedNs! }
+                                    });
+                                    break;
+                                }
+                                case "ignore":
+                                {
+                                    System.Console.ForegroundColor = ConsoleColor.DarkGray;
+                                    System.Console.WriteLine($"  Ignored {siblingType} (auto-applied).");
+                                    System.Console.ResetColor();
+                                    break;
+                                }
+                            }
+                        };
+                    }
+                }
             }
 
             System.Console.WriteLine();

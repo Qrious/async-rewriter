@@ -138,6 +138,18 @@ public static class ProblematicInterfaceAnalyzer
         return method?.ContainingNamespace;
     }
 
+    /// <summary>
+    /// Strips type arguments from a generic type: "IMapper&lt;Foo, Bar&gt;" → "IMapper".
+    /// Returns null for non-generic types.
+    /// </summary>
+    public static string? GetGenericBaseType(string interfaceType)
+    {
+        var angleBracketIndex = interfaceType.IndexOf('<');
+        if (angleBracketIndex < 0)
+            return null;
+        return interfaceType.Substring(0, angleBracketIndex);
+    }
+
     internal static string NormalizeReturnType(string returnType)
     {
         return returnType
