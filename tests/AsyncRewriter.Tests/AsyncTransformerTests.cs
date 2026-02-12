@@ -4,6 +4,8 @@ using System.Threading.Tasks;
 using AsyncRewriter.Core.Models;
 using AsyncRewriter.Transformation;
 using FluentAssertions;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Xunit;
 
 namespace AsyncRewriter.Tests;
@@ -11,6 +13,61 @@ namespace AsyncRewriter.Tests;
 public class AsyncTransformerTests
 {
     private readonly AsyncTransformer _transformer = new();
+
+    /// <summary>
+    /// Verifies that the given C# source compiles without errors.
+    /// Stub types are provided in a separate syntax tree so usings don't conflict.
+    /// </summary>
+    private static void AssertCompiles(string source)
+    {
+        var syntaxTree = CSharpSyntaxTree.ParseText(source);
+        var stubTree = CSharpSyntaxTree.ParseText(StubTypes);
+
+        var references = new List<MetadataReference>();
+        var trustedAssemblies = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
+            .Split(Path.PathSeparator);
+        foreach (var assembly in trustedAssemblies)
+        {
+            var name = Path.GetFileNameWithoutExtension(assembly);
+            if (name is "System.Runtime" or "System.Threading.Tasks" or "System.Console"
+                or "System.Private.CoreLib" or "netstandard")
+            {
+                references.Add(MetadataReference.CreateFromFile(assembly));
+            }
+        }
+
+        var compilation = CSharpCompilation.Create("TestCompilation",
+            new[] { syntaxTree, stubTree },
+            references,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        var diagnostics = compilation.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .ToList();
+
+        diagnostics.Should().BeEmpty(
+            "transformed code should compile without errors, but got:\n" +
+            string.Join("\n", diagnostics.Select(d => $"  {d.Location.GetLineSpan()}: {d.GetMessage()}")));
+    }
+
+    // Stub types used by test sources to make them compilable
+    private const string StubTypes = @"
+using System.Threading.Tasks;
+
+interface IRepo
+{
+    Task Open();
+    Task Close();
+    Task Connect();
+    Task<int> GetValue();
+    Task<int> GetCount();
+}
+
+static class Helper
+{
+    public static Task Run() => Task.CompletedTask;
+}
+";
 
     [Fact]
     public async Task TransformSourceAsync_VoidMethod_WithAwaitableCall_AddsAsyncAndAwait()
@@ -44,6 +101,7 @@ public class AsyncTransformerTests
         result.Should().Contain("async Task Connect()");
         result.Should().Contain("await _repo.Open()");
         result.Should().Contain("using System.Threading.Tasks;");
+        AssertCompiles(result);
     }
 
     [Fact]
@@ -77,6 +135,7 @@ public class AsyncTransformerTests
 
         result.Should().Contain("async Task<int> Fetch()");
         result.Should().Contain("await _repo.GetValue()");
+        AssertCompiles(result);
     }
 
     [Fact]
@@ -113,6 +172,7 @@ public class AsyncTransformerTests
         result.Should().Contain("await _repo.Open()");
         result.Should().Contain("_repo.Close();");
         result.Should().NotContain("await _repo.Close()");
+        AssertCompiles(result);
     }
 
     [Fact]
@@ -147,6 +207,7 @@ class MyService
 
         result.Should().Contain("using System.Threading.Tasks;");
         result.Should().Contain("using System;");
+        AssertCompiles(result);
     }
 
     [Fact]
@@ -183,12 +244,15 @@ class MyService
         // Should have exactly one occurrence
         var count = result.Split("using System.Threading.Tasks;").Length - 1;
         count.Should().Be(1);
+        AssertCompiles(result);
     }
 
     [Fact]
     public async Task TransformSourceAsync_FloodedMethod_NoAwaitableCalls_UsesTaskCompletedTask()
     {
-        var source = @"class MyService
+        var source = @"using System;
+
+class MyService
 {
     void NoOp()
     {
@@ -213,12 +277,15 @@ class MyService
         result.Should().Contain("Task NoOp()");
         result.Should().Contain("Task.CompletedTask");
         result.Should().NotContain("async");
+        AssertCompiles(result);
     }
 
     [Fact]
     public async Task TransformSourceAsync_VoidMethodWithEarlyReturn_NoAwaitableCalls_ReturnsTaskCompletedTask()
     {
-        var source = @"class MyService
+        var source = @"using System;
+
+class MyService
 {
     void Process(string? input)
     {
@@ -247,8 +314,9 @@ class MyService
         // The early return should become "return Task.CompletedTask;"
         result.Should().NotContain("\n            return;\n");
         // Should have Task.CompletedTask for both early return and end of method
-        var count = result.Split("Task.CompletedTask").Length - 1;
+        var count = result.Split("return Task.CompletedTask").Length - 1;
         count.Should().Be(2, "both the early return and the appended return should use Task.CompletedTask");
+        AssertCompiles(result);
     }
 
     [Fact]
@@ -279,6 +347,7 @@ class MyService
         result.Should().Contain("Task<bool> IsConnected()");
         result.Should().Contain("Task.FromResult<bool>(true)");
         result.Should().NotContain("async");
+        AssertCompiles(result);
     }
 
     [Fact]
@@ -307,6 +376,7 @@ class MyService
             result.ModifiedFiles.Should().HaveCount(1);
             result.ModifiedFiles[0].TransformedContent.Should().Contain("async Task DoWork()");
             result.ModifiedFiles[0].TransformedContent.Should().Contain("await _repo.Connect()");
+            AssertCompiles(result.ModifiedFiles[0].TransformedContent);
         }
         finally
         {
@@ -362,6 +432,7 @@ class MyService
         result.Should().Contain("await _repo.Open()");
         result.Should().Contain("async Task<int> Second()");
         result.Should().Contain("await _repo.GetCount()");
+        AssertCompiles(result);
     }
 
     private static CallGraph CreateFloodedCallGraph(string tempFile)

@@ -170,7 +170,8 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
                 .WithTrailingTrivia(CarriageReturnLineFeed);
 
             var returnStatement = ReturnStatement(
-                MakeTaskCompletedTaskExpression())
+                MakeTaskCompletedTaskExpression()
+                    .WithLeadingTrivia(Space))
                 .WithLeadingTrivia(Whitespace("        "))
                 .WithTrailingTrivia(CarriageReturnLineFeed);
 
@@ -188,7 +189,8 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
             var newBody = (BlockSyntax)rewriter.Visit(method.Body);
 
             var returnStatement = ReturnStatement(
-                MakeTaskCompletedTaskExpression())
+                MakeTaskCompletedTaskExpression()
+                    .WithLeadingTrivia(Space))
                 .WithLeadingTrivia(Whitespace("        "))
                 .WithTrailingTrivia(CarriageReturnLineFeed);
 
