@@ -345,9 +345,22 @@ public class AsyncTransformer : IAsyncTransformer
         {
             if (impl.ImplementingMethodId == method.Id && floodedMethodIds.Contains(impl.InterfaceMethodId))
             {
+                var ifaceName = impl.InterfaceMethodId;
                 if (callGraph.Methods.TryGetValue(impl.InterfaceMethodId, out var ifaceMethod))
-                    return $"Implements {ifaceMethod.ContainingType}.{ifaceMethod.Name}";
-                return $"Implements interface method {impl.InterfaceMethodId}";
+                    ifaceName = $"{ifaceMethod.ContainingType}.{ifaceMethod.Name}";
+
+                // For external interfaces, explain why the interface method was flooded
+                var isExternal = ifaceMethod != null
+                    && (string.IsNullOrEmpty(ifaceMethod.FilePath) || ifaceMethod.FilePath == "external");
+                if (isExternal)
+                {
+                    var ifaceReason = DeriveFloodingReasonForInterfaceMethod(
+                        impl.InterfaceMethodId, callGraph, floodedMethodIds);
+                    if (ifaceReason != null)
+                        return $"Implements {ifaceName} (flooded because: {ifaceReason})";
+                }
+
+                return $"Implements {ifaceName}";
             }
         }
 
@@ -356,13 +369,99 @@ public class AsyncTransformer : IAsyncTransformer
         {
             if (ovr.OverridingMethodId == method.Id && floodedMethodIds.Contains(ovr.BaseMethodId))
             {
+                var baseName = ovr.BaseMethodId;
                 if (callGraph.Methods.TryGetValue(ovr.BaseMethodId, out var baseMethod))
-                    return $"Overrides {baseMethod.ContainingType}.{baseMethod.Name}";
-                return $"Overrides base method {ovr.BaseMethodId}";
+                    baseName = $"{baseMethod.ContainingType}.{baseMethod.Name}";
+
+                // For external base methods, explain why it was flooded
+                var isExternal = baseMethod != null
+                    && (string.IsNullOrEmpty(baseMethod.FilePath) || baseMethod.FilePath == "external");
+                if (isExternal)
+                {
+                    var baseReason = DeriveFloodingReasonForExternalMethod(
+                        ovr.BaseMethodId, callGraph, floodedMethodIds);
+                    if (baseReason != null)
+                        return $"Overrides {baseName} (flooded because: {baseReason})";
+                }
+
+                return $"Overrides {baseName}";
             }
         }
 
         return "Flooded via async call graph";
+    }
+
+    /// <summary>
+    /// Determines why an external interface method was flooded by finding a flooded
+    /// implementation and explaining its reason.
+    /// </summary>
+    private static string? DeriveFloodingReasonForInterfaceMethod(
+        string interfaceMethodId,
+        CallGraph callGraph,
+        HashSet<string> floodedMethodIds)
+    {
+        // An interface method is flooded because one of its implementations was flooded.
+        // Find a flooded implementation and report its reason.
+        foreach (var impl in callGraph.InterfaceImplementations)
+        {
+            if (impl.InterfaceMethodId == interfaceMethodId
+                && floodedMethodIds.Contains(impl.ImplementingMethodId)
+                && callGraph.Methods.TryGetValue(impl.ImplementingMethodId, out var implMethod))
+            {
+                // Find why this implementation was flooded (its outgoing calls)
+                var implCalls = callGraph.Calls
+                    .Where(c => c.CallerId == impl.ImplementingMethodId && floodedMethodIds.Contains(c.CalleeId))
+                    .ToList();
+
+                if (implCalls.Count > 0)
+                {
+                    var calleeName = implCalls[0].CalleeId;
+                    if (callGraph.Methods.TryGetValue(calleeName, out var calleeMethod))
+                        calleeName = $"{calleeMethod.ContainingType}.{calleeMethod.Name}";
+                    return $"{implMethod.ContainingType}.{implMethod.Name} calls async method {calleeName}";
+                }
+
+                return $"{implMethod.ContainingType}.{implMethod.Name} is flooded";
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Determines why an external base method was flooded by checking its callers
+    /// or implementations.
+    /// </summary>
+    private static string? DeriveFloodingReasonForExternalMethod(
+        string methodId,
+        CallGraph callGraph,
+        HashSet<string> floodedMethodIds)
+    {
+        // Check if the base method has flooded callers with async calls
+        var outgoingCalls = callGraph.Calls
+            .Where(c => c.CallerId == methodId && floodedMethodIds.Contains(c.CalleeId))
+            .ToList();
+
+        if (outgoingCalls.Count > 0)
+        {
+            var calleeName = outgoingCalls[0].CalleeId;
+            if (callGraph.Methods.TryGetValue(calleeName, out var calleeMethod))
+                calleeName = $"{calleeMethod.ContainingType}.{calleeMethod.Name}";
+            return $"calls async method {calleeName}";
+        }
+
+        // Check overrides of this base method
+        foreach (var ovr in callGraph.MethodOverrides)
+        {
+            if (ovr.BaseMethodId == methodId
+                && floodedMethodIds.Contains(ovr.OverridingMethodId)
+                && callGraph.Methods.TryGetValue(ovr.OverridingMethodId, out var overrideMethod))
+            {
+                return $"override {overrideMethod.ContainingType}.{overrideMethod.Name} is flooded";
+            }
+        }
+
+        return null;
     }
 
     private static SyntaxNode EnsureUsingDirective(SyntaxNode root, string namespaceName)

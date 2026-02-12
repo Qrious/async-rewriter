@@ -920,6 +920,129 @@ class MyService : IMyService
         }
     }
 
+    [Fact]
+    public async Task TransformProjectAsync_WithDebugComments_ExternalInterface_ShowsChainedReason()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "async-rewriter-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        var tempFile = Path.Combine(tempDir, "RepoImpl.cs");
+
+        try
+        {
+            var source = @"class RepoImpl : IRepository
+{
+    private readonly object _db;
+    public string Get()
+    {
+        return _db.ToString();
+    }
+}";
+            await File.WriteAllTextAsync(tempFile, source);
+
+            var callGraph = CreateFloodedCallGraphWithExternalInterface(tempFile);
+            var result = await _transformer.TransformProjectAsync(tempDir, callGraph, null, true);
+
+            result.Success.Should().BeTrue();
+            result.ModifiedFiles.Should().HaveCount(1);
+            var transformed = result.ModifiedFiles[0].TransformedContent;
+
+            // Should show interface name AND the reason it was flooded
+            transformed.Should().Contain("// [AsyncRewriter] Implements IRepository.Get (flooded because:");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
+    private static CallGraph CreateFloodedCallGraphWithExternalInterface(string tempFile)
+    {
+        // Scenario: RepoImpl.Get has no direct async calls, but implements
+        // IRepository.Get which is external and flooded. Another impl (OtherRepo.Get)
+        // calls DbClient.Query, which caused the interface to flood.
+        var methods = new ConcurrentDictionary<string, MethodNode>();
+        methods["RepoImpl.Get()"] = new MethodNode
+        {
+            CallGraphId = "test",
+            Id = "RepoImpl.Get()",
+            Name = "Get",
+            ContainingType = "RepoImpl",
+            ContainingNamespace = "",
+            ReturnType = "Task<string>",
+            Parameters = new List<string>(),
+            FilePath = tempFile,
+            StartLine = 4,
+            EndLine = 7
+        };
+        methods["IRepository.Get()"] = new MethodNode
+        {
+            CallGraphId = "test",
+            Id = "IRepository.Get()",
+            Name = "Get",
+            ContainingType = "IRepository",
+            ContainingNamespace = "",
+            ReturnType = "Task<string>",
+            Parameters = new List<string>(),
+            FilePath = "external",
+            StartLine = 0,
+            EndLine = 0
+        };
+        methods["OtherRepo.Get()"] = new MethodNode
+        {
+            CallGraphId = "test",
+            Id = "OtherRepo.Get()",
+            Name = "Get",
+            ContainingType = "OtherRepo",
+            ContainingNamespace = "",
+            ReturnType = "Task<string>",
+            Parameters = new List<string>(),
+            FilePath = "external",
+            StartLine = 0,
+            EndLine = 0
+        };
+        methods["DbClient.Query()"] = new MethodNode
+        {
+            CallGraphId = "test",
+            Id = "DbClient.Query()",
+            Name = "Query",
+            ContainingType = "DbClient",
+            ContainingNamespace = "",
+            ReturnType = "Task<string>",
+            Parameters = new List<string>(),
+            FilePath = "external",
+            StartLine = 0,
+            EndLine = 0
+        };
+
+        var calls = new ConcurrentBag<MethodCall>();
+        // OtherRepo.Get calls DbClient.Query — the root cause of the flooding
+        calls.Add(new MethodCall
+        {
+            CallGraphId = "test",
+            Id = "call1",
+            CallerId = "OtherRepo.Get()",
+            CalleeId = "DbClient.Query()",
+            LineNumber = 10,
+            FilePath = "external"
+        });
+
+        var impls = new ConcurrentBag<InterfaceImplementation>();
+        impls.Add(new InterfaceImplementation
+        {
+            CallGraphId = "test",
+            ImplementingMethodId = "RepoImpl.Get()",
+            InterfaceMethodId = "IRepository.Get()"
+        });
+        impls.Add(new InterfaceImplementation
+        {
+            CallGraphId = "test",
+            ImplementingMethodId = "OtherRepo.Get()",
+            InterfaceMethodId = "IRepository.Get()"
+        });
+
+        return new CallGraph(calls, impls) { Methods = methods };
+    }
+
     private static CallGraph CreateFloodedCallGraphWithInterface(string tempFile)
     {
         var methods = new ConcurrentDictionary<string, MethodNode>();
