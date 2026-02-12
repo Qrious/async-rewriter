@@ -55,9 +55,10 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         // First, visit children to transform invocations
         var visited = (MethodDeclarationSyntax)base.VisitMethodDeclaration(node)!;
 
-        // Transform return type
+        // Transform return type — derive from syntax-level text to preserve aliases and
+        // fully qualified names, rather than using the semantic-model-resolved NewReturnType
         var originalReturnType = node.ReturnType.ToString().Trim();
-        var newReturnType = info.NewReturnType;
+        var newReturnType = originalReturnType == "void" ? "Task" : $"Task<{originalReturnType}>";
         var newReturnTypeSyntax = ParseTypeName(newReturnType).WithTriviaFrom(visited.ReturnType);
 
         visited = visited.WithReturnType(newReturnTypeSyntax);
