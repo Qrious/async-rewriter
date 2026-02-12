@@ -796,11 +796,22 @@ class Program
     {
         // Build candidate names from both simple and qualified forms
         // syncInterfaceType could be "IFoo" or "Some.Namespace.IFoo"
-        var simpleName = syncInterfaceType.Contains('.')
-            ? syncInterfaceType.Substring(syncInterfaceType.LastIndexOf('.') + 1)
-            : syncInterfaceType;
-        var prefix = syncInterfaceType.Contains('.')
-            ? syncInterfaceType.Substring(0, syncInterfaceType.LastIndexOf('.') + 1)
+        // Strip generic type parameters for name matching, re-append after generating candidates
+        // e.g., "IMapInto<TDestination, TSource>" → base="IMapInto", genericSuffix="<TDestination, TSource>"
+        var genericSuffix = "";
+        var baseType = syncInterfaceType;
+        var angleBracketIndex = syncInterfaceType.IndexOf('<');
+        if (angleBracketIndex >= 0)
+        {
+            genericSuffix = syncInterfaceType.Substring(angleBracketIndex);
+            baseType = syncInterfaceType.Substring(0, angleBracketIndex);
+        }
+
+        var simpleName = baseType.Contains('.')
+            ? baseType.Substring(baseType.LastIndexOf('.') + 1)
+            : baseType;
+        var prefix = baseType.Contains('.')
+            ? baseType.Substring(0, baseType.LastIndexOf('.') + 1)
             : "";
 
         var candidateSimpleNames = new HashSet<string>(StringComparer.Ordinal);
@@ -823,12 +834,17 @@ class Program
         // Search by exact match first, then by simple name match
         foreach (var (typeName, candidateMethods) in methodsByType)
         {
-            // Check if this type matches any candidate (exact or simple name)
-            var typeSimpleName = typeName.Contains('.')
-                ? typeName.Substring(typeName.LastIndexOf('.') + 1)
-                : typeName;
+            // Strip generic parameters from the candidate type for comparison
+            var typeNameBase = typeName;
+            var typeAngle = typeName.IndexOf('<');
+            if (typeAngle >= 0)
+                typeNameBase = typeName.Substring(0, typeAngle);
 
-            if (!candidateNames.Contains(typeName) && !candidateSimpleNames.Contains(typeSimpleName))
+            var typeSimpleName = typeNameBase.Contains('.')
+                ? typeNameBase.Substring(typeNameBase.LastIndexOf('.') + 1)
+                : typeNameBase;
+
+            if (!candidateNames.Contains(typeNameBase) && !candidateSimpleNames.Contains(typeSimpleName))
                 continue;
 
             // Check that all flooded methods have matching async signatures
