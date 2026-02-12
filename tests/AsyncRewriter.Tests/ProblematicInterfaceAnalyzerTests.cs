@@ -11,14 +11,16 @@ public class ProblematicInterfaceAnalyzerTests
     private static CallGraph CreateCallGraph(
         Dictionary<string, MethodNode> methods,
         List<MethodCall>? calls = null,
-        List<InterfaceImplementation>? interfaceImpls = null)
+        List<InterfaceImplementation>? interfaceImpls = null,
+        List<GenericInstantiation>? genericInstantiations = null)
     {
         var graphId = Guid.NewGuid().ToString();
         var methodDict = new ConcurrentDictionary<string, MethodNode>(methods);
         var callBag = new ConcurrentBag<MethodCall>(calls ?? []);
         var implBag = new ConcurrentBag<InterfaceImplementation>(interfaceImpls ?? []);
+        var genBag = new ConcurrentBag<GenericInstantiation>(genericInstantiations ?? []);
 
-        return new CallGraph(callBag, implBag)
+        return new CallGraph(callBag, implBag, genericInstantiations: genBag)
         {
             Id = graphId,
             ProjectName = "TestProject",
@@ -236,6 +238,50 @@ public class ProblematicInterfaceAnalyzerTests
 
         var result = ProblematicInterfaceAnalyzer.DetectProblematicInterfaces(syncGraph, asyncGraph);
         result.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void DetectProblematicInterfaces_SkipsGenericInstantiationWithReturnTypeParameter()
+    {
+        // Generic definition: IMapper<TSource, TDestination>.Map returns TDestination (a type param)
+        var genericIfaceMethod = MakeMethod(
+            "IMapper<TSource, TDestination>.Map", "Map", "TDestination",
+            "IMapper<TSource, TDestination>", "external", isReturnTypeParameter: true);
+
+        // Instantiated: IMapper<Foo, Bar>.Map returns Bar (concrete, IsReturnTypeParameter = false)
+        var instantiatedIfaceMethod = MakeMethod(
+            "IMapper<Foo, Bar>.Map(Foo)", "Map", "Bar?",
+            "IMapper<Foo, Bar>", "external");
+
+        var implMethod = MakeMethod("MyMapper.Map", "Map", "Bar?", "MyMapper");
+
+        var syncGraph = CreateCallGraph(
+            new Dictionary<string, MethodNode>
+            {
+                ["IMapper<TSource, TDestination>.Map"] = genericIfaceMethod,
+                ["IMapper<Foo, Bar>.Map(Foo)"] = instantiatedIfaceMethod,
+                ["MyMapper.Map"] = implMethod,
+            },
+            interfaceImpls: new List<InterfaceImplementation>
+            {
+                new() { CallGraphId = "g", ImplementingMethodId = "MyMapper.Map", InterfaceMethodId = "IMapper<Foo, Bar>.Map(Foo)" }
+            },
+            genericInstantiations: new List<GenericInstantiation>
+            {
+                new() { CallGraphId = "g", InstantiatedMethodId = "IMapper<Foo, Bar>.Map(Foo)", GenericMethodId = "IMapper<TSource, TDestination>.Map" }
+            });
+
+        var asyncImplMethod = MakeMethod("MyMapper.Map", "Map", "Task<Bar?>", "MyMapper");
+        var asyncGraph = CreateCallGraph(
+            new Dictionary<string, MethodNode>
+            {
+                ["IMapper<TSource, TDestination>.Map"] = genericIfaceMethod,
+                ["IMapper<Foo, Bar>.Map(Foo)"] = instantiatedIfaceMethod,
+                ["MyMapper.Map"] = asyncImplMethod,
+            });
+
+        var result = ProblematicInterfaceAnalyzer.DetectProblematicInterfaces(syncGraph, asyncGraph);
+        result.Should().BeEmpty("generic interface with covariant return type parameter is not problematic");
     }
 
     #endregion

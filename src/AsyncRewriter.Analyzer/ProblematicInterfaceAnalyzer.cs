@@ -36,6 +36,16 @@ public static class ProblematicInterfaceAnalyzer
             if (interfaceMethod?.IsReturnTypeParameter == true)
                 continue;
 
+            // For generic instantiations, also check the generic definition node
+            if (interfaceMethod != null)
+            {
+                var isGenericReturnType = syncGraph.GetGenericMethodsFor(impl.InterfaceMethodId)
+                    .Any(gi => syncGraph.Methods.TryGetValue(gi.GenericMethodId, out var genericMethod)
+                        && genericMethod.IsReturnTypeParameter);
+                if (isGenericReturnType)
+                    continue;
+            }
+
             var interfaceType = interfaceMethod?.ContainingType
                 ?? impl.InterfaceMethodId.Split('.').LastOrDefault()
                 ?? impl.InterfaceMethodId;
