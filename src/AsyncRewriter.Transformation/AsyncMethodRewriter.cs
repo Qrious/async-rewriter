@@ -94,6 +94,124 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         return visited;
     }
 
+    public override SyntaxNode? VisitLocalFunctionStatement(LocalFunctionStatementSyntax node)
+    {
+        var startLine = node.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+
+        if (!_methodsByStartLine.TryGetValue(startLine, out var info))
+            return base.VisitLocalFunctionStatement(node);
+
+        var awaitLines = new List<int>();
+        foreach (var callSite in _callSitesByLine)
+        {
+            if (callSite.Key >= info.StartLine && callSite.Key <= info.EndLine)
+                awaitLines.Add(callSite.Key);
+        }
+
+        var hasAwaitableCalls = awaitLines.Count > 0;
+
+        // First, visit children to transform invocations
+        var visited = (LocalFunctionStatementSyntax)base.VisitLocalFunctionStatement(node)!;
+
+        // Transform return type
+        var originalReturnType = node.ReturnType.ToString().Trim();
+        var newReturnType = originalReturnType == "void" ? "Task" : $"Task<{originalReturnType}>";
+        var newReturnTypeSyntax = ParseTypeName(newReturnType).WithTriviaFrom(visited.ReturnType);
+
+        visited = visited.WithReturnType(newReturnTypeSyntax);
+
+        if (hasAwaitableCalls)
+        {
+            visited = AddAsyncModifierToLocalFunction(visited);
+        }
+        else
+        {
+            visited = TransformLocalFunctionBodyForNoAwait(visited, originalReturnType, newReturnType);
+        }
+
+        _anyMethodTransformed = true;
+        _transformations.Add(new MethodTransformation
+        {
+            MethodName = info.MethodName,
+            MethodSignature = $"{info.ContainingType}.{info.MethodName}",
+            StartLine = info.StartLine,
+            EndLine = info.EndLine,
+            OriginalReturnType = originalReturnType,
+            NewReturnType = newReturnType,
+            AwaitAddedAtLines = awaitLines
+        });
+
+        return visited;
+    }
+
+    private static LocalFunctionStatementSyntax AddAsyncModifierToLocalFunction(LocalFunctionStatementSyntax func)
+    {
+        if (func.Modifiers.Any(SyntaxKind.AsyncKeyword))
+            return func;
+
+        if (func.Modifiers.Count == 0)
+        {
+            var leadingTrivia = func.ReturnType.GetLeadingTrivia();
+            var asyncToken = Token(SyntaxKind.AsyncKeyword)
+                .WithLeadingTrivia(leadingTrivia)
+                .WithTrailingTrivia(Space);
+            var newReturnType = func.ReturnType.WithoutLeadingTrivia();
+            return func
+                .WithModifiers(TokenList(asyncToken))
+                .WithReturnType(newReturnType);
+        }
+        else
+        {
+            var asyncToken = Token(SyntaxKind.AsyncKeyword).WithTrailingTrivia(Space);
+            var newModifiers = func.Modifiers.Add(asyncToken);
+            return func.WithModifiers(newModifiers);
+        }
+    }
+
+    private static LocalFunctionStatementSyntax TransformLocalFunctionBodyForNoAwait(
+        LocalFunctionStatementSyntax func,
+        string originalReturnType,
+        string newReturnType)
+    {
+        if (func.Body == null && func.ExpressionBody == null)
+            return func;
+
+        if (originalReturnType == "void")
+        {
+            // Similar to TransformVoidMethodNoAwait but for local functions
+            if (func.Body != null)
+            {
+                var rewriter = new BareReturnRewriter();
+                var newBody = (BlockSyntax)rewriter.Visit(func.Body);
+
+                var returnStatement = ReturnStatement(
+                    MakeTaskCompletedTaskExpression()
+                        .WithLeadingTrivia(Space))
+                    .WithLeadingTrivia(Whitespace("        "))
+                    .WithTrailingTrivia(CarriageReturnLineFeed);
+
+                newBody = newBody.AddStatements(returnStatement);
+                return func.WithBody(newBody);
+            }
+        }
+        else
+        {
+            var rewriter = new ReturnValueWrapper(originalReturnType);
+            if (func.ExpressionBody != null)
+            {
+                var wrappedExpr = (ExpressionSyntax)rewriter.Visit(func.ExpressionBody.Expression);
+                return func.WithExpressionBody(func.ExpressionBody.WithExpression(wrappedExpr));
+            }
+            if (func.Body != null)
+            {
+                var newBody = (BlockSyntax)rewriter.Visit(func.Body);
+                return func.WithBody(newBody);
+            }
+        }
+
+        return func;
+    }
+
     public override SyntaxNode? VisitInvocationExpression(InvocationExpressionSyntax node)
     {
         var visited = (InvocationExpressionSyntax)base.VisitInvocationExpression(node)!;

@@ -153,6 +153,34 @@ public class AsyncTransformer : IAsyncTransformer
             }
         }
 
+        // Also scan local function declarations
+        var localFunctions = root.DescendantNodes().OfType<LocalFunctionStatementSyntax>();
+        foreach (var localFunc in localFunctions)
+        {
+            var startLine = localFunc.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+            var endLine = localFunc.GetLocation().GetLineSpan().EndLinePosition.Line + 1;
+
+            var matchingTransform = transformations.FirstOrDefault(t =>
+            {
+                return t.CallSitesToTransform.Any(cs => cs.LineNumber >= startLine && cs.LineNumber <= endLine)
+                    || (t.OriginalReturnType != t.NewReturnType && MatchesLocalFunctionByContext(localFunc, t));
+            });
+
+            if (matchingTransform != null)
+            {
+                methodsByStartLine[startLine] = new MethodTransformInfo
+                {
+                    MethodId = matchingTransform.MethodId,
+                    MethodName = localFunc.Identifier.Text,
+                    ContainingType = GetContainingTypeName(localFunc),
+                    OriginalReturnType = matchingTransform.OriginalReturnType,
+                    NewReturnType = matchingTransform.NewReturnType,
+                    StartLine = startLine,
+                    EndLine = endLine
+                };
+            }
+        }
+
         var rewriter = new AsyncMethodRewriter(
             methodsByStartLine, callSitesByLine, syncWrapperMethodIds, allAsyncMethodIds);
 
@@ -336,6 +364,40 @@ public class AsyncTransformer : IAsyncTransformer
             }
         }
         return false;
+    }
+
+    private static bool MatchesLocalFunctionByContext(LocalFunctionStatementSyntax localFunc, AsyncTransformationInfo info)
+    {
+        var methodId = info.MethodId;
+        // Local function IDs end with .LocalFuncName(params)
+        var lastDot = methodId.LastIndexOf('.');
+        if (lastDot >= 0)
+        {
+            var parenIdx = methodId.IndexOf('(', lastDot);
+            var methodName = parenIdx >= 0
+                ? methodId.Substring(lastDot + 1, parenIdx - lastDot - 1)
+                : methodId.Substring(lastDot + 1);
+
+            if (localFunc.Identifier.Text == methodName)
+            {
+                var declReturnType = localFunc.ReturnType.ToString().Trim();
+                if (declReturnType == info.OriginalReturnType)
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    private static string GetContainingTypeName(LocalFunctionStatementSyntax localFunc)
+    {
+        var parent = localFunc.Parent;
+        while (parent != null)
+        {
+            if (parent is TypeDeclarationSyntax typeDecl)
+                return typeDecl.Identifier.Text;
+            parent = parent.Parent;
+        }
+        return string.Empty;
     }
 
     private static string GetContainingTypeName(MethodDeclarationSyntax method)

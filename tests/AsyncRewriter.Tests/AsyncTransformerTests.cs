@@ -757,6 +757,57 @@ class MyService : IMyService
     }
 
     [Fact]
+    public async Task TransformSourceAsync_LocalFunction_CallingFloodedMethod_BecomesAsyncAndAwaited()
+    {
+        var source = @"class MyService
+{
+    private IRepo _repo;
+    void OuterMethod()
+    {
+        void LocalFunc()
+        {
+            _repo.Open();
+        }
+        LocalFunc();
+    }
+}";
+
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.OuterMethod().LocalFunc()",
+                OriginalReturnType = "void",
+                NewReturnType = "Task",
+                NeedsAsyncKeyword = true,
+                CallSitesToTransform = new List<CallSiteTransformation>
+                {
+                    new() { LineNumber = 8, OriginalCallExpression = "_repo.Open()" }
+                }
+            },
+            new()
+            {
+                MethodId = "MyService.OuterMethod()",
+                OriginalReturnType = "void",
+                NewReturnType = "Task",
+                NeedsAsyncKeyword = true,
+                CallSitesToTransform = new List<CallSiteTransformation>
+                {
+                    new() { LineNumber = 10, OriginalCallExpression = "LocalFunc()" }
+                }
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(source, transformations);
+
+        result.Should().Contain("async Task LocalFunc()");
+        result.Should().Contain("await _repo.Open()");
+        result.Should().Contain("await LocalFunc()");
+        result.Should().Contain("async Task OuterMethod()");
+        AssertCompiles(result);
+    }
+
+    [Fact]
     public async Task TransformProjectAsync_WithInterfaceMappings_UpdatesBaseListAndMethods()
     {
         var tempDir = Path.Combine(Path.GetTempPath(), "async-rewriter-test-" + Guid.NewGuid().ToString("N"));
