@@ -642,42 +642,7 @@ class Program
     {
         var mappings = new List<InterfaceMapping>();
 
-        // Collect problematic methods grouped by interface type
-        var byInterfaceType = new Dictionary<string, List<(string InterfaceMethodId, MethodNode? InterfaceMethod, MethodNode OriginalImpl, MethodNode AsyncImpl)>>();
-
-        foreach (var impl in callGraph.InterfaceImplementations)
-        {
-            if (!callGraph.Methods.TryGetValue(impl.ImplementingMethodId, out var originalImpl))
-                continue;
-            if (!asyncGraph.Methods.TryGetValue(impl.ImplementingMethodId, out var asyncImpl))
-                continue;
-            if (originalImpl.ReturnType == asyncImpl.ReturnType)
-                continue;
-
-            var isExternal = !callGraph.Methods.TryGetValue(impl.InterfaceMethodId, out var interfaceMethod)
-                || interfaceMethod.FilePath == "external";
-            if (!isExternal)
-                continue;
-
-            // Skip interfaces where the return type is a generic type parameter (e.g., IMapper<TSource, TDestination>)
-            // since the type parameter can be instantiated with Task<T>
-            if (interfaceMethod?.IsReturnTypeParameter == true)
-                continue;
-
-            var interfaceType = interfaceMethod?.ContainingType
-                ?? impl.InterfaceMethodId.Split('.').LastOrDefault()
-                ?? impl.InterfaceMethodId;
-
-            if (!byInterfaceType.TryGetValue(interfaceType, out var list))
-            {
-                list = new();
-                byInterfaceType[interfaceType] = list;
-            }
-
-            // Avoid duplicates for the same interface method
-            if (!list.Any(e => e.InterfaceMethodId == impl.InterfaceMethodId))
-                list.Add((impl.InterfaceMethodId, interfaceMethod, originalImpl, asyncImpl));
-        }
+        var byInterfaceType = ProblematicInterfaceAnalyzer.DetectProblematicInterfaces(callGraph, asyncGraph);
 
         if (byInterfaceType.Count == 0)
         {
@@ -709,7 +674,7 @@ class Program
             System.Console.WriteLine();
 
             // Check for existing async interface
-            var existingAsync = FindExistingAsyncInterface(callGraph, interfaceType, methods);
+            var existingAsync = ProblematicInterfaceAnalyzer.FindExistingAsyncInterface(callGraph, interfaceType, methods);
 
             var optionNum = 1;
             if (existingAsync != null)
@@ -732,7 +697,7 @@ class Program
             if (existingAsync != null && choiceNum == 1)
             {
                 // Use existing async interface
-                var ns = GetNamespaceFromCallGraph(callGraph, existingAsync);
+                var ns = ProblematicInterfaceAnalyzer.GetNamespaceFromCallGraph(callGraph, existingAsync);
                 mappings.Add(new InterfaceMapping
                 {
                     SyncInterfaceName = interfaceType,
@@ -759,7 +724,7 @@ class Program
                 if (string.IsNullOrEmpty(ns))
                     ns = "AsyncInterfaces";
 
-                var source = GenerateAsyncInterface(asyncName, ns, methods);
+                var source = AsyncInterfaceGenerator.GenerateAsyncInterface(asyncName, ns, methods);
                 await File.WriteAllTextAsync(filePath, source);
 
                 System.Console.ForegroundColor = ConsoleColor.Green;
@@ -790,128 +755,6 @@ class Program
         }
 
         return mappings;
-    }
-
-    static string? FindExistingAsyncInterface(CallGraph callGraph, string syncInterfaceType, List<(string InterfaceMethodId, MethodNode? InterfaceMethod, MethodNode OriginalImpl, MethodNode AsyncImpl)> methods)
-    {
-        // Build candidate names from both simple and qualified forms
-        // syncInterfaceType could be "IFoo" or "Some.Namespace.IFoo"
-        // Strip generic type parameters for name matching, re-append after generating candidates
-        // e.g., "IMapInto<TDestination, TSource>" → base="IMapInto", genericSuffix="<TDestination, TSource>"
-        var genericSuffix = "";
-        var baseType = syncInterfaceType;
-        var angleBracketIndex = syncInterfaceType.IndexOf('<');
-        if (angleBracketIndex >= 0)
-        {
-            genericSuffix = syncInterfaceType.Substring(angleBracketIndex);
-            baseType = syncInterfaceType.Substring(0, angleBracketIndex);
-        }
-
-        var simpleName = baseType.Contains('.')
-            ? baseType.Substring(baseType.LastIndexOf('.') + 1)
-            : baseType;
-        var prefix = baseType.Contains('.')
-            ? baseType.Substring(0, baseType.LastIndexOf('.') + 1)
-            : "";
-
-        var candidateSimpleNames = new HashSet<string>(StringComparer.Ordinal);
-        if (simpleName.StartsWith("I"))
-            candidateSimpleNames.Add("IAsync" + simpleName.Substring(1));
-        candidateSimpleNames.Add(simpleName + "Async");
-
-        // Also generate qualified candidates
-        var candidateNames = new HashSet<string>(candidateSimpleNames, StringComparer.Ordinal);
-        if (prefix.Length > 0)
-        {
-            foreach (var c in candidateSimpleNames)
-                candidateNames.Add(prefix + c);
-        }
-
-        var methodsByType = callGraph.Methods.Values
-            .GroupBy(m => m.ContainingType)
-            .ToDictionary(g => g.Key, g => g.ToList());
-
-        // Search by exact match first, then by simple name match
-        foreach (var (typeName, candidateMethods) in methodsByType)
-        {
-            // Strip generic parameters from the candidate type for comparison
-            var typeNameBase = typeName;
-            var typeAngle = typeName.IndexOf('<');
-            if (typeAngle >= 0)
-                typeNameBase = typeName.Substring(0, typeAngle);
-
-            var typeSimpleName = typeNameBase.Contains('.')
-                ? typeNameBase.Substring(typeNameBase.LastIndexOf('.') + 1)
-                : typeNameBase;
-
-            if (!candidateNames.Contains(typeNameBase) && !candidateSimpleNames.Contains(typeSimpleName))
-                continue;
-
-            // Check that all flooded methods have matching async signatures
-            var allMatch = true;
-            foreach (var m in methods)
-            {
-                var name = m.InterfaceMethod?.Name ?? m.OriginalImpl.Name;
-                var expectedReturnType = m.AsyncImpl.ReturnType;
-
-                // Also try matching with Async suffix on method name
-                // Compare return types flexibly (Task<T> vs System.Threading.Tasks.Task<T>)
-                var match = candidateMethods.Any(cm =>
-                    (cm.Name == name || cm.Name == name + "Async")
-                    && NormalizeReturnType(cm.ReturnType) == NormalizeReturnType(expectedReturnType));
-
-                if (!match)
-                {
-                    allMatch = false;
-                    break;
-                }
-            }
-
-            if (allMatch)
-                return typeName;
-        }
-
-        return null;
-    }
-
-    static string NormalizeReturnType(string returnType)
-    {
-        return returnType
-            .Replace("System.Threading.Tasks.Task", "Task")
-            .Replace("System.Threading.Tasks.ValueTask", "ValueTask");
-    }
-
-    static string GenerateAsyncInterface(string asyncInterfaceName, string ns, List<(string InterfaceMethodId, MethodNode? InterfaceMethod, MethodNode OriginalImpl, MethodNode AsyncImpl)> methods)
-    {
-        var lines = new List<string>
-        {
-            "using System.Threading.Tasks;",
-            "",
-            $"namespace {ns};",
-            "",
-            $"public interface {asyncInterfaceName}",
-            "{"
-        };
-
-        foreach (var m in methods)
-        {
-            var name = m.InterfaceMethod?.Name ?? m.OriginalImpl.Name;
-            var returnType = m.AsyncImpl.ReturnType;
-            var parameters = m.InterfaceMethod?.Parameters ?? m.OriginalImpl.Parameters;
-            var paramStr = string.Join(", ", parameters);
-            lines.Add($"    {returnType} {name}({paramStr});");
-        }
-
-        lines.Add("}");
-        lines.Add("");
-
-        return string.Join(Environment.NewLine, lines);
-    }
-
-    static string? GetNamespaceFromCallGraph(CallGraph callGraph, string typeName)
-    {
-        var method = callGraph.Methods.Values.FirstOrDefault(m => m.ContainingType == typeName);
-        return method?.ContainingNamespace;
     }
 
     static async Task ApplyInterfaceReplacements(CallGraph callGraph, CallGraph asyncGraph, List<InterfaceMapping> mappings)
