@@ -58,6 +58,11 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         // Transform return type — derive from syntax-level text to preserve aliases and
         // fully qualified names, rather than using the semantic-model-resolved NewReturnType
         var originalReturnType = node.ReturnType.ToString().Trim();
+
+        // Skip wrapping if return type is already Task-based (e.g. existing async interface methods)
+        if (IsAlreadyTaskType(originalReturnType))
+            return base.VisitMethodDeclaration(node);
+
         var newReturnType = originalReturnType == "void" ? "Task" : $"Task<{originalReturnType}>";
         var newReturnTypeSyntax = ParseTypeName(newReturnType).WithTriviaFrom(visited.ReturnType);
 
@@ -115,6 +120,11 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
 
         // Transform return type
         var originalReturnType = node.ReturnType.ToString().Trim();
+
+        // Skip wrapping if return type is already Task-based (e.g. existing async interface methods)
+        if (IsAlreadyTaskType(originalReturnType))
+            return base.VisitLocalFunctionStatement(node);
+
         var newReturnType = originalReturnType == "void" ? "Task" : $"Task<{originalReturnType}>";
         var newReturnTypeSyntax = ParseTypeName(newReturnType).WithTriviaFrom(visited.ReturnType);
 
@@ -367,6 +377,17 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         }
 
         return method;
+    }
+
+    private static bool IsAlreadyTaskType(string returnType)
+    {
+        return returnType == "Task"
+            || returnType.StartsWith("Task<")
+            || returnType == "System.Threading.Tasks.Task"
+            || returnType.StartsWith("System.Threading.Tasks.Task<")
+            || returnType == "ValueTask"
+            || returnType.StartsWith("ValueTask<")
+            || returnType.StartsWith("System.Threading.Tasks.ValueTask");
     }
 
     /// <summary>
