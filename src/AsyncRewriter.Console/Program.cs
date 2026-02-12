@@ -77,20 +77,26 @@ class Program
             description: "Neo4j password",
             getDefaultValue: () => "asyncrewriter");
 
+        var analyzeDebugOption = new Option<bool>(
+            aliases: new[] { "--debug" },
+            description: "Add debug comments explaining why each method was transformed",
+            getDefaultValue: () => false);
+
         analyzeCommand.AddArgument(analyzeSolutionPathArgument);
         analyzeCommand.AddOption(analyzeNeo4jUriOption);
         analyzeCommand.AddOption(analyzeNeo4jUserOption);
         analyzeCommand.AddOption(analyzeNeo4jPasswordOption);
+        analyzeCommand.AddOption(analyzeDebugOption);
 
-        analyzeCommand.SetHandler(async (solutionPath, neo4jUri, neo4jUser, neo4jPassword) =>
+        analyzeCommand.SetHandler(async (solutionPath, neo4jUri, neo4jUser, neo4jPassword, debug) =>
         {
             await AnalyzeSolutionAsync(
                 services.GetRequiredService<ICallGraphBuilder>(),
                 services.GetRequiredService<ITaskWrapperExtractor>(),
                 services.GetRequiredService<IAsyncFloodingAnalyzer>(),
                 services.GetRequiredService<IAsyncTransformer>(),
-                solutionPath, neo4jUri, neo4jUser, neo4jPassword);
-        }, analyzeSolutionPathArgument, analyzeNeo4jUriOption, analyzeNeo4jUserOption, analyzeNeo4jPasswordOption);
+                solutionPath, neo4jUri, neo4jUser, neo4jPassword, debug);
+        }, analyzeSolutionPathArgument, analyzeNeo4jUriOption, analyzeNeo4jUserOption, analyzeNeo4jPasswordOption, analyzeDebugOption);
 
         rootCommand.AddCommand(analyzeCommand);
 
@@ -258,7 +264,7 @@ class Program
         }
     }
 
-    static async Task AnalyzeSolutionAsync(ICallGraphBuilder callGraphBuilder, ITaskWrapperExtractor taskWrapperExtractor, IAsyncFloodingAnalyzer floodingAnalyzer, IAsyncTransformer transformer, string solutionPath, string neo4jUri, string neo4jUser, string neo4jPassword)
+    static async Task AnalyzeSolutionAsync(ICallGraphBuilder callGraphBuilder, ITaskWrapperExtractor taskWrapperExtractor, IAsyncFloodingAnalyzer floodingAnalyzer, IAsyncTransformer transformer, string solutionPath, string neo4jUri, string neo4jUser, string neo4jPassword, bool debug = false)
     {
         try
         {
@@ -343,7 +349,7 @@ class Program
                             var transformResult = await transformer.TransformProjectAsync(".", asyncGraph, (file, current, total) =>
                             {
                                 System.Console.WriteLine($"  [{current}/{total}] {file}");
-                            });
+                            }, debug);
 
                             if (!transformResult.Success)
                             {
