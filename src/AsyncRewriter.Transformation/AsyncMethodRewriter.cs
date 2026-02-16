@@ -292,6 +292,65 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         return func;
     }
 
+    public override SyntaxNode? VisitSimpleLambdaExpression(SimpleLambdaExpressionSyntax node)
+    {
+        var visited = (SimpleLambdaExpressionSyntax)base.VisitSimpleLambdaExpression(node)!;
+
+        if (visited.AsyncKeyword.IsKind(SyntaxKind.AsyncKeyword))
+            return visited;
+
+        if (ContainsDirectAwait(visited.Body))
+        {
+            return visited.WithAsyncKeyword(
+                Token(SyntaxKind.AsyncKeyword)
+                    .WithLeadingTrivia(visited.GetLeadingTrivia())
+                    .WithTrailingTrivia(Space))
+                .WithParameter(visited.Parameter.WithoutLeadingTrivia());
+        }
+
+        return visited;
+    }
+
+    public override SyntaxNode? VisitParenthesizedLambdaExpression(ParenthesizedLambdaExpressionSyntax node)
+    {
+        var visited = (ParenthesizedLambdaExpressionSyntax)base.VisitParenthesizedLambdaExpression(node)!;
+
+        if (visited.AsyncKeyword.IsKind(SyntaxKind.AsyncKeyword))
+            return visited;
+
+        if (ContainsDirectAwait(visited.Body))
+        {
+            return visited.WithAsyncKeyword(
+                Token(SyntaxKind.AsyncKeyword)
+                    .WithLeadingTrivia(visited.GetLeadingTrivia())
+                    .WithTrailingTrivia(Space))
+                .WithParameterList(visited.ParameterList.WithoutLeadingTrivia());
+        }
+
+        return visited;
+    }
+
+    /// <summary>
+    /// Checks if the given node contains any AwaitExpression that is a direct child
+    /// (not nested inside another lambda or local function).
+    /// </summary>
+    private static bool ContainsDirectAwait(SyntaxNode? node)
+    {
+        if (node == null)
+            return false;
+
+        foreach (var descendant in node.DescendantNodesAndSelf(n =>
+            n is not SimpleLambdaExpressionSyntax
+            and not ParenthesizedLambdaExpressionSyntax
+            and not LocalFunctionStatementSyntax))
+        {
+            if (descendant is AwaitExpressionSyntax)
+                return true;
+        }
+
+        return false;
+    }
+
     public override SyntaxNode? VisitInvocationExpression(InvocationExpressionSyntax node)
     {
         var visited = (InvocationExpressionSyntax)base.VisitInvocationExpression(node)!;

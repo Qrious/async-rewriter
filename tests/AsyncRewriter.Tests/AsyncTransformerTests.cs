@@ -808,6 +808,78 @@ class MyService : IMyService
     }
 
     [Fact]
+    public async Task TransformSourceAsync_LambdaWithAwaitedCall_BecomesAsyncLambda()
+    {
+        var source = @"using System;
+
+class MyService
+{
+    private IRepo _repo;
+    void Process()
+    {
+        Action action = () => _repo.Open();
+        action();
+    }
+}";
+
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.Process()",
+                OriginalReturnType = "void",
+                NewReturnType = "Task",
+                NeedsAsyncKeyword = true,
+                CallSitesToTransform = new List<CallSiteTransformation>
+                {
+                    new() { LineNumber = 8, OriginalCallExpression = "_repo.Open()" }
+                }
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(source, transformations);
+
+        result.Should().Contain("async () => await _repo.Open()");
+        result.Should().Contain("async Task Process()");
+    }
+
+    [Fact]
+    public async Task TransformSourceAsync_ParenthesizedLambdaWithAwaitedCall_BecomesAsyncLambda()
+    {
+        var source = @"using System;
+
+class MyService
+{
+    private IRepo _repo;
+    void Process()
+    {
+        Action<int> action = (x) => _repo.Open();
+        action(1);
+    }
+}";
+
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.Process()",
+                OriginalReturnType = "void",
+                NewReturnType = "Task",
+                NeedsAsyncKeyword = true,
+                CallSitesToTransform = new List<CallSiteTransformation>
+                {
+                    new() { LineNumber = 8, OriginalCallExpression = "_repo.Open()" }
+                }
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(source, transformations);
+
+        result.Should().Contain("async (x) => await _repo.Open()");
+        result.Should().Contain("async Task Process()");
+    }
+
+    [Fact]
     public async Task TransformProjectAsync_WithInterfaceMappings_UpdatesBaseListAndMethods()
     {
         var tempDir = Path.Combine(Path.GetTempPath(), "async-rewriter-test-" + Guid.NewGuid().ToString("N"));
