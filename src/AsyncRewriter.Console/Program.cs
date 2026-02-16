@@ -749,7 +749,6 @@ class Program
         string? diagFilter = null)
     {
         DiagFilter = diagFilter;
-        AsyncTransformer.DiagFilter = diagFilter;
         var mappings = new List<InterfaceMapping>();
         var blockedGenericMethodIds = new HashSet<string>();
 

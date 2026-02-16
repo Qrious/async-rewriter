@@ -15,17 +15,7 @@ namespace AsyncRewriter.Transformation;
 
 public class AsyncTransformer : IAsyncTransformer
 {
-    /// <summary>Set externally to enable filtered [diag] output for interface replacement.</summary>
-    public static string? DiagFilter { get; set; }
 
-    private static void Diag(string message, string? context = null)
-    {
-        if (DiagFilter == null) return;
-        if (context != null && !context.Contains(DiagFilter, StringComparison.OrdinalIgnoreCase)) return;
-        Console.ForegroundColor = ConsoleColor.DarkGray;
-        Console.WriteLine($"    [diag] {message}");
-        Console.ResetColor();
-    }
 
     public Task<TransformationResult> TransformProjectAsync(
         string projectPath,
@@ -53,6 +43,7 @@ public class AsyncTransformer : IAsyncTransformer
         {
             // Build transformation info from the flooded call graph
             var transformationsByFile = BuildTransformationsByFile(callGraph);
+            var methodRenames = BuildMethodRenamesByMethodId(callGraph);
 
             var fileCount = 0;
             var totalFiles = transformationsByFile.Count;
@@ -71,7 +62,7 @@ public class AsyncTransformer : IAsyncTransformer
 
                 var sourceCode = await File.ReadAllTextAsync(filePath, cancellationToken);
                 var fileTransformation = await TransformFileInternalAsync(
-                    filePath, sourceCode, transformations, callGraph, debug, cancellationToken);
+                    filePath, sourceCode, transformations, callGraph, methodRenames, debug, cancellationToken);
 
                 if (fileTransformation != null)
                 {
@@ -261,6 +252,7 @@ public class AsyncTransformer : IAsyncTransformer
         string sourceCode,
         List<(MethodNode Method, string OriginalReturnType, List<MethodCall> CallsToAwait)> methodInfos,
         CallGraph callGraph,
+        Dictionary<string, string> methodRenamesByMethodId,
         bool debug,
         CancellationToken cancellationToken)
     {
@@ -293,9 +285,6 @@ public class AsyncTransformer : IAsyncTransformer
                 callers.Add(call.CallerId);
             }
         }
-
-        // Build a lookup from implementing method ID to method renames from interface mappings
-        var methodRenamesByMethodId = BuildMethodRenamesByMethodId(callGraph);
 
         foreach (var (method, originalReturnType, callsToAwait) in methodInfos)
         {
@@ -347,16 +336,8 @@ public class AsyncTransformer : IAsyncTransformer
         // Apply interface replacements if mappings are available
         if (callGraph.InterfaceMappings.Count > 0)
         {
-            var replaced = InterfaceReplacer.Transform(transformedSource, callGraph.InterfaceMappings);
-            if (replaced != null)
-            {
-                Diag($"InterfaceReplacer replaced interfaces in {filePath}", filePath);
-                transformedSource = replaced;
-            }
-            else
-            {
-                Diag($"InterfaceReplacer found NO matches in {filePath} (mappings: {callGraph.InterfaceMappings.Count})", filePath);
-            }
+            transformedSource = InterfaceReplacer.Transform(transformedSource, callGraph.InterfaceMappings)
+                ?? transformedSource;
         }
         // else: no InterfaceMappings on call graph — nothing to replace
 
@@ -372,10 +353,8 @@ public class AsyncTransformer : IAsyncTransformer
     private static Dictionary<string, string> BuildMethodRenamesByMethodId(CallGraph callGraph)
     {
         var result = new Dictionary<string, string>();
-        Diag($"BuildMethodRenamesByMethodId: {callGraph.InterfaceMappings.Count} mapping(s)");
         foreach (var mapping in callGraph.InterfaceMappings)
         {
-            Diag($"  Mapping: \"{mapping.SyncInterfaceName}\" → \"{mapping.AsyncInterfaceName}\", renames: {mapping.MethodRenames.Count}", mapping.SyncInterfaceName);
             if (mapping.MethodRenames.Count == 0)
                 continue;
 
@@ -392,7 +371,6 @@ public class AsyncTransformer : IAsyncTransformer
                 result[impl.ImplementingMethodId] = newName;
             }
         }
-        Diag($"BuildMethodRenamesByMethodId result: {result.Count} rename(s)");
         return result;
     }
 
