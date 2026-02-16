@@ -335,8 +335,26 @@ public class AsyncTransformer : IAsyncTransformer
         // Apply interface replacements if mappings are available
         if (callGraph.InterfaceMappings.Count > 0)
         {
-            transformedSource = InterfaceReplacer.Transform(transformedSource, callGraph.InterfaceMappings)
-                ?? transformedSource;
+            var replaced = InterfaceReplacer.Transform(transformedSource, callGraph.InterfaceMappings);
+            if (replaced != null)
+            {
+                System.Console.ForegroundColor = ConsoleColor.DarkGray;
+                System.Console.WriteLine($"    [diag] InterfaceReplacer replaced interfaces in {filePath}");
+                System.Console.ResetColor();
+                transformedSource = replaced;
+            }
+            else
+            {
+                System.Console.ForegroundColor = ConsoleColor.DarkGray;
+                System.Console.WriteLine($"    [diag] InterfaceReplacer found no matches in {filePath} (mappings: {callGraph.InterfaceMappings.Count})");
+                System.Console.ResetColor();
+            }
+        }
+        else
+        {
+            System.Console.ForegroundColor = ConsoleColor.DarkGray;
+            System.Console.WriteLine($"    [diag] No InterfaceMappings on call graph for {filePath}");
+            System.Console.ResetColor();
         }
 
         return new FileTransformation
@@ -351,8 +369,14 @@ public class AsyncTransformer : IAsyncTransformer
     private static Dictionary<string, string> BuildMethodRenamesByMethodId(CallGraph callGraph)
     {
         var result = new Dictionary<string, string>();
+        System.Console.ForegroundColor = ConsoleColor.DarkGray;
+        System.Console.WriteLine($"[diag] BuildMethodRenamesByMethodId: {callGraph.InterfaceMappings.Count} mapping(s)");
+        System.Console.ResetColor();
         foreach (var mapping in callGraph.InterfaceMappings)
         {
+            System.Console.ForegroundColor = ConsoleColor.DarkGray;
+            System.Console.WriteLine($"[diag]   Mapping: \"{mapping.SyncInterfaceName}\" → \"{mapping.AsyncInterfaceName}\", renames: {mapping.MethodRenames.Count}");
+            System.Console.ResetColor();
             if (mapping.MethodRenames.Count == 0)
                 continue;
 
@@ -369,6 +393,9 @@ public class AsyncTransformer : IAsyncTransformer
                 result[impl.ImplementingMethodId] = newName;
             }
         }
+        System.Console.ForegroundColor = ConsoleColor.DarkGray;
+        System.Console.WriteLine($"[diag] BuildMethodRenamesByMethodId result: {result.Count} rename(s)");
+        System.Console.ResetColor();
         return result;
     }
 

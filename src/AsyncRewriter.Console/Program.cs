@@ -808,15 +808,24 @@ class Program
                 chosenExistingAsync = existingAsyncResult.Value.TypeName;
                 var ns = ProblematicInterfaceAnalyzer.GetNamespaceFromCallGraph(callGraph, chosenExistingAsync);
                 chosenNs = ns;
-                mappings.Add(new InterfaceMapping
+                var mapping = new InterfaceMapping
                 {
                     SyncInterfaceName = interfaceType,
                     AsyncInterfaceName = chosenExistingAsync,
                     RequiredNamespaces = ns != null ? new List<string> { ns } : new List<string>(),
                     MethodRenames = existingAsyncResult.Value.MethodRenames
-                });
+                };
+                mappings.Add(mapping);
                 System.Console.ForegroundColor = ConsoleColor.Green;
                 System.Console.WriteLine($"  ✓ Will replace {interfaceType} → {chosenExistingAsync}");
+                System.Console.ResetColor();
+                System.Console.ForegroundColor = ConsoleColor.DarkGray;
+                System.Console.WriteLine($"    [diag] SyncInterfaceName = \"{mapping.SyncInterfaceName}\"");
+                System.Console.WriteLine($"    [diag] AsyncInterfaceName = \"{mapping.AsyncInterfaceName}\"");
+                if (mapping.MethodRenames.Count > 0)
+                    System.Console.WriteLine($"    [diag] MethodRenames = {string.Join(", ", mapping.MethodRenames.Select(kv => $"{kv.Key} → {kv.Value}"))}");
+                else
+                    System.Console.WriteLine($"    [diag] MethodRenames = (none)");
                 System.Console.ResetColor();
             }
             else if (choiceNum == createOption)
@@ -1124,20 +1133,48 @@ class Program
         var syncTypeNames = new HashSet<string>(mappings.Select(m => m.SyncInterfaceName));
         var filesToProcess = new HashSet<string>();
 
+        System.Console.ForegroundColor = ConsoleColor.DarkGray;
+        System.Console.WriteLine($"[diag] ApplyInterfaceReplacements: {mappings.Count} mapping(s), syncTypeNames = [{string.Join(", ", syncTypeNames)}]");
+        System.Console.ResetColor();
+
+        var skippedNoImpl = 0;
+        var skippedNoIface = 0;
+        var skippedNoMatch = 0;
         foreach (var impl in callGraph.InterfaceImplementations)
         {
             if (!callGraph.Methods.TryGetValue(impl.ImplementingMethodId, out var implMethod))
-                continue;
+            { skippedNoImpl++; continue; }
             if (!callGraph.Methods.TryGetValue(impl.InterfaceMethodId, out var ifaceMethod))
-                continue;
+            { skippedNoIface++; continue; }
             if (!syncTypeNames.Contains(ifaceMethod.ContainingType))
-                continue;
+            { skippedNoMatch++; continue; }
             if (!string.IsNullOrEmpty(implMethod.FilePath) && implMethod.FilePath != "external")
                 filesToProcess.Add(implMethod.FilePath);
         }
 
+        System.Console.ForegroundColor = ConsoleColor.DarkGray;
+        System.Console.WriteLine($"[diag] InterfaceImplementations scanned: {callGraph.InterfaceImplementations.Count} total, skipped: {skippedNoImpl} no-impl, {skippedNoIface} no-iface, {skippedNoMatch} no-match");
+        if (skippedNoMatch > 0)
+        {
+            // Show what ContainingType values were seen but didn't match
+            var unmatchedTypes = new HashSet<string>();
+            foreach (var impl in callGraph.InterfaceImplementations)
+            {
+                if (!callGraph.Methods.TryGetValue(impl.InterfaceMethodId, out var ifm)) continue;
+                if (!syncTypeNames.Contains(ifm.ContainingType))
+                    unmatchedTypes.Add(ifm.ContainingType);
+            }
+            System.Console.WriteLine($"[diag] Unmatched ContainingType values: [{string.Join(", ", unmatchedTypes.Take(20))}]");
+        }
+        System.Console.ResetColor();
+
         if (filesToProcess.Count == 0)
+        {
+            System.Console.ForegroundColor = ConsoleColor.DarkGray;
+            System.Console.WriteLine($"[diag] No files to process for interface replacement.");
+            System.Console.ResetColor();
             return;
+        }
 
         System.Console.WriteLine($"Replacing interface references in {filesToProcess.Count} file(s)...");
 
@@ -1153,6 +1190,12 @@ class Program
             {
                 await File.WriteAllTextAsync(filePath, transformed);
                 System.Console.WriteLine($"  Updated: {filePath}");
+            }
+            else
+            {
+                System.Console.ForegroundColor = ConsoleColor.DarkGray;
+                System.Console.WriteLine($"  [diag] No matches in: {filePath}");
+                System.Console.ResetColor();
             }
         }
     }
