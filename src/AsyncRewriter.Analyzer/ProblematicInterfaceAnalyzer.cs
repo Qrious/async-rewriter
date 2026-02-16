@@ -67,7 +67,7 @@ public static class ProblematicInterfaceAnalyzer
     /// Searches the call graph for an existing async version of the given sync interface.
     /// Looks for types named IAsyncFoo or IFooAsync that have matching method signatures.
     /// </summary>
-    public static string? FindExistingAsyncInterface(CallGraph callGraph, string syncInterfaceType, List<ProblematicMethod> methods)
+    public static (string TypeName, Dictionary<string, string> MethodRenames)? FindExistingAsyncInterface(CallGraph callGraph, string syncInterfaceType, List<ProblematicMethod> methods)
     {
         var genericSuffix = "";
         var baseType = syncInterfaceType;
@@ -116,24 +116,37 @@ public static class ProblematicInterfaceAnalyzer
                 continue;
 
             var allMatch = true;
+            var methodRenames = new Dictionary<string, string>();
             foreach (var m in methods)
             {
                 var name = m.InterfaceMethod?.Name ?? m.OriginalImpl.Name;
                 var expectedReturnType = m.AsyncImpl.ReturnType;
 
-                var match = candidateMethods.Any(cm =>
-                    (cm.Name == name || cm.Name == name + "Async")
+                // Check exact name match first
+                var exactMatch = candidateMethods.Any(cm =>
+                    cm.Name == name
                     && NormalizeReturnType(cm.ReturnType) == NormalizeReturnType(expectedReturnType));
 
-                if (!match)
+                if (exactMatch)
+                    continue;
+
+                // Check Async-suffixed name match
+                var asyncSuffixMatch = candidateMethods.Any(cm =>
+                    cm.Name == name + "Async"
+                    && NormalizeReturnType(cm.ReturnType) == NormalizeReturnType(expectedReturnType));
+
+                if (asyncSuffixMatch)
                 {
-                    allMatch = false;
-                    break;
+                    methodRenames[name] = name + "Async";
+                    continue;
                 }
+
+                allMatch = false;
+                break;
             }
 
             if (allMatch)
-                return typeName;
+                return (typeName, methodRenames);
         }
 
         return null;

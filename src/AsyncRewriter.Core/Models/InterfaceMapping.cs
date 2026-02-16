@@ -25,4 +25,10 @@ public class InterfaceMapping
     /// Optional: Additional namespaces that might need to be added when using the async interface
     /// </summary>
     public List<string> RequiredNamespaces { get; init; } = new();
+
+    /// <summary>
+    /// Optional: Maps sync method names to async method names when the async interface uses different names.
+    /// Example: "MapInto" → "MapIntoAsync"
+    /// </summary>
+    public Dictionary<string, string> MethodRenames { get; init; } = new();
 }

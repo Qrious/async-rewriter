@@ -63,7 +63,8 @@ public class ProblematicInterfaceAnalyzerTests
         };
 
         var result = ProblematicInterfaceAnalyzer.FindExistingAsyncInterface(callGraph, "IRepository", methods);
-        result.Should().Be("IRepositoryAsync");
+        result.Should().NotBeNull();
+        result!.Value.TypeName.Should().Be("IRepositoryAsync");
     }
 
     [Fact]
@@ -84,7 +85,8 @@ public class ProblematicInterfaceAnalyzerTests
         };
 
         var result = ProblematicInterfaceAnalyzer.FindExistingAsyncInterface(callGraph, "IMapInto<TDest, TSource>", methods);
-        result.Should().Be("IMapIntoAsync<TDest, TSource>");
+        result.Should().NotBeNull();
+        result!.Value.TypeName.Should().Be("IMapIntoAsync<TDest, TSource>");
     }
 
     [Fact]
@@ -105,7 +107,8 @@ public class ProblematicInterfaceAnalyzerTests
         };
 
         var result = ProblematicInterfaceAnalyzer.FindExistingAsyncInterface(callGraph, "Some.Ns.IFoo<T>", methods);
-        result.Should().Be("Some.Ns.IFooAsync<T>");
+        result.Should().NotBeNull();
+        result!.Value.TypeName.Should().Be("Some.Ns.IFooAsync<T>");
     }
 
     [Fact]

@@ -84,6 +84,15 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
             visited = TransformBodyForNoAwait(visited, originalReturnType, newReturnType);
         }
 
+        // Apply method rename if the async interface uses a different method name
+        var effectiveMethodName = info.MethodName;
+        if (info.NewMethodName != null)
+        {
+            visited = visited.WithIdentifier(
+                Identifier(info.NewMethodName).WithTriviaFrom(visited.Identifier));
+            effectiveMethodName = info.NewMethodName;
+        }
+
         if (info.DebugLines != null)
         {
             visited = PrependDebugComments(visited, info.DebugLines);
@@ -92,8 +101,8 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         _anyMethodTransformed = true;
         _transformations.Add(new MethodTransformation
         {
-            MethodName = info.MethodName,
-            MethodSignature = $"{info.ContainingType}.{info.MethodName}",
+            MethodName = effectiveMethodName,
+            MethodSignature = $"{info.ContainingType}.{effectiveMethodName}",
             StartLine = info.StartLine,
             EndLine = info.EndLine,
             OriginalReturnType = originalReturnType,
@@ -501,6 +510,7 @@ public class MethodTransformInfo
     public required int StartLine { get; init; }
     public required int EndLine { get; init; }
     public List<string>? DebugLines { get; init; }
+    public string? NewMethodName { get; init; }
 }
 
 /// <summary>

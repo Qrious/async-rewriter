@@ -282,12 +282,18 @@ public class AsyncTransformer : IAsyncTransformer
             }
         }
 
+        // Build a lookup from implementing method ID to method renames from interface mappings
+        var methodRenamesByMethodId = BuildMethodRenamesByMethodId(callGraph);
+
         foreach (var (method, originalReturnType, callsToAwait) in methodInfos)
         {
+            // Check if this method needs renaming due to an async interface mapping
+            methodRenamesByMethodId.TryGetValue(method.Id, out var newMethodName);
+
             List<string>? debugLines = null;
             if (debug)
             {
-                debugLines = BuildDebugLines(method, originalReturnType, callsToAwait, callGraph, floodedMethodIds, callersByMethod!);
+                debugLines = BuildDebugLines(method, originalReturnType, callsToAwait, callGraph, floodedMethodIds, callersByMethod!, newMethodName);
             }
 
             methodsByStartLine[method.StartLine] = new MethodTransformInfo
@@ -299,7 +305,8 @@ public class AsyncTransformer : IAsyncTransformer
                 NewReturnType = method.ReturnType,
                 StartLine = method.StartLine,
                 EndLine = method.EndLine,
-                DebugLines = debugLines
+                DebugLines = debugLines,
+                NewMethodName = newMethodName
             };
 
             foreach (var call in callsToAwait)
@@ -341,13 +348,38 @@ public class AsyncTransformer : IAsyncTransformer
         };
     }
 
+    private static Dictionary<string, string> BuildMethodRenamesByMethodId(CallGraph callGraph)
+    {
+        var result = new Dictionary<string, string>();
+        foreach (var mapping in callGraph.InterfaceMappings)
+        {
+            if (mapping.MethodRenames.Count == 0)
+                continue;
+
+            // Find implementing methods for this interface's methods
+            foreach (var impl in callGraph.InterfaceImplementations)
+            {
+                if (!callGraph.Methods.TryGetValue(impl.InterfaceMethodId, out var ifaceMethod))
+                    continue;
+                if (ifaceMethod.ContainingType != mapping.SyncInterfaceName)
+                    continue;
+                if (!mapping.MethodRenames.TryGetValue(ifaceMethod.Name, out var newName))
+                    continue;
+
+                result[impl.ImplementingMethodId] = newName;
+            }
+        }
+        return result;
+    }
+
     private static List<string> BuildDebugLines(
         MethodNode method,
         string originalReturnType,
         List<MethodCall> callsToAwait,
         CallGraph callGraph,
         HashSet<string> floodedMethodIds,
-        Dictionary<string, List<string>> callersByMethod)
+        Dictionary<string, List<string>> callersByMethod,
+        string? newMethodName = null)
     {
         var lines = new List<string>();
 
@@ -401,6 +433,12 @@ public class AsyncTransformer : IAsyncTransformer
             {
                 lines.Add($"Implements: {impl.InterfaceMethodId}");
             }
+        }
+
+        // Method rename
+        if (newMethodName != null)
+        {
+            lines.Add($"Renamed: {method.Name} → {newMethodName}");
         }
 
         return lines;

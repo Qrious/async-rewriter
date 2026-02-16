@@ -21,13 +21,17 @@ public class InterfaceReplacer : CSharpSyntaxRewriter
         _syncToAsync = new Dictionary<string, string>();
         foreach (var m in mappings)
         {
-            // Store both full name and simple name mappings
-            _syncToAsync[m.SyncInterfaceName] = m.AsyncInterfaceName;
+            // Strip generic type args so VisitGenericName can match on Identifier.Text
+            // e.g., "IMapInto<B, C>" → "IMapInto", "IMapIntoAsync<B, C>" → "IMapIntoAsync"
+            var syncName = StripTypeArgs(m.SyncInterfaceName);
+            var asyncName = StripTypeArgs(m.AsyncInterfaceName);
+
+            _syncToAsync[syncName] = asyncName;
 
             // Also store simple names (last segment after '.')
-            var syncSimple = GetSimpleName(m.SyncInterfaceName);
-            var asyncSimple = GetSimpleName(m.AsyncInterfaceName);
-            if (syncSimple != m.SyncInterfaceName)
+            var syncSimple = GetSimpleName(syncName);
+            var asyncSimple = GetSimpleName(asyncName);
+            if (syncSimple != syncName)
                 _syncToAsync[syncSimple] = asyncSimple;
         }
     }
@@ -94,5 +98,11 @@ public class InterfaceReplacer : CSharpSyntaxRewriter
     {
         var lastDot = fullName.LastIndexOf('.');
         return lastDot >= 0 ? fullName.Substring(lastDot + 1) : fullName;
+    }
+
+    private static string StripTypeArgs(string name)
+    {
+        var idx = name.IndexOf('<');
+        return idx >= 0 ? name.Substring(0, idx) : name;
     }
 }

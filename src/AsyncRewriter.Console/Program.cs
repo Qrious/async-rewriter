@@ -776,12 +776,12 @@ class Program
             System.Console.WriteLine();
 
             // Check for existing async interface
-            var existingAsync = ProblematicInterfaceAnalyzer.FindExistingAsyncInterface(callGraph, interfaceType, methods);
+            var existingAsyncResult = ProblematicInterfaceAnalyzer.FindExistingAsyncInterface(callGraph, interfaceType, methods);
 
             var optionNum = 1;
-            if (existingAsync != null)
+            if (existingAsyncResult != null)
             {
-                System.Console.WriteLine($"  [{optionNum}] Use existing: {existingAsync} (found in codebase)");
+                System.Console.WriteLine($"  [{optionNum}] Use existing: {existingAsyncResult.Value.TypeName} (found in codebase)");
                 optionNum++;
             }
             System.Console.WriteLine($"  [{optionNum}] Create new async interface");
@@ -802,17 +802,18 @@ class Program
             string? chosenFilePath = null;
             string choiceKind;
 
-            if (existingAsync != null && choiceNum == 1)
+            if (existingAsyncResult != null && choiceNum == 1)
             {
                 choiceKind = "use-existing";
-                chosenExistingAsync = existingAsync;
+                chosenExistingAsync = existingAsyncResult.Value.TypeName;
                 var ns = ProblematicInterfaceAnalyzer.GetNamespaceFromCallGraph(callGraph, chosenExistingAsync);
                 chosenNs = ns;
                 mappings.Add(new InterfaceMapping
                 {
                     SyncInterfaceName = interfaceType,
                     AsyncInterfaceName = chosenExistingAsync,
-                    RequiredNamespaces = ns != null ? new List<string> { ns } : new List<string>()
+                    RequiredNamespaces = ns != null ? new List<string> { ns } : new List<string>(),
+                    MethodRenames = existingAsyncResult.Value.MethodRenames
                 });
                 System.Console.ForegroundColor = ConsoleColor.Green;
                 System.Console.WriteLine($"  ✓ Will replace {interfaceType} → {chosenExistingAsync}");
@@ -899,18 +900,19 @@ class Program
                             {
                                 case "use-existing":
                                 {
-                                    var siblingExisting = ProblematicInterfaceAnalyzer.FindExistingAsyncInterface(callGraph, siblingType, siblingMethods);
-                                    if (siblingExisting != null)
+                                    var siblingExistingResult = ProblematicInterfaceAnalyzer.FindExistingAsyncInterface(callGraph, siblingType, siblingMethods);
+                                    if (siblingExistingResult != null)
                                     {
-                                        var ns = ProblematicInterfaceAnalyzer.GetNamespaceFromCallGraph(callGraph, siblingExisting);
+                                        var ns = ProblematicInterfaceAnalyzer.GetNamespaceFromCallGraph(callGraph, siblingExistingResult.Value.TypeName);
                                         mappings.Add(new InterfaceMapping
                                         {
                                             SyncInterfaceName = siblingType,
-                                            AsyncInterfaceName = siblingExisting,
-                                            RequiredNamespaces = ns != null ? new List<string> { ns } : new List<string>()
+                                            AsyncInterfaceName = siblingExistingResult.Value.TypeName,
+                                            RequiredNamespaces = ns != null ? new List<string> { ns } : new List<string>(),
+                                            MethodRenames = siblingExistingResult.Value.MethodRenames
                                         });
                                         System.Console.ForegroundColor = ConsoleColor.Green;
-                                        System.Console.WriteLine($"  ✓ Will replace {siblingType} → {siblingExisting} (auto-applied)");
+                                        System.Console.WriteLine($"  ✓ Will replace {siblingType} → {siblingExistingResult.Value.TypeName} (auto-applied)");
                                         System.Console.ResetColor();
                                     }
                                     else
@@ -1033,12 +1035,12 @@ class Program
                     }
                     System.Console.WriteLine();
 
-                    var existingAsync = ProblematicInterfaceAnalyzer.FindExistingAsyncInterface(callGraph, interfaceType, methods);
+                    var existingAsyncResult2 = ProblematicInterfaceAnalyzer.FindExistingAsyncInterface(callGraph, interfaceType, methods);
 
                     var optionNum = 1;
-                    if (existingAsync != null)
+                    if (existingAsyncResult2 != null)
                     {
-                        System.Console.WriteLine($"  [{optionNum}] Use existing: {existingAsync} (found in codebase)");
+                        System.Console.WriteLine($"  [{optionNum}] Use existing: {existingAsyncResult2.Value.TypeName} (found in codebase)");
                         optionNum++;
                     }
                     System.Console.WriteLine($"  [{optionNum}] Create new async interface");
@@ -1053,17 +1055,18 @@ class Program
                     if (!int.TryParse(choice, out var choiceNum))
                         choiceNum = ignoreOption;
 
-                    if (existingAsync != null && choiceNum == 1)
+                    if (existingAsyncResult2 != null && choiceNum == 1)
                     {
-                        var ns = ProblematicInterfaceAnalyzer.GetNamespaceFromCallGraph(callGraph, existingAsync);
+                        var ns = ProblematicInterfaceAnalyzer.GetNamespaceFromCallGraph(callGraph, existingAsyncResult2.Value.TypeName);
                         mappings.Add(new InterfaceMapping
                         {
                             SyncInterfaceName = interfaceType,
-                            AsyncInterfaceName = existingAsync,
-                            RequiredNamespaces = ns != null ? new List<string> { ns } : new List<string>()
+                            AsyncInterfaceName = existingAsyncResult2.Value.TypeName,
+                            RequiredNamespaces = ns != null ? new List<string> { ns } : new List<string>(),
+                            MethodRenames = existingAsyncResult2.Value.MethodRenames
                         });
                         System.Console.ForegroundColor = ConsoleColor.Green;
-                        System.Console.WriteLine($"  ✓ Will replace {interfaceType} → {existingAsync}");
+                        System.Console.WriteLine($"  ✓ Will replace {interfaceType} → {existingAsyncResult2.Value.TypeName}");
                         System.Console.ResetColor();
                     }
                     else if (choiceNum == createOption)
