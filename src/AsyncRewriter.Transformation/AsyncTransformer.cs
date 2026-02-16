@@ -388,10 +388,19 @@ public class AsyncTransformer : IAsyncTransformer
             .ToList();
         foreach (var impl in implEntries)
         {
-            var ifaceName = callGraph.Methods.TryGetValue(impl.InterfaceMethodId, out var ifaceMethod)
-                ? $"{ifaceMethod.ContainingType}.{ifaceMethod.Name}"
-                : impl.InterfaceMethodId;
-            lines.Add($"Implements: {ifaceName}");
+            if (callGraph.Methods.TryGetValue(impl.InterfaceMethodId, out var ifaceMethod))
+            {
+                var ifaceName = $"{ifaceMethod.ContainingType}.{ifaceMethod.Name}";
+                var isProblematic = ifaceMethod.FilePath == "external"
+                    && floodedMethodIds.Contains(impl.ImplementingMethodId);
+                lines.Add(isProblematic
+                    ? $"Implements: {ifaceName} (problematic — external interface)"
+                    : $"Implements: {ifaceName}");
+            }
+            else
+            {
+                lines.Add($"Implements: {impl.InterfaceMethodId}");
+            }
         }
 
         return lines;
