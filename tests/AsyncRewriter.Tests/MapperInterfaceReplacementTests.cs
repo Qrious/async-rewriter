@@ -46,6 +46,9 @@ public class Validator
 }
 ";
 
+    private static string LoadTestData(string name)
+        => File.ReadAllText(Path.Combine("TestData", $"{name}.cs"));
+
     /// <summary>
     /// Verifies that the given C# source compiles without errors.
     /// </summary>
@@ -80,6 +83,47 @@ public class Validator
             $"{because}, but got:\n" +
             string.Join("\n", diagnostics.Select(d => $"  {d.Location.GetLineSpan()}: {d.GetMessage()}")));
     }
+
+    /// <summary>
+    /// Verifies that multiple C# source files compile together without errors.
+    /// </summary>
+    private static void AssertCompilesMultiple(string[] sources, string because = "code should compile without errors")
+    {
+        var syntaxTrees = new List<SyntaxTree> { CSharpSyntaxTree.ParseText(StubTypes) };
+        foreach (var source in sources)
+            syntaxTrees.Add(CSharpSyntaxTree.ParseText(source));
+
+        var references = new List<MetadataReference>();
+        var trustedAssemblies = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
+            .Split(Path.PathSeparator);
+        foreach (var assembly in trustedAssemblies)
+        {
+            var name = Path.GetFileNameWithoutExtension(assembly);
+            if (name is "System.Runtime" or "System.Threading.Tasks" or "System.Console"
+                or "System.Private.CoreLib" or "netstandard")
+            {
+                references.Add(MetadataReference.CreateFromFile(assembly));
+            }
+        }
+
+        var compilation = CSharpCompilation.Create("TestCompilation",
+            syntaxTrees,
+            references,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        var diagnostics = compilation.GetDiagnostics()
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .ToList();
+
+        diagnostics.Should().BeEmpty(
+            $"{because}, but got:\n" +
+            string.Join("\n", diagnostics.Select(d => $"  {d.Location.GetLineSpan()}: {d.GetMessage()}")));
+    }
+
+    private static readonly List<InterfaceMapping> MapIntoMappings =
+    [
+        new() { SyncInterfaceName = "IMapInto", AsyncInterfaceName = "IMapIntoAsync" }
+    ];
 
     private static CallGraph CreateCallGraph(
         Dictionary<string, MethodNode> methods,
@@ -414,32 +458,14 @@ public class Validator
     [Fact]
     public void InterfaceReplacer_ReplacesAllMapperBaseListInterfaces()
     {
-        var source = @"
-public class MapperA : IMapInto<int, string>
-{
-    public void MapInto(string dest, int source) { }
-}
+        // Load all 4 mapper sources concatenated
+        var sourceA = LoadTestData("MapperA");
+        var sourceB = LoadTestData("MapperB");
+        var sourceC = LoadTestData("MapperC");
+        var sourceD = LoadTestData("MapperD");
+        var source = sourceA + "\n" + sourceB + "\n" + sourceC + "\n" + sourceD;
 
-public class MapperB : IMapInto<bool, string>
-{
-    public void MapInto(string dest, bool source) { }
-}
-
-public class MapperC : IMapInto<double, string>
-{
-    public void MapInto(string dest, double source) { }
-}
-
-public class MapperD : IMapInto<long, string>
-{
-    public void MapInto(string dest, long source) { }
-}";
-        var mappings = new List<InterfaceMapping>
-        {
-            new() { SyncInterfaceName = "IMapInto", AsyncInterfaceName = "IMapIntoAsync" }
-        };
-
-        var result = InterfaceReplacer.Transform(source, mappings);
+        var result = InterfaceReplacer.Transform(source, MapIntoMappings);
 
         result.Should().NotBeNull();
         result.Should().Contain("IMapIntoAsync<int, string>");
@@ -452,41 +478,9 @@ public class MapperD : IMapInto<long, string>
     [Fact]
     public void InterfaceReplacer_ReplacesControllerFieldsAndParameters()
     {
-        var source = @"using System.Threading.Tasks;
+        var source = LoadTestData("MapperController");
 
-public class Controller
-{
-    private readonly IMapInto<int, string> _mapperA;
-    private readonly IMapInto<bool, string> _mapperB;
-    private readonly IMapInto<double, string> _mapperC;
-    private readonly IMapInto<long, string> _mapperD;
-
-    public Controller(
-        IMapInto<int, string> mapperA,
-        IMapInto<bool, string> mapperB,
-        IMapInto<double, string> mapperC,
-        IMapInto<long, string> mapperD)
-    {
-        _mapperA = mapperA;
-        _mapperB = mapperB;
-        _mapperC = mapperC;
-        _mapperD = mapperD;
-    }
-
-    public void HandleRequest()
-    {
-        _mapperA.MapInto(""hello"", 42);
-        _mapperB.MapInto(""world"", true);
-        _mapperC.MapInto(""foo"", 3.14);
-        _mapperD.MapInto(""bar"", 100L);
-    }
-}";
-        var mappings = new List<InterfaceMapping>
-        {
-            new() { SyncInterfaceName = "IMapInto", AsyncInterfaceName = "IMapIntoAsync" }
-        };
-
-        var result = InterfaceReplacer.Transform(source, mappings);
+        var result = InterfaceReplacer.Transform(source, MapIntoMappings);
 
         result.Should().NotBeNull();
 
@@ -509,17 +503,7 @@ public class Controller
     [Fact]
     public void InterfaceReplacer_AddsRequiredNamespace_ForAsyncInterface()
     {
-        var source = @"using System;
-
-public class Controller
-{
-    private readonly IMapInto<int, string> _mapper;
-
-    public Controller(IMapInto<int, string> mapper)
-    {
-        _mapper = mapper;
-    }
-}";
+        var source = LoadTestData("MapperController");
         var mappings = new List<InterfaceMapping>
         {
             new()
@@ -538,43 +522,19 @@ public class Controller
     }
 
     [Fact]
-    public void InterfaceReplacer_SelectiveReplacement_OnlyReplacesSpecifiedInstantiations()
+    public void InterfaceReplacer_ReplacesMapperAInternalDependency()
     {
-        // When using scoped replacement, only specific instantiations get replaced.
-        // This tests that a class implementing a non-replaced instantiation keeps the sync interface.
-        var mapperSource = @"
-public class MapperA : IMapInto<int, string>
-{
-    public void MapInto(string dest, int source) { }
-}";
-        var controllerSource = @"
-public class Controller
-{
-    private readonly IMapInto<int, string> _mapperA;
-    private readonly IMapInto<long, string> _mapperD;
+        // MapperA depends on IMapInto<bool, string> for MapperB — verify base list,
+        // field type, and constructor parameter all get replaced
+        var source = LoadTestData("MapperA");
 
-    public Controller(IMapInto<int, string> mapperA, IMapInto<long, string> mapperD)
-    {
-        _mapperA = mapperA;
-        _mapperD = mapperD;
-    }
-}";
+        var result = InterfaceReplacer.Transform(source, MapIntoMappings);
 
-        var mappings = new List<InterfaceMapping>
-        {
-            new() { SyncInterfaceName = "IMapInto", AsyncInterfaceName = "IMapIntoAsync" }
-        };
-
-        // Mapper file: all IMapInto references get replaced (it only has one)
-        var mapperResult = InterfaceReplacer.Transform(mapperSource, mappings);
-        mapperResult.Should().NotBeNull();
-        mapperResult.Should().Contain("IMapIntoAsync<int, string>");
-
-        // Controller file: ALL IMapInto references get replaced (the replacer is name-based)
-        var controllerResult = InterfaceReplacer.Transform(controllerSource, mappings);
-        controllerResult.Should().NotBeNull();
-        controllerResult.Should().Contain("IMapIntoAsync<int, string>");
-        controllerResult.Should().Contain("IMapIntoAsync<long, string>");
+        result.Should().NotBeNull();
+        result.Should().Contain(": IMapIntoAsync<int, string>");
+        result.Should().Contain("IMapIntoAsync<bool, string> _mapperB");
+        result.Should().Contain("IMapIntoAsync<bool, string> mapperB");
+        result.Should().NotContain("IMapInto<");
     }
 
     #endregion
@@ -584,16 +544,8 @@ public class Controller
     [Fact]
     public async Task FullScenario_FloodingAndReplacement_AllReferencesTransformedCorrectly()
     {
-        // Full end-to-end scenario:
-        // - IMapInto<TSource, TTarget> { void MapInto(TTarget dest, TSource source); }
-        //   is a "problematic" external interface
-        // - IMapIntoAsync<TSource, TTarget> { Task MapIntoAsync(TTarget dest, TSource source); }
-        //   is the async replacement
-        // - MapperA : IMapInto<int, string> — calls MapperB internally
-        // - MapperB : IMapInto<bool, string> — calls async root
-        // - MapperC : IMapInto<double, string> — calls another async method
-        // - MapperD : IMapInto<long, string> — pure sync
-        // - Controller injects all 4 via interfaces
+        var controllerSource = LoadTestData("MapperController");
+        var mapperASource = LoadTestData("MapperA");
 
         // Step 1: Build call graph and flood with blocked generic
         var methods = new Dictionary<string, MethodNode>
@@ -666,45 +618,7 @@ public class Controller
             "MapperD is not flooded, so its interface is not problematic");
 
         // Step 3: Apply interface replacement on source files
-        var mappings = new List<InterfaceMapping>
-        {
-            new() { SyncInterfaceName = "IMapInto", AsyncInterfaceName = "IMapIntoAsync" }
-        };
-
-        // Controller source with all 4 mapper injections
-        var controllerSource = @"using System.Threading.Tasks;
-
-namespace MyApp;
-
-public class Controller
-{
-    private readonly IMapInto<int, string> _mapperA;
-    private readonly IMapInto<bool, string> _mapperB;
-    private readonly IMapInto<double, string> _mapperC;
-    private readonly IMapInto<long, string> _mapperD;
-
-    public Controller(
-        IMapInto<int, string> mapperA,
-        IMapInto<bool, string> mapperB,
-        IMapInto<double, string> mapperC,
-        IMapInto<long, string> mapperD)
-    {
-        _mapperA = mapperA;
-        _mapperB = mapperB;
-        _mapperC = mapperC;
-        _mapperD = mapperD;
-    }
-
-    public void HandleRequest()
-    {
-        _mapperA.MapInto(""hello"", 42);
-        _mapperB.MapInto(""world"", true);
-        _mapperC.MapInto(""foo"", 3.14);
-        _mapperD.MapInto(""bar"", 100L);
-    }
-}";
-
-        var controllerResult = InterfaceReplacer.Transform(controllerSource, mappings);
+        var controllerResult = InterfaceReplacer.Transform(controllerSource, MapIntoMappings);
 
         controllerResult.Should().NotBeNull();
 
@@ -723,15 +637,8 @@ public class Controller
         // No remaining sync interface references
         controllerResult.Should().NotContain("IMapInto<");
 
-        // Mapper source files — verify base list replacement
-        var mapperASource = @"
-public class MapperA : IMapInto<int, string>
-{
-    private readonly IMapInto<bool, string> _mapperB;
-    public MapperA(IMapInto<bool, string> mapperB) { _mapperB = mapperB; }
-    public void MapInto(string dest, int source) { _mapperB.MapInto(dest, source > 0); }
-}";
-        var mapperAResult = InterfaceReplacer.Transform(mapperASource, mappings);
+        // Mapper A source — verify base list and dependency replacement
+        var mapperAResult = InterfaceReplacer.Transform(mapperASource, MapIntoMappings);
         mapperAResult.Should().NotBeNull();
         mapperAResult.Should().Contain(": IMapIntoAsync<int, string>");
         mapperAResult.Should().Contain("IMapIntoAsync<bool, string> _mapperB");
@@ -746,22 +653,7 @@ public class MapperA : IMapInto<int, string>
     public async Task TransformAndCompile_MapperB_AsyncRootCall_CompilesBeforeAndAfter()
     {
         // MapperB calls DbContext.SaveAsync() — needs async/await transformation
-        var source = @"using System.Threading.Tasks;
-
-public class MapperB : IMapInto<bool, string>
-{
-    private readonly DbContext _db;
-
-    public MapperB(DbContext db)
-    {
-        _db = db;
-    }
-
-    public void MapInto(string destination, bool source)
-    {
-        _db.SaveAsync();
-    }
-}";
+        var source = LoadTestData("MapperB");
         AssertCompiles(source, "original MapperB source should compile");
 
         var transformations = new List<AsyncTransformationInfo>
@@ -785,11 +677,7 @@ public class MapperB : IMapInto<bool, string>
         transformed.Should().Contain("await _db.SaveAsync()");
 
         // Replace IMapInto with IMapIntoAsync in the transformed source
-        var mappings = new List<InterfaceMapping>
-        {
-            new() { SyncInterfaceName = "IMapInto", AsyncInterfaceName = "IMapIntoAsync" }
-        };
-        var replaced = InterfaceReplacer.Transform(transformed, mappings);
+        var replaced = InterfaceReplacer.Transform(transformed, MapIntoMappings);
         replaced.Should().NotBeNull();
         replaced.Should().Contain(": IMapIntoAsync<bool, string>");
         replaced.Should().NotContain(": IMapInto<");
@@ -801,22 +689,7 @@ public class MapperB : IMapInto<bool, string>
     public async Task TransformAndCompile_MapperA_CallsMapperB_CompilesBeforeAndAfter()
     {
         // MapperA calls MapperB.MapInto internally via the IMapInto<bool, string> interface
-        var source = @"using System.Threading.Tasks;
-
-public class MapperA : IMapInto<int, string>
-{
-    private readonly IMapInto<bool, string> _mapperB;
-
-    public MapperA(IMapInto<bool, string> mapperB)
-    {
-        _mapperB = mapperB;
-    }
-
-    public void MapInto(string destination, int source)
-    {
-        _mapperB.MapInto(destination, source > 0);
-    }
-}";
+        var source = LoadTestData("MapperA");
         AssertCompiles(source, "original MapperA source should compile");
 
         var transformations = new List<AsyncTransformationInfo>
@@ -840,11 +713,7 @@ public class MapperA : IMapInto<int, string>
         transformed.Should().Contain("await _mapperB.MapInto(destination, source > 0)");
 
         // Replace interface references
-        var mappings = new List<InterfaceMapping>
-        {
-            new() { SyncInterfaceName = "IMapInto", AsyncInterfaceName = "IMapIntoAsync" }
-        };
-        var replaced = InterfaceReplacer.Transform(transformed, mappings);
+        var replaced = InterfaceReplacer.Transform(transformed, MapIntoMappings);
         replaced.Should().NotBeNull();
         replaced.Should().Contain(": IMapIntoAsync<int, string>");
         replaced.Should().Contain("IMapIntoAsync<bool, string> _mapperB");
@@ -858,22 +727,7 @@ public class MapperA : IMapInto<int, string>
     public async Task TransformAndCompile_MapperC_DirectAsyncCall_CompilesBeforeAndAfter()
     {
         // MapperC calls Validator.ValidateAsync() directly
-        var source = @"using System.Threading.Tasks;
-
-public class MapperC : IMapInto<double, string>
-{
-    private readonly Validator _validator;
-
-    public MapperC(Validator validator)
-    {
-        _validator = validator;
-    }
-
-    public void MapInto(string destination, double source)
-    {
-        _validator.ValidateAsync();
-    }
-}";
+        var source = LoadTestData("MapperC");
         AssertCompiles(source, "original MapperC source should compile");
 
         var transformations = new List<AsyncTransformationInfo>
@@ -896,11 +750,7 @@ public class MapperC : IMapInto<double, string>
         transformed.Should().Contain("async Task MapInto(");
         transformed.Should().Contain("await _validator.ValidateAsync()");
 
-        var mappings = new List<InterfaceMapping>
-        {
-            new() { SyncInterfaceName = "IMapInto", AsyncInterfaceName = "IMapIntoAsync" }
-        };
-        var replaced = InterfaceReplacer.Transform(transformed, mappings);
+        var replaced = InterfaceReplacer.Transform(transformed, MapIntoMappings);
         replaced.Should().NotBeNull();
         replaced.Should().Contain(": IMapIntoAsync<double, string>");
 
@@ -911,15 +761,7 @@ public class MapperC : IMapInto<double, string>
     public async Task TransformAndCompile_MapperD_PureSync_TaskCompletedTask_CompilesBeforeAndAfter()
     {
         // MapperD is pure sync — gets flooded via generic propagation, so uses Task.CompletedTask
-        var source = @"using System.Threading.Tasks;
-
-public class MapperD : IMapInto<long, string>
-{
-    public void MapInto(string destination, long source)
-    {
-        destination = source.ToString();
-    }
-}";
+        var source = LoadTestData("MapperD");
         AssertCompiles(source, "original MapperD source should compile");
 
         // MapperD has no async calls — NeedsAsyncKeyword = false, empty call sites
@@ -941,11 +783,7 @@ public class MapperD : IMapInto<long, string>
         transformed.Should().NotContain("async");
         transformed.Should().Contain("Task.CompletedTask");
 
-        var mappings = new List<InterfaceMapping>
-        {
-            new() { SyncInterfaceName = "IMapInto", AsyncInterfaceName = "IMapIntoAsync" }
-        };
-        var replaced = InterfaceReplacer.Transform(transformed, mappings);
+        var replaced = InterfaceReplacer.Transform(transformed, MapIntoMappings);
         replaced.Should().NotBeNull();
         replaced.Should().Contain(": IMapIntoAsync<long, string>");
 
@@ -956,38 +794,10 @@ public class MapperD : IMapInto<long, string>
     public async Task TransformAndCompile_Controller_AllMappersAsync_CompilesBeforeAndAfter()
     {
         // Controller injects all 4 mappers via IMapInto interfaces and calls them in HandleRequest
-        var source = @"using System.Threading.Tasks;
-
-public class Controller
-{
-    private readonly IMapInto<int, string> _mapperA;
-    private readonly IMapInto<bool, string> _mapperB;
-    private readonly IMapInto<double, string> _mapperC;
-    private readonly IMapInto<long, string> _mapperD;
-
-    public Controller(
-        IMapInto<int, string> mapperA,
-        IMapInto<bool, string> mapperB,
-        IMapInto<double, string> mapperC,
-        IMapInto<long, string> mapperD)
-    {
-        _mapperA = mapperA;
-        _mapperB = mapperB;
-        _mapperC = mapperC;
-        _mapperD = mapperD;
-    }
-
-    public void HandleRequest()
-    {
-        _mapperA.MapInto(""hello"", 42);
-        _mapperB.MapInto(""world"", true);
-        _mapperC.MapInto(""foo"", 3.14);
-        _mapperD.MapInto(""bar"", 100L);
-    }
-}";
+        var source = LoadTestData("MapperController");
         AssertCompiles(source, "original Controller source should compile");
 
-        // All 4 mapper calls need await
+        // All 4 mapper calls need await (lines 24-27 in MapperController.cs)
         var transformations = new List<AsyncTransformationInfo>
         {
             new()
@@ -998,10 +808,10 @@ public class Controller
                 NeedsAsyncKeyword = true,
                 CallSitesToTransform = new List<CallSiteTransformation>
                 {
-                    new() { LineNumber = 24, OriginalCallExpression = @"_mapperA.MapInto(""hello"", 42)" },
-                    new() { LineNumber = 25, OriginalCallExpression = @"_mapperB.MapInto(""world"", true)" },
-                    new() { LineNumber = 26, OriginalCallExpression = @"_mapperC.MapInto(""foo"", 3.14)" },
-                    new() { LineNumber = 27, OriginalCallExpression = @"_mapperD.MapInto(""bar"", 100L)" },
+                    new() { LineNumber = 24, OriginalCallExpression = "_mapperA.MapInto(\"hello\", 42)" },
+                    new() { LineNumber = 25, OriginalCallExpression = "_mapperB.MapInto(\"world\", true)" },
+                    new() { LineNumber = 26, OriginalCallExpression = "_mapperC.MapInto(\"foo\", 3.14)" },
+                    new() { LineNumber = 27, OriginalCallExpression = "_mapperD.MapInto(\"bar\", 100L)" },
                 }
             }
         };
@@ -1009,17 +819,13 @@ public class Controller
         var transformed = await _transformer.TransformSourceAsync(source, transformations);
 
         transformed.Should().Contain("async Task HandleRequest()");
-        transformed.Should().Contain(@"await _mapperA.MapInto(""hello"", 42)");
-        transformed.Should().Contain(@"await _mapperB.MapInto(""world"", true)");
-        transformed.Should().Contain(@"await _mapperC.MapInto(""foo"", 3.14)");
-        transformed.Should().Contain(@"await _mapperD.MapInto(""bar"", 100L)");
+        transformed.Should().Contain("await _mapperA.MapInto(\"hello\", 42)");
+        transformed.Should().Contain("await _mapperB.MapInto(\"world\", true)");
+        transformed.Should().Contain("await _mapperC.MapInto(\"foo\", 3.14)");
+        transformed.Should().Contain("await _mapperD.MapInto(\"bar\", 100L)");
 
         // Replace all IMapInto references with IMapIntoAsync
-        var mappings = new List<InterfaceMapping>
-        {
-            new() { SyncInterfaceName = "IMapInto", AsyncInterfaceName = "IMapIntoAsync" }
-        };
-        var replaced = InterfaceReplacer.Transform(transformed, mappings);
+        var replaced = InterfaceReplacer.Transform(transformed, MapIntoMappings);
         replaced.Should().NotBeNull();
 
         // Verify all field types replaced
@@ -1043,91 +849,21 @@ public class Controller
     [Fact]
     public async Task TransformAndCompile_AllFiles_FullPipeline_CompileBeforeAndAfter()
     {
-        // Full end-to-end: define all source files, verify they compile together,
+        // Full end-to-end: load all source files, verify they compile together,
         // apply transformations and interface replacements, verify they still compile.
 
-        var mapperBSource = @"using System.Threading.Tasks;
-
-public class MapperB : IMapInto<bool, string>
-{
-    private readonly DbContext _db;
-    public MapperB(DbContext db) { _db = db; }
-    public void MapInto(string destination, bool source)
-    {
-        _db.SaveAsync();
-    }
-}";
-
-        var mapperASource = @"using System.Threading.Tasks;
-
-public class MapperA : IMapInto<int, string>
-{
-    private readonly IMapInto<bool, string> _mapperB;
-    public MapperA(IMapInto<bool, string> mapperB) { _mapperB = mapperB; }
-    public void MapInto(string destination, int source)
-    {
-        _mapperB.MapInto(destination, source > 0);
-    }
-}";
-
-        var mapperCSource = @"using System.Threading.Tasks;
-
-public class MapperC : IMapInto<double, string>
-{
-    private readonly Validator _validator;
-    public MapperC(Validator validator) { _validator = validator; }
-    public void MapInto(string destination, double source)
-    {
-        _validator.ValidateAsync();
-    }
-}";
-
-        var mapperDSource = @"using System.Threading.Tasks;
-
-public class MapperD : IMapInto<long, string>
-{
-    public void MapInto(string destination, long source)
-    {
-        destination = source.ToString();
-    }
-}";
-
-        var controllerSource = @"using System.Threading.Tasks;
-
-public class Controller
-{
-    private readonly IMapInto<int, string> _mapperA;
-    private readonly IMapInto<bool, string> _mapperB;
-    private readonly IMapInto<double, string> _mapperC;
-    private readonly IMapInto<long, string> _mapperD;
-
-    public Controller(
-        IMapInto<int, string> mapperA,
-        IMapInto<bool, string> mapperB,
-        IMapInto<double, string> mapperC,
-        IMapInto<long, string> mapperD)
-    {
-        _mapperA = mapperA;
-        _mapperB = mapperB;
-        _mapperC = mapperC;
-        _mapperD = mapperD;
-    }
-
-    public void HandleRequest()
-    {
-        _mapperA.MapInto(""hello"", 42);
-        _mapperB.MapInto(""world"", true);
-        _mapperC.MapInto(""foo"", 3.14);
-        _mapperD.MapInto(""bar"", 100L);
-    }
-}";
+        var mapperASource = LoadTestData("MapperA");
+        var mapperBSource = LoadTestData("MapperB");
+        var mapperCSource = LoadTestData("MapperC");
+        var mapperDSource = LoadTestData("MapperD");
+        var controllerSource = LoadTestData("MapperController");
 
         // Pre-check: all original sources compile together
         AssertCompilesMultiple(
-            [mapperBSource, mapperASource, mapperCSource, mapperDSource, controllerSource],
+            [mapperASource, mapperBSource, mapperCSource, mapperDSource, controllerSource],
             "all original sources should compile together");
 
-        // Transform MapperB: async/await for SaveAsync
+        // Transform MapperB: async/await for SaveAsync (line 14)
         var mapperBTransformed = await _transformer.TransformSourceAsync(mapperBSource, new List<AsyncTransformationInfo>
         {
             new()
@@ -1138,12 +874,12 @@ public class Controller
                 NeedsAsyncKeyword = true,
                 CallSitesToTransform = new List<CallSiteTransformation>
                 {
-                    new() { LineNumber = 9, OriginalCallExpression = "_db.SaveAsync()" }
+                    new() { LineNumber = 14, OriginalCallExpression = "_db.SaveAsync()" }
                 }
             }
         });
 
-        // Transform MapperA: async/await for calling MapperB
+        // Transform MapperA: async/await for calling MapperB (line 14)
         var mapperATransformed = await _transformer.TransformSourceAsync(mapperASource, new List<AsyncTransformationInfo>
         {
             new()
@@ -1154,12 +890,12 @@ public class Controller
                 NeedsAsyncKeyword = true,
                 CallSitesToTransform = new List<CallSiteTransformation>
                 {
-                    new() { LineNumber = 9, OriginalCallExpression = "_mapperB.MapInto(destination, source > 0)" }
+                    new() { LineNumber = 14, OriginalCallExpression = "_mapperB.MapInto(destination, source > 0)" }
                 }
             }
         });
 
-        // Transform MapperC: async/await for ValidateAsync
+        // Transform MapperC: async/await for ValidateAsync (line 14)
         var mapperCTransformed = await _transformer.TransformSourceAsync(mapperCSource, new List<AsyncTransformationInfo>
         {
             new()
@@ -1170,7 +906,7 @@ public class Controller
                 NeedsAsyncKeyword = true,
                 CallSitesToTransform = new List<CallSiteTransformation>
                 {
-                    new() { LineNumber = 9, OriginalCallExpression = "_validator.ValidateAsync()" }
+                    new() { LineNumber = 14, OriginalCallExpression = "_validator.ValidateAsync()" }
                 }
             }
         });
@@ -1188,7 +924,7 @@ public class Controller
             }
         });
 
-        // Transform Controller: await all 4 mapper calls
+        // Transform Controller: await all 4 mapper calls (lines 24-27)
         var controllerTransformed = await _transformer.TransformSourceAsync(controllerSource, new List<AsyncTransformationInfo>
         {
             new()
@@ -1199,30 +935,25 @@ public class Controller
                 NeedsAsyncKeyword = true,
                 CallSitesToTransform = new List<CallSiteTransformation>
                 {
-                    new() { LineNumber = 24, OriginalCallExpression = @"_mapperA.MapInto(""hello"", 42)" },
-                    new() { LineNumber = 25, OriginalCallExpression = @"_mapperB.MapInto(""world"", true)" },
-                    new() { LineNumber = 26, OriginalCallExpression = @"_mapperC.MapInto(""foo"", 3.14)" },
-                    new() { LineNumber = 27, OriginalCallExpression = @"_mapperD.MapInto(""bar"", 100L)" },
+                    new() { LineNumber = 24, OriginalCallExpression = "_mapperA.MapInto(\"hello\", 42)" },
+                    new() { LineNumber = 25, OriginalCallExpression = "_mapperB.MapInto(\"world\", true)" },
+                    new() { LineNumber = 26, OriginalCallExpression = "_mapperC.MapInto(\"foo\", 3.14)" },
+                    new() { LineNumber = 27, OriginalCallExpression = "_mapperD.MapInto(\"bar\", 100L)" },
                 }
             }
         });
 
         // Apply interface replacement to all transformed sources
-        var mappings = new List<InterfaceMapping>
-        {
-            new() { SyncInterfaceName = "IMapInto", AsyncInterfaceName = "IMapIntoAsync" }
-        };
-
-        var mapperBFinal = InterfaceReplacer.Transform(mapperBTransformed, mappings)!;
-        var mapperAFinal = InterfaceReplacer.Transform(mapperATransformed, mappings)!;
-        var mapperCFinal = InterfaceReplacer.Transform(mapperCTransformed, mappings)!;
-        var mapperDFinal = InterfaceReplacer.Transform(mapperDTransformed, mappings)!;
-        var controllerFinal = InterfaceReplacer.Transform(controllerTransformed, mappings)!;
+        var mapperAFinal = InterfaceReplacer.Transform(mapperATransformed, MapIntoMappings)!;
+        var mapperBFinal = InterfaceReplacer.Transform(mapperBTransformed, MapIntoMappings)!;
+        var mapperCFinal = InterfaceReplacer.Transform(mapperCTransformed, MapIntoMappings)!;
+        var mapperDFinal = InterfaceReplacer.Transform(mapperDTransformed, MapIntoMappings)!;
+        var controllerFinal = InterfaceReplacer.Transform(controllerTransformed, MapIntoMappings)!;
 
         // Verify all interface replacements occurred
-        mapperBFinal.Should().Contain(": IMapIntoAsync<bool, string>");
         mapperAFinal.Should().Contain(": IMapIntoAsync<int, string>");
         mapperAFinal.Should().Contain("IMapIntoAsync<bool, string> _mapperB");
+        mapperBFinal.Should().Contain(": IMapIntoAsync<bool, string>");
         mapperCFinal.Should().Contain(": IMapIntoAsync<double, string>");
         mapperDFinal.Should().Contain(": IMapIntoAsync<long, string>");
         controllerFinal.Should().Contain("IMapIntoAsync<int, string> _mapperA");
@@ -1239,44 +970,8 @@ public class Controller
 
         // Post-check: all transformed sources compile together
         AssertCompilesMultiple(
-            [mapperBFinal, mapperAFinal, mapperCFinal, mapperDFinal, controllerFinal],
+            [mapperAFinal, mapperBFinal, mapperCFinal, mapperDFinal, controllerFinal],
             "all transformed sources with IMapIntoAsync should compile together");
-    }
-
-    /// <summary>
-    /// Verifies that multiple C# source files compile together without errors.
-    /// </summary>
-    private static void AssertCompilesMultiple(string[] sources, string because = "code should compile without errors")
-    {
-        var syntaxTrees = new List<SyntaxTree> { CSharpSyntaxTree.ParseText(StubTypes) };
-        foreach (var source in sources)
-            syntaxTrees.Add(CSharpSyntaxTree.ParseText(source));
-
-        var references = new List<MetadataReference>();
-        var trustedAssemblies = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
-            .Split(Path.PathSeparator);
-        foreach (var assembly in trustedAssemblies)
-        {
-            var name = Path.GetFileNameWithoutExtension(assembly);
-            if (name is "System.Runtime" or "System.Threading.Tasks" or "System.Console"
-                or "System.Private.CoreLib" or "netstandard")
-            {
-                references.Add(MetadataReference.CreateFromFile(assembly));
-            }
-        }
-
-        var compilation = CSharpCompilation.Create("TestCompilation",
-            syntaxTrees,
-            references,
-            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
-
-        var diagnostics = compilation.GetDiagnostics()
-            .Where(d => d.Severity == DiagnosticSeverity.Error)
-            .ToList();
-
-        diagnostics.Should().BeEmpty(
-            $"{because}, but got:\n" +
-            string.Join("\n", diagnostics.Select(d => $"  {d.Location.GetLineSpan()}: {d.GetMessage()}")));
     }
 
     #endregion
