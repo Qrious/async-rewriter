@@ -1163,10 +1163,7 @@ class Program
             if (!callGraph.Methods.TryGetValue(impl.InterfaceMethodId, out var ifaceMethod))
                 continue;
             if (!syncTypeNames.Contains(ifaceMethod.ContainingType))
-            {
-                Diag($"Skip impl {impl.ImplementingMethodId}: iface ContainingType=\"{ifaceMethod.ContainingType}\" not in syncTypeNames", impl.ImplementingMethodId);
                 continue;
-            }
             if (!string.IsNullOrEmpty(implMethod.FilePath) && implMethod.FilePath != "external")
                 filesToProcess.Add(implMethod.FilePath);
         }

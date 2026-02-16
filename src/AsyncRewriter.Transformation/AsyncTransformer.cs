@@ -358,10 +358,7 @@ public class AsyncTransformer : IAsyncTransformer
                 Diag($"InterfaceReplacer found NO matches in {filePath} (mappings: {callGraph.InterfaceMappings.Count})", filePath);
             }
         }
-        else
-        {
-            Diag($"No InterfaceMappings on call graph for {filePath}", filePath);
-        }
+        // else: no InterfaceMappings on call graph — nothing to replace
 
         return new FileTransformation
         {
