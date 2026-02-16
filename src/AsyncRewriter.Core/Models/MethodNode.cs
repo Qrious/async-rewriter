@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 
 namespace AsyncRewriter.Core.Models;
 
@@ -18,4 +19,15 @@ public record MethodNode
     public required int StartLine { get; init; }
     public required int EndLine { get; init; }
     public bool IsReturnTypeParameter { get; init; }
+
+    /// <summary>
+    /// Ref kind for each parameter ("out", "ref", "in", or null for none).
+    /// Parallel to the Parameters list. Null if no parameters have ref kinds.
+    /// </summary>
+    public List<string?>? ParameterRefKinds { get; init; }
+
+    /// <summary>
+    /// Returns true if any parameter has the "out" ref kind.
+    /// </summary>
+    public bool HasOutParameters => ParameterRefKinds?.Any(k => k == "out") ?? false;
 }

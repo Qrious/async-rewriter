@@ -44,6 +44,7 @@ public class AsyncTransformer : IAsyncTransformer
             // Build transformation info from the flooded call graph
             var transformationsByFile = BuildTransformationsByFile(callGraph);
             var methodRenames = BuildMethodRenamesByMethodId(callGraph);
+            var outParamMethodsById = BuildOutParameterMethodsById(callGraph);
 
             var fileCount = 0;
             var totalFiles = transformationsByFile.Count;
@@ -62,7 +63,7 @@ public class AsyncTransformer : IAsyncTransformer
 
                 var sourceCode = await File.ReadAllTextAsync(filePath, cancellationToken);
                 var fileTransformation = await TransformFileInternalAsync(
-                    filePath, sourceCode, transformations, callGraph, methodRenames, debug, cancellationToken);
+                    filePath, sourceCode, transformations, callGraph, methodRenames, outParamMethodsById, debug, cancellationToken);
 
                 if (fileTransformation != null)
                 {
@@ -253,6 +254,7 @@ public class AsyncTransformer : IAsyncTransformer
         List<(MethodNode Method, string OriginalReturnType, List<MethodCall> CallsToAwait)> methodInfos,
         CallGraph callGraph,
         Dictionary<string, string> methodRenamesByMethodId,
+        Dictionary<string, OutParameterMethod> outParamMethodsById,
         bool debug,
         CancellationToken cancellationToken)
     {
@@ -297,6 +299,19 @@ public class AsyncTransformer : IAsyncTransformer
                 debugLines = BuildDebugLines(method, originalReturnType, callsToAwait, callGraph, floodedMethodIds, callersByMethod!, newMethodName);
             }
 
+            OutParameterTransformInfo? outParamInfo = null;
+            if (outParamMethodsById.TryGetValue(method.Id, out var outMethod))
+            {
+                outParamInfo = new OutParameterTransformInfo
+                {
+                    IsTryPattern = outMethod.TransformKind == OutParameterTransformKind.BoolTryPattern,
+                    OutParameterIndices = outMethod.OutParameterIndices,
+                    OutParameterTypes = outMethod.OutParameterTypes,
+                    OutParameterNames = outMethod.OutParameterNames,
+                    NewAsyncReturnType = outMethod.NewAsyncReturnType
+                };
+            }
+
             methodsByStartLine[method.StartLine] = new MethodTransformInfo
             {
                 MethodId = method.Id,
@@ -307,7 +322,8 @@ public class AsyncTransformer : IAsyncTransformer
                 StartLine = method.StartLine,
                 EndLine = method.EndLine,
                 DebugLines = debugLines,
-                NewMethodName = newMethodName
+                NewMethodName = newMethodName,
+                OutParameterInfo = outParamInfo
             };
 
             foreach (var call in callsToAwait)
@@ -330,6 +346,19 @@ public class AsyncTransformer : IAsyncTransformer
             return null;
 
         newRoot = EnsureUsingDirective(newRoot, "System.Threading.Tasks");
+
+        // Check if any out-parameter methods were transformed - if so, add call site rewriting
+        var hasOutParamMethods = methodsByStartLine.Values.Any(m => m.OutParameterInfo != null);
+        if (hasOutParamMethods)
+        {
+            // Build out-parameter call site info for callers of out-param methods
+            var outParamCallSites = BuildOutParameterCallSites(callGraph, outParamMethodsById, floodedMethodIds);
+            if (outParamCallSites.Count > 0)
+            {
+                var outCallSiteRewriter = new OutParameterCallSiteRewriter(outParamCallSites);
+                newRoot = outCallSiteRewriter.Visit(newRoot);
+            }
+        }
 
         var transformedSource = newRoot.ToFullString();
 
@@ -371,6 +400,115 @@ public class AsyncTransformer : IAsyncTransformer
                 result[impl.ImplementingMethodId] = newName;
             }
         }
+        return result;
+    }
+
+    private static Dictionary<int, OutParameterCallSiteInfo> BuildOutParameterCallSites(
+        CallGraph callGraph,
+        Dictionary<string, OutParameterMethod> outParamMethodsById,
+        HashSet<string> floodedMethodIds)
+    {
+        var result = new Dictionary<int, OutParameterCallSiteInfo>();
+
+        foreach (var call in callGraph.Calls)
+        {
+            if (!outParamMethodsById.TryGetValue(call.CalleeId, out var outMethod))
+                continue;
+            // Only transform call sites within flooded methods
+            if (!floodedMethodIds.Contains(call.CallerId))
+                continue;
+
+            if (!result.ContainsKey(call.LineNumber))
+            {
+                result[call.LineNumber] = new OutParameterCallSiteInfo
+                {
+                    MethodName = outMethod.Method.Name,
+                    IsTryPattern = outMethod.TransformKind == OutParameterTransformKind.BoolTryPattern,
+                    OutParameterIndices = outMethod.OutParameterIndices,
+                    OutParameterNames = outMethod.OutParameterNames,
+                    LineNumber = call.LineNumber
+                };
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Builds a lookup of out-parameter methods that need special transformation.
+    /// Uses the original call graph stored alongside the async graph to detect out params.
+    /// </summary>
+    private static Dictionary<string, OutParameterMethod> BuildOutParameterMethodsById(CallGraph callGraph)
+    {
+        // We need the original graph to detect out params, but the flooded graph has Task return types.
+        // The MethodNode in callGraph already has ParameterRefKinds from extraction.
+        // We detect methods that: (1) have out params, (2) have Task return types (flooded).
+        var result = new Dictionary<string, OutParameterMethod>();
+
+        foreach (var (id, method) in callGraph.Methods)
+        {
+            if (!IsTaskReturnType(method.ReturnType))
+                continue;
+            if (!method.HasOutParameters)
+                continue;
+            if (string.IsNullOrEmpty(method.FilePath) || method.FilePath == "external")
+                continue;
+
+            var refKinds = method.ParameterRefKinds!;
+            var outIndices = new List<int>();
+            var outTypes = new List<string>();
+            var outNames = new List<string>();
+
+            for (int i = 0; i < refKinds.Count; i++)
+            {
+                if (refKinds[i] == "out")
+                {
+                    outIndices.Add(i);
+                    var param = method.Parameters[i];
+                    var spaceIdx = param.LastIndexOf(' ');
+                    outTypes.Add(spaceIdx >= 0 ? param.Substring(0, spaceIdx) : param);
+                    outNames.Add(spaceIdx >= 0 ? param.Substring(spaceIdx + 1) : $"out{i}");
+                }
+            }
+
+            var originalReturnType = ReverseTaskReturnType(method.ReturnType);
+            var isBoolReturn = originalReturnType is "bool" or "Boolean" or "System.Boolean";
+            var kind = isBoolReturn ? OutParameterTransformKind.BoolTryPattern : OutParameterTransformKind.TuplePattern;
+
+            string newAsyncReturnType;
+            if (kind == OutParameterTransformKind.BoolTryPattern)
+            {
+                string innerType;
+                if (outTypes.Count == 1)
+                    innerType = outTypes[0];
+                else
+                {
+                    var tupleElements = outTypes.Zip(outNames, (t, n) => $"{t} {n}");
+                    innerType = $"({string.Join(", ", tupleElements)})";
+                }
+                newAsyncReturnType = $"Task<AsyncOutResult<{innerType}>>";
+            }
+            else
+            {
+                var elements = new List<string> { $"{originalReturnType} Result" };
+                for (int i = 0; i < outTypes.Count; i++)
+                    elements.Add($"{outTypes[i]} {outNames[i]}");
+                newAsyncReturnType = $"Task<({string.Join(", ", elements)})>";
+            }
+
+            result[id] = new OutParameterMethod
+            {
+                MethodId = id,
+                Method = method,
+                OriginalReturnType = originalReturnType,
+                TransformKind = kind,
+                OutParameterIndices = outIndices,
+                OutParameterTypes = outTypes,
+                OutParameterNames = outNames,
+                NewAsyncReturnType = newAsyncReturnType
+            };
+        }
+
         return result;
     }
 

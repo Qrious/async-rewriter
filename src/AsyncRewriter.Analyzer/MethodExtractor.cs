@@ -305,6 +305,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
             ContainingNamespace = methodSymbol.ContainingNamespace?.ToDisplayString() ?? "",
             ReturnType = methodSymbol.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
             Parameters = methodSymbol.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
+            ParameterRefKinds = GetParameterRefKinds(methodSymbol),
             FilePath = _filePath,
             StartLine = lineSpan.StartLinePosition.Line + 1,
             EndLine = lineSpan.EndLinePosition.Line + 1,
@@ -346,11 +347,26 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
             ContainingNamespace = methodSymbol.ContainingNamespace?.ToDisplayString() ?? "",
             ReturnType = methodSymbol.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
             Parameters = methodSymbol.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
+            ParameterRefKinds = GetParameterRefKinds(methodSymbol),
             FilePath = _filePath,
             StartLine = lineSpan.StartLinePosition.Line + 1,
             EndLine = lineSpan.EndLinePosition.Line + 1,
             IsReturnTypeParameter = isReturnTypeParameter,
         };
+    }
+
+    private static List<string?>? GetParameterRefKinds(IMethodSymbol methodSymbol)
+    {
+        if (!methodSymbol.Parameters.Any(p => p.RefKind != RefKind.None))
+            return null;
+        return methodSymbol.Parameters.Select(p => p.RefKind switch
+        {
+            RefKind.Out => "out",
+            RefKind.Ref => "ref",
+            RefKind.In => "in",
+            RefKind.RefReadOnlyParameter => "in",
+            _ => (string?)null
+        }).ToList();
     }
 
     /// <summary>

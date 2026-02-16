@@ -389,6 +389,23 @@ class Program
                         asyncGraph = resolvedGraph;
                         asyncGraph.InterfaceMappings = interfaceMappings;
 
+                        // Detect methods with out parameters that need special transformation
+                        var outParamMethods = OutParameterAnalyzer.DetectOutParameterMethods(callGraph, asyncGraph);
+                        if (outParamMethods.Count > 0)
+                        {
+                            System.Console.WriteLine();
+                            System.Console.ForegroundColor = ConsoleColor.Yellow;
+                            System.Console.WriteLine($"⚠ {outParamMethods.Count} method(s) with out parameters will be transformed:");
+                            System.Console.ResetColor();
+                            foreach (var m in outParamMethods)
+                            {
+                                var pattern = m.TransformKind == OutParameterTransformKind.BoolTryPattern
+                                    ? "AsyncOutResult<T>" : "tuple return";
+                                System.Console.WriteLine($"    {m.Method.Id}: {m.OriginalReturnType} → {m.NewAsyncReturnType} ({pattern})");
+                            }
+                            System.Console.WriteLine();
+                        }
+
                         System.Console.Write("Would you like to transform the source files? [Y/n] ");
                         var transformResponse = System.Console.ReadLine()?.Trim();
                         if (string.IsNullOrEmpty(transformResponse) || transformResponse.Equals("y", StringComparison.OrdinalIgnoreCase) || transformResponse.Equals("yes", StringComparison.OrdinalIgnoreCase))
