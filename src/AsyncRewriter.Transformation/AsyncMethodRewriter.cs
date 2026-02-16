@@ -84,6 +84,11 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
             visited = TransformBodyForNoAwait(visited, originalReturnType, newReturnType);
         }
 
+        if (info.DebugLines != null)
+        {
+            visited = PrependDebugComments(visited, info.DebugLines);
+        }
+
         _anyMethodTransformed = true;
         _transformations.Add(new MethodTransformation
         {
@@ -139,6 +144,11 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
             visited = TransformLocalFunctionBodyForNoAwait(visited, originalReturnType, newReturnType);
         }
 
+        if (info.DebugLines != null)
+        {
+            visited = PrependDebugComments(visited, info.DebugLines);
+        }
+
         _anyMethodTransformed = true;
         _transformations.Add(new MethodTransformation
         {
@@ -152,6 +162,57 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         });
 
         return visited;
+    }
+
+    private static MethodDeclarationSyntax PrependDebugComments(MethodDeclarationSyntax method, List<string> debugLines)
+    {
+        var commentTrivia = BuildDebugCommentTrivia(method.GetLeadingTrivia(), debugLines);
+        return method.WithLeadingTrivia(commentTrivia);
+    }
+
+    private static LocalFunctionStatementSyntax PrependDebugComments(LocalFunctionStatementSyntax func, List<string> debugLines)
+    {
+        var commentTrivia = BuildDebugCommentTrivia(func.GetLeadingTrivia(), debugLines);
+        return func.WithLeadingTrivia(commentTrivia);
+    }
+
+    private static SyntaxTriviaList BuildDebugCommentTrivia(SyntaxTriviaList existingLeading, List<string> debugLines)
+    {
+        var triviaList = new List<SyntaxTrivia>();
+
+        // Preserve leading whitespace/newlines, then insert comments before the indentation of the method
+        // Find the last whitespace trivia (the indentation before the method)
+        var indentation = "";
+        for (var i = existingLeading.Count - 1; i >= 0; i--)
+        {
+            if (existingLeading[i].IsKind(SyntaxKind.WhitespaceTrivia))
+            {
+                indentation = existingLeading[i].ToString();
+                break;
+            }
+        }
+
+        // Add all existing leading trivia except the last whitespace (we'll re-add it)
+        for (var i = 0; i < existingLeading.Count; i++)
+        {
+            // Skip the last whitespace trivia — we'll add it after comments
+            if (i == existingLeading.Count - 1 && existingLeading[i].IsKind(SyntaxKind.WhitespaceTrivia))
+                continue;
+            triviaList.Add(existingLeading[i]);
+        }
+
+        // Add debug comment lines
+        foreach (var line in debugLines)
+        {
+            triviaList.Add(Whitespace(indentation));
+            triviaList.Add(Comment($"// [async-rewriter] {line}"));
+            triviaList.Add(LineFeed);
+        }
+
+        // Re-add the indentation for the method itself
+        triviaList.Add(Whitespace(indentation));
+
+        return TriviaList(triviaList);
     }
 
     private static LocalFunctionStatementSyntax AddAsyncModifierToLocalFunction(LocalFunctionStatementSyntax func)
@@ -439,6 +500,7 @@ public class MethodTransformInfo
     public required string NewReturnType { get; init; }
     public required int StartLine { get; init; }
     public required int EndLine { get; init; }
+    public List<string>? DebugLines { get; init; }
 }
 
 /// <summary>

@@ -29,6 +29,16 @@ public interface IAsyncTransformer
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Transforms a project from sync to async based on the call graph with progress reporting and debug output
+    /// </summary>
+    Task<TransformationResult> TransformProjectAsync(
+        string projectPath,
+        CallGraph callGraph,
+        Action<string, int, int> progressCallback,
+        bool debug,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Transforms a single file from sync to async
     /// </summary>
     Task<FileTransformation> TransformFileAsync(
