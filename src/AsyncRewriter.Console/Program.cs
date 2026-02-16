@@ -348,7 +348,9 @@ class Program
                         }
 
                         PrintFloodingStatistics(callGraph, asyncGraph);
-                        var interfaceMappings = await ResolveProblematicInterfacesAsync(callGraph, asyncGraph);
+                        var (resolvedGraph, interfaceMappings) = await ResolveProblematicInterfacesAsync(
+                            callGraph, asyncGraph, floodingAnalyzer, rootMethodIds, debugGraph, neo4jUri, neo4jUser, neo4jPassword);
+                        asyncGraph = resolvedGraph;
                         asyncGraph.InterfaceMappings = interfaceMappings;
 
                         System.Console.Write("Would you like to transform the source files? [Y/n] ");
@@ -541,7 +543,9 @@ class Program
             System.Console.WriteLine();
             PrintFloodingStatistics(callGraph, asyncGraph);
 
-            var interfaceMappings = await ResolveProblematicInterfacesAsync(callGraph, asyncGraph);
+            var (resolvedGraph, interfaceMappings) = await ResolveProblematicInterfacesAsync(
+                callGraph, asyncGraph, floodingAnalyzer, rootMethodIds, debugGraph, neo4jUri, neo4jUser, neo4jPassword);
+            asyncGraph = resolvedGraph;
             asyncGraph.InterfaceMappings = interfaceMappings;
 
             // Store the async call graph in Neo4j
@@ -697,9 +701,18 @@ class Program
         System.Console.WriteLine();
     }
 
-    static async Task<List<InterfaceMapping>> ResolveProblematicInterfacesAsync(CallGraph callGraph, CallGraph asyncGraph)
+    static async Task<(CallGraph asyncGraph, List<InterfaceMapping> mappings)> ResolveProblematicInterfacesAsync(
+        CallGraph callGraph,
+        CallGraph asyncGraph,
+        IAsyncFloodingAnalyzer floodingAnalyzer,
+        HashSet<string> rootMethodIds,
+        bool debugGraph,
+        string neo4jUri,
+        string neo4jUser,
+        string neo4jPassword)
     {
         var mappings = new List<InterfaceMapping>();
+        var blockedGenericMethodIds = new HashSet<string>();
 
         var byInterfaceType = ProblematicInterfaceAnalyzer.DetectProblematicInterfaces(callGraph, asyncGraph);
 
@@ -709,7 +722,7 @@ class Program
             System.Console.WriteLine("✓ No problematic external interfaces detected.");
             System.Console.ResetColor();
             System.Console.WriteLine();
-            return mappings;
+            return (asyncGraph, mappings);
         }
 
         System.Console.ForegroundColor = ConsoleColor.Yellow;
@@ -832,8 +845,8 @@ class Program
                 System.Console.ResetColor();
             }
 
-            // Offer to apply to remaining sibling instantiations
-            if (genericBase != null)
+            // For generic instantiations that were NOT ignored, ask about scope
+            if (genericBase != null && choiceKind != "ignore")
             {
                 var remainingSiblings = orderedEntries
                     .Where(kv => !processedTypes.Contains(kv.Key)
@@ -842,11 +855,30 @@ class Program
 
                 if (remainingSiblings.Count > 0)
                 {
-                    System.Console.Write($"  {remainingSiblings.Count} more {genericBase}<...> instantiation(s) remain. Apply same choice to all? [Y/n]: ");
-                    var applyAll = System.Console.ReadLine()?.Trim();
-                    if (string.IsNullOrEmpty(applyAll) || applyAll.Equals("y", StringComparison.OrdinalIgnoreCase)
-                        || applyAll.Equals("yes", StringComparison.OrdinalIgnoreCase))
+                    System.Console.WriteLine();
+                    System.Console.Write($"  Apply to all {genericBase}<...> instantiations, or just {interfaceType}?");
+                    System.Console.WriteLine();
+                    System.Console.WriteLine($"    [1] All {genericBase}<...> instantiations (apply same choice to {remainingSiblings.Count} remaining)");
+                    System.Console.WriteLine($"    [2] Just {interfaceType} (scope to this instantiation only)");
+                    System.Console.Write("  Choice [1]: ");
+                    var scopeChoice = System.Console.ReadLine()?.Trim();
+
+                    if (scopeChoice == "2")
                     {
+                        // Scoped: collect blocked generic method IDs to prevent flooding from
+                        // this instantiation to the generic definition (and thus to other instantiations)
+                        foreach (var m in methods)
+                        {
+                            foreach (var gi in callGraph.GetGenericMethodsFor(m.InterfaceMethodId))
+                                blockedGenericMethodIds.Add(gi.GenericMethodId);
+                        }
+                        System.Console.ForegroundColor = ConsoleColor.Cyan;
+                        System.Console.WriteLine($"  Scoped to {interfaceType} — will re-flood to exclude sibling instantiations.");
+                        System.Console.ResetColor();
+                    }
+                    else
+                    {
+                        // Apply to all siblings
                         var capturedChoiceKind = choiceKind;
                         var capturedNs = chosenNs;
 
@@ -895,14 +927,32 @@ class Program
                                     });
                                     break;
                                 }
-                                case "ignore":
-                                {
-                                    System.Console.ForegroundColor = ConsoleColor.DarkGray;
-                                    System.Console.WriteLine($"  Ignored {siblingType} (auto-applied).");
-                                    System.Console.ResetColor();
-                                    break;
-                                }
                             }
+                        };
+                    }
+                }
+            }
+            else if (genericBase != null && choiceKind == "ignore")
+            {
+                // For ignored generic interfaces, still offer "apply same to all siblings"
+                var remainingSiblings = orderedEntries
+                    .Where(kv => !processedTypes.Contains(kv.Key)
+                        && ProblematicInterfaceAnalyzer.GetGenericBaseType(kv.Key) == genericBase)
+                    .ToList();
+
+                if (remainingSiblings.Count > 0)
+                {
+                    System.Console.Write($"  {remainingSiblings.Count} more {genericBase}<...> instantiation(s) remain. Ignore all? [Y/n]: ");
+                    var ignoreAll = System.Console.ReadLine()?.Trim();
+                    if (string.IsNullOrEmpty(ignoreAll) || ignoreAll.Equals("y", StringComparison.OrdinalIgnoreCase)
+                        || ignoreAll.Equals("yes", StringComparison.OrdinalIgnoreCase))
+                    {
+                        genericBaseChoices[genericBase] = (siblingType, _) =>
+                        {
+                            System.Console.ForegroundColor = ConsoleColor.DarkGray;
+                            System.Console.WriteLine($"  Ignored {siblingType} (auto-applied).");
+                            System.Console.ResetColor();
+                            return Task.CompletedTask;
                         };
                     }
                 }
@@ -911,13 +961,147 @@ class Program
             System.Console.WriteLine();
         }
 
+        // Phase B: Re-flood if any generic methods were blocked
+        if (blockedGenericMethodIds.Count > 0)
+        {
+            System.Console.WriteLine("Re-running flooding with scoped generic interfaces...");
+
+            if (debugGraph)
+            {
+                var (graph, floodingResult) = await floodingAnalyzer.AnalyzeFloodingWithDebugAsync(
+                    callGraph, rootMethodIds, blockedGenericMethodIds);
+                asyncGraph = graph;
+
+                System.Console.WriteLine("Storing flooding debug graph in Neo4j...");
+                await using var debugRepo = new Neo4jFloodingDebugRepository(neo4jUri, neo4jUser, neo4jPassword);
+                await debugRepo.EnsureIndexesAsync();
+                await debugRepo.StoreFloodingResultAsync(floodingResult, callGraph, asyncGraph, (phase, current, total) =>
+                {
+                    System.Console.WriteLine($"  {phase}: {current}/{total}");
+                });
+                System.Console.ForegroundColor = ConsoleColor.Green;
+                System.Console.WriteLine($"✓ Flooding debug graph stored (id: {floodingResult.Id})");
+                System.Console.ResetColor();
+            }
+            else
+            {
+                asyncGraph = await floodingAnalyzer.AnalyzeFloodingAsync(
+                    callGraph, rootMethodIds, blockedGenericMethodIds);
+            }
+
+            PrintFloodingStatistics(callGraph, asyncGraph);
+
+            // Re-detect problematic interfaces from the new async graph
+            var newProblematic = ProblematicInterfaceAnalyzer.DetectProblematicInterfaces(callGraph, asyncGraph);
+            // Filter out already-resolved interfaces
+            var alreadyResolved = new HashSet<string>(mappings.Select(m => m.SyncInterfaceName));
+            var newEntries = newProblematic
+                .Where(kv => !alreadyResolved.Contains(kv.Key) && !processedTypes.Contains(kv.Key))
+                .OrderBy(kv => kv.Key)
+                .ToList();
+
+            if (newEntries.Count > 0)
+            {
+                System.Console.ForegroundColor = ConsoleColor.Yellow;
+                System.Console.WriteLine($"⚠ {newEntries.Count} additional problematic interface(s) after re-flooding:");
+                System.Console.ResetColor();
+                System.Console.WriteLine();
+
+                foreach (var (interfaceType, methods) in newEntries)
+                {
+                    System.Console.ForegroundColor = ConsoleColor.Yellow;
+                    System.Console.WriteLine($"⚠ Problematic interface: {interfaceType} ({methods.Count} method(s) flooded)");
+                    System.Console.ResetColor();
+
+                    foreach (var m in methods)
+                    {
+                        var origRet = m.InterfaceMethod?.ReturnType ?? m.OriginalImpl.ReturnType;
+                        var asyncRet = m.AsyncImpl.ReturnType;
+                        var name = m.InterfaceMethod?.Name ?? m.OriginalImpl.Name;
+                        System.Console.WriteLine($"    {origRet} {name}() → {asyncRet}");
+                    }
+                    System.Console.WriteLine();
+
+                    var existingAsync = ProblematicInterfaceAnalyzer.FindExistingAsyncInterface(callGraph, interfaceType, methods);
+
+                    var optionNum = 1;
+                    if (existingAsync != null)
+                    {
+                        System.Console.WriteLine($"  [{optionNum}] Use existing: {existingAsync} (found in codebase)");
+                        optionNum++;
+                    }
+                    System.Console.WriteLine($"  [{optionNum}] Create new async interface");
+                    var createOption = optionNum;
+                    optionNum++;
+                    System.Console.WriteLine($"  [{optionNum}] Ignore");
+                    var ignoreOption = optionNum;
+
+                    System.Console.Write("  Choice: ");
+                    var choice = System.Console.ReadLine()?.Trim();
+
+                    if (!int.TryParse(choice, out var choiceNum))
+                        choiceNum = ignoreOption;
+
+                    if (existingAsync != null && choiceNum == 1)
+                    {
+                        var ns = ProblematicInterfaceAnalyzer.GetNamespaceFromCallGraph(callGraph, existingAsync);
+                        mappings.Add(new InterfaceMapping
+                        {
+                            SyncInterfaceName = interfaceType,
+                            AsyncInterfaceName = existingAsync,
+                            RequiredNamespaces = ns != null ? new List<string> { ns } : new List<string>()
+                        });
+                        System.Console.ForegroundColor = ConsoleColor.Green;
+                        System.Console.WriteLine($"  ✓ Will replace {interfaceType} → {existingAsync}");
+                        System.Console.ResetColor();
+                    }
+                    else if (choiceNum == createOption)
+                    {
+                        var asyncName = interfaceType + "Async";
+                        var defaultPath = $"src/{asyncName}.cs";
+
+                        System.Console.Write($"  File path [{defaultPath}]: ");
+                        var filePath = System.Console.ReadLine()?.Trim();
+                        if (string.IsNullOrEmpty(filePath))
+                            filePath = defaultPath;
+
+                        System.Console.Write("  Namespace [AsyncInterfaces]: ");
+                        var ns = System.Console.ReadLine()?.Trim();
+                        if (string.IsNullOrEmpty(ns))
+                            ns = "AsyncInterfaces";
+
+                        var source = AsyncInterfaceGenerator.GenerateAsyncInterface(asyncName, ns, methods);
+                        await File.WriteAllTextAsync(filePath, source);
+
+                        System.Console.ForegroundColor = ConsoleColor.Green;
+                        System.Console.WriteLine($"  ✓ Created {filePath}");
+                        System.Console.ResetColor();
+
+                        mappings.Add(new InterfaceMapping
+                        {
+                            SyncInterfaceName = interfaceType,
+                            AsyncInterfaceName = asyncName,
+                            RequiredNamespaces = new List<string> { ns }
+                        });
+                    }
+                    else
+                    {
+                        System.Console.ForegroundColor = ConsoleColor.DarkGray;
+                        System.Console.WriteLine("  Ignored.");
+                        System.Console.ResetColor();
+                    }
+                    System.Console.WriteLine();
+                }
+            }
+        }
+
         // Apply interface replacements to flooded files
         if (mappings.Count > 0)
         {
             await ApplyInterfaceReplacements(callGraph, asyncGraph, mappings);
         }
 
-        return mappings;
+        return (asyncGraph, mappings);
     }
 
     static async Task ApplyInterfaceReplacements(CallGraph callGraph, CallGraph asyncGraph, List<InterfaceMapping> mappings)

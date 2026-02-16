@@ -12,12 +12,20 @@ namespace AsyncRewriter.Analyzer;
 public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
 {
     public Task<CallGraph> AnalyzeFloodingAsync(CallGraph callGraph, HashSet<string> rootMethodIds, CancellationToken cancellationToken = default)
-        => AnalyzeFloodingAsync(callGraph, rootMethodIds, null, cancellationToken);
+        => AnalyzeFloodingAsync(callGraph, rootMethodIds, blockedGenericMethodIds: null, progressCallback: null, cancellationToken);
 
     public Task<CallGraph> AnalyzeFloodingAsync(
         CallGraph callGraph,
         HashSet<string> rootMethodIds,
         Action<string, int, int>? progressCallback,
+        CancellationToken cancellationToken = default)
+        => AnalyzeFloodingAsync(callGraph, rootMethodIds, blockedGenericMethodIds: null, progressCallback, cancellationToken);
+
+    public Task<CallGraph> AnalyzeFloodingAsync(
+        CallGraph callGraph,
+        HashSet<string> rootMethodIds,
+        HashSet<string>? blockedGenericMethodIds,
+        Action<string, int, int>? progressCallback = null,
         CancellationToken cancellationToken = default)
     {
         var floodedIds = new HashSet<string>(rootMethodIds);
@@ -59,15 +67,20 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
             }
 
             // Flood through generic instantiations:
-            // Only traverse when the return type on the generic node is NOT a type parameter
+            // Only traverse when the return type on the generic node is NOT a type parameter.
+            // Also skip if the generic method is in the blocked set.
             foreach (var gi in callGraph.GetGenericMethodsFor(methodId))
             {
-                if (!HasGenericReturnType(callGraph, gi.GenericMethodId) && floodedIds.Add(gi.GenericMethodId))
+                if (!HasGenericReturnType(callGraph, gi.GenericMethodId)
+                    && blockedGenericMethodIds?.Contains(gi.GenericMethodId) != true
+                    && floodedIds.Add(gi.GenericMethodId))
                     queue.Enqueue(gi.GenericMethodId);
             }
             foreach (var gi in callGraph.GetInstantiationsOf(methodId))
             {
-                if (!HasGenericReturnType(callGraph, methodId) && floodedIds.Add(gi.InstantiatedMethodId))
+                if (!HasGenericReturnType(callGraph, methodId)
+                    && blockedGenericMethodIds?.Contains(methodId) != true
+                    && floodedIds.Add(gi.InstantiatedMethodId))
                     queue.Enqueue(gi.InstantiatedMethodId);
             }
 
@@ -143,6 +156,14 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
         HashSet<string> rootMethodIds,
         Action<string, int, int>? progressCallback = null,
         CancellationToken cancellationToken = default)
+        => AnalyzeFloodingWithDebugAsync(callGraph, rootMethodIds, blockedGenericMethodIds: null, progressCallback, cancellationToken);
+
+    public Task<(CallGraph, FloodingResult)> AnalyzeFloodingWithDebugAsync(
+        CallGraph callGraph,
+        HashSet<string> rootMethodIds,
+        HashSet<string>? blockedGenericMethodIds,
+        Action<string, int, int>? progressCallback = null,
+        CancellationToken cancellationToken = default)
     {
         var floodingResult = new FloodingResult();
         var floodedIds = new HashSet<string>();
@@ -192,12 +213,14 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
 
             foreach (var gi in callGraph.GetGenericMethodsFor(methodId))
             {
-                if (!HasGenericReturnType(callGraph, gi.GenericMethodId))
+                if (!HasGenericReturnType(callGraph, gi.GenericMethodId)
+                    && blockedGenericMethodIds?.Contains(gi.GenericMethodId) != true)
                     TryEnqueue(gi.GenericMethodId, FloodReason.GenericInstantiation);
             }
             foreach (var gi in callGraph.GetInstantiationsOf(methodId))
             {
-                if (!HasGenericReturnType(callGraph, methodId))
+                if (!HasGenericReturnType(callGraph, methodId)
+                    && blockedGenericMethodIds?.Contains(methodId) != true)
                     TryEnqueue(gi.InstantiatedMethodId, FloodReason.GenericInstantiation);
             }
 

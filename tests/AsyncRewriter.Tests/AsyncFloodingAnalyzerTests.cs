@@ -647,6 +647,90 @@ public class AsyncFloodingAnalyzerTests
     }
 
     [Fact]
+    public async Task FloodFromRoot_BlockedGenericMethodIds_PreventsInstantiationToGenericPropagation()
+    {
+        // Same setup as FloodFromRoot_FloodsThroughGenericInstantiation_WhenReturnTypeIsNotTypeParameter
+        // but with the generic method ID blocked — flooding should NOT cross the instantiation↔generic boundary
+        var methods = new Dictionary<string, MethodNode>
+        {
+            ["m_iface_generic"] = MakeMethod("m_iface_generic", "Execute", "void") with { ContainingType = "IHandler<TRequest>" },
+            ["m_iface_foo"] = MakeMethod("m_iface_foo", "Execute", "void") with { ContainingType = "IHandler<FooRequest>" },
+            ["m_iface_bar"] = MakeMethod("m_iface_bar", "Execute", "void") with { ContainingType = "IHandler<BarRequest>" },
+            ["m_impl_foo"] = MakeMethod("m_impl_foo", "Execute", "void") with { ContainingType = "FooHandler" },
+            ["m_impl_bar"] = MakeMethod("m_impl_bar", "Execute", "void") with { ContainingType = "BarHandler" },
+        };
+        var impls = new List<InterfaceImplementation>
+        {
+            new() { CallGraphId = "g", ImplementingMethodId = "m_impl_foo", InterfaceMethodId = "m_iface_foo" },
+            new() { CallGraphId = "g", ImplementingMethodId = "m_impl_bar", InterfaceMethodId = "m_iface_bar" },
+        };
+        var genericInstantiations = new List<GenericInstantiation>
+        {
+            new() { CallGraphId = "g", InstantiatedMethodId = "m_iface_foo", GenericMethodId = "m_iface_generic" },
+            new() { CallGraphId = "g", InstantiatedMethodId = "m_iface_bar", GenericMethodId = "m_iface_generic" },
+        };
+        var graph = CreateCallGraph(methods, interfaceImpls: impls, genericInstantiations: genericInstantiations);
+
+        // Block the generic method — prevents instantiation↔generic traversal
+        var blocked = new HashSet<string> { "m_iface_generic" };
+        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m_impl_foo"], blocked);
+
+        result.Methods["m_impl_foo"].ReturnType.Should().Be("Task",
+            "root method is flooded");
+        result.Methods["m_iface_foo"].ReturnType.Should().Be("Task",
+            "instantiated interface is flooded via InterfaceImplementation");
+        result.Methods["m_iface_generic"].ReturnType.Should().Be("void",
+            "generic interface should NOT be flooded when blocked");
+        result.Methods["m_iface_bar"].ReturnType.Should().Be("void",
+            "sibling instantiation should NOT be flooded when generic is blocked");
+        result.Methods["m_impl_bar"].ReturnType.Should().Be("void",
+            "sibling implementation should NOT be flooded when generic is blocked");
+    }
+
+    [Fact]
+    public async Task FloodFromRoot_BlockedGenericMethodIds_DebugVersion_PreventsInstantiationToGenericPropagation()
+    {
+        // Same test as above but using the debug (WithDebug) overload
+        var methods = new Dictionary<string, MethodNode>
+        {
+            ["m_iface_generic"] = MakeMethod("m_iface_generic", "Execute", "void") with { ContainingType = "IHandler<TRequest>" },
+            ["m_iface_foo"] = MakeMethod("m_iface_foo", "Execute", "void") with { ContainingType = "IHandler<FooRequest>" },
+            ["m_iface_bar"] = MakeMethod("m_iface_bar", "Execute", "void") with { ContainingType = "IHandler<BarRequest>" },
+            ["m_impl_foo"] = MakeMethod("m_impl_foo", "Execute", "void") with { ContainingType = "FooHandler" },
+            ["m_impl_bar"] = MakeMethod("m_impl_bar", "Execute", "void") with { ContainingType = "BarHandler" },
+        };
+        var impls = new List<InterfaceImplementation>
+        {
+            new() { CallGraphId = "g", ImplementingMethodId = "m_impl_foo", InterfaceMethodId = "m_iface_foo" },
+            new() { CallGraphId = "g", ImplementingMethodId = "m_impl_bar", InterfaceMethodId = "m_iface_bar" },
+        };
+        var genericInstantiations = new List<GenericInstantiation>
+        {
+            new() { CallGraphId = "g", InstantiatedMethodId = "m_iface_foo", GenericMethodId = "m_iface_generic" },
+            new() { CallGraphId = "g", InstantiatedMethodId = "m_iface_bar", GenericMethodId = "m_iface_generic" },
+        };
+        var graph = CreateCallGraph(methods, interfaceImpls: impls, genericInstantiations: genericInstantiations);
+
+        var blocked = new HashSet<string> { "m_iface_generic" };
+        var (result, floodingResult) = await _analyzer.AnalyzeFloodingWithDebugAsync(graph, ["m_impl_foo"], blocked);
+
+        result.Methods["m_impl_foo"].ReturnType.Should().Be("Task");
+        result.Methods["m_iface_foo"].ReturnType.Should().Be("Task");
+        result.Methods["m_iface_generic"].ReturnType.Should().Be("void",
+            "generic interface should NOT be flooded when blocked (debug version)");
+        result.Methods["m_iface_bar"].ReturnType.Should().Be("void",
+            "sibling instantiation should NOT be flooded when blocked (debug version)");
+        result.Methods["m_impl_bar"].ReturnType.Should().Be("void",
+            "sibling implementation should NOT be flooded when blocked (debug version)");
+
+        // Verify debug info doesn't include blocked methods
+        floodingResult.FloodedMethods.Should().ContainKey("m_impl_foo");
+        floodingResult.FloodedMethods.Should().ContainKey("m_iface_foo");
+        floodingResult.FloodedMethods.Should().NotContainKey("m_iface_generic");
+        floodingResult.FloodedMethods.Should().NotContainKey("m_iface_bar");
+    }
+
+    [Fact]
     public async Task FloodFromRoot_PreservesGenericInstantiations()
     {
         var methods = new Dictionary<string, MethodNode>
