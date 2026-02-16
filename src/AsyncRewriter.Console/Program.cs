@@ -11,6 +11,18 @@ namespace AsyncRewriter.Console;
 
 class Program
 {
+    /// <summary>When set via --diag, only print [diag] lines for items matching this substring.</summary>
+    internal static string? DiagFilter;
+
+    static void Diag(string message, string? context = null)
+    {
+        if (DiagFilter == null) return;
+        if (context != null && !context.Contains(DiagFilter, StringComparison.OrdinalIgnoreCase)) return;
+        System.Console.ForegroundColor = ConsoleColor.DarkGray;
+        System.Console.WriteLine($"[diag] {message}");
+        System.Console.ResetColor();
+    }
+
     static async Task<int> Main(string[] args)
     {
         var serviceCollection = new ServiceCollection();
@@ -87,22 +99,35 @@ class Program
             description: "Add debug summary comments above each transformed method",
             getDefaultValue: () => false);
 
+        var analyzeDiagOption = new Option<string?>(
+            aliases: new[] { "--diag" },
+            description: "Show interface-replacement diagnostics for files/types matching this substring",
+            getDefaultValue: () => null);
+
         analyzeCommand.AddArgument(analyzeSolutionPathArgument);
         analyzeCommand.AddOption(analyzeNeo4jUriOption);
         analyzeCommand.AddOption(analyzeNeo4jUserOption);
         analyzeCommand.AddOption(analyzeNeo4jPasswordOption);
         analyzeCommand.AddOption(analyzeDebugGraphOption);
         analyzeCommand.AddOption(analyzeDebugOption);
+        analyzeCommand.AddOption(analyzeDiagOption);
 
-        analyzeCommand.SetHandler(async (solutionPath, neo4jUri, neo4jUser, neo4jPassword, debugGraph, debug) =>
+        analyzeCommand.SetHandler(async (ctx) =>
         {
+            var solutionPath = ctx.ParseResult.GetValueForArgument(analyzeSolutionPathArgument);
+            var neo4jUri = ctx.ParseResult.GetValueForOption(analyzeNeo4jUriOption)!;
+            var neo4jUser = ctx.ParseResult.GetValueForOption(analyzeNeo4jUserOption)!;
+            var neo4jPassword = ctx.ParseResult.GetValueForOption(analyzeNeo4jPasswordOption)!;
+            var debugGraph = ctx.ParseResult.GetValueForOption(analyzeDebugGraphOption);
+            var debug = ctx.ParseResult.GetValueForOption(analyzeDebugOption);
+            var diag = ctx.ParseResult.GetValueForOption(analyzeDiagOption);
             await AnalyzeSolutionAsync(
                 services.GetRequiredService<ICallGraphBuilder>(),
                 services.GetRequiredService<ITaskWrapperExtractor>(),
                 services.GetRequiredService<IAsyncFloodingAnalyzer>(),
                 services.GetRequiredService<IAsyncTransformer>(),
-                solutionPath, neo4jUri, neo4jUser, neo4jPassword, debugGraph, debug);
-        }, analyzeSolutionPathArgument, analyzeNeo4jUriOption, analyzeNeo4jUserOption, analyzeNeo4jPasswordOption, analyzeDebugGraphOption, analyzeDebugOption);
+                solutionPath, neo4jUri, neo4jUser, neo4jPassword, debugGraph, debug, diag);
+        });
 
         rootCommand.AddCommand(analyzeCommand);
 
@@ -275,7 +300,7 @@ class Program
         }
     }
 
-    static async Task AnalyzeSolutionAsync(ICallGraphBuilder callGraphBuilder, ITaskWrapperExtractor taskWrapperExtractor, IAsyncFloodingAnalyzer floodingAnalyzer, IAsyncTransformer transformer, string solutionPath, string neo4jUri, string neo4jUser, string neo4jPassword, bool debugGraph = false, bool debug = false)
+    static async Task AnalyzeSolutionAsync(ICallGraphBuilder callGraphBuilder, ITaskWrapperExtractor taskWrapperExtractor, IAsyncFloodingAnalyzer floodingAnalyzer, IAsyncTransformer transformer, string solutionPath, string neo4jUri, string neo4jUser, string neo4jPassword, bool debugGraph = false, bool debug = false, string? diagFilter = null)
     {
         try
         {
@@ -360,7 +385,7 @@ class Program
 
                         PrintFloodingStatistics(callGraph, asyncGraph);
                         var (resolvedGraph, interfaceMappings) = await ResolveProblematicInterfacesAsync(
-                            callGraph, asyncGraph, floodingAnalyzer, rootMethodIds, debugGraph, neo4jUri, neo4jUser, neo4jPassword);
+                            callGraph, asyncGraph, floodingAnalyzer, rootMethodIds, debugGraph, neo4jUri, neo4jUser, neo4jPassword, diagFilter);
                         asyncGraph = resolvedGraph;
                         asyncGraph.InterfaceMappings = interfaceMappings;
 
@@ -720,8 +745,11 @@ class Program
         bool debugGraph,
         string neo4jUri,
         string neo4jUser,
-        string neo4jPassword)
+        string neo4jPassword,
+        string? diagFilter = null)
     {
+        DiagFilter = diagFilter;
+        AsyncTransformer.DiagFilter = diagFilter;
         var mappings = new List<InterfaceMapping>();
         var blockedGenericMethodIds = new HashSet<string>();
 
@@ -819,14 +847,7 @@ class Program
                 System.Console.ForegroundColor = ConsoleColor.Green;
                 System.Console.WriteLine($"  ✓ Will replace {interfaceType} → {chosenExistingAsync}");
                 System.Console.ResetColor();
-                System.Console.ForegroundColor = ConsoleColor.DarkGray;
-                System.Console.WriteLine($"    [diag] SyncInterfaceName = \"{mapping.SyncInterfaceName}\"");
-                System.Console.WriteLine($"    [diag] AsyncInterfaceName = \"{mapping.AsyncInterfaceName}\"");
-                if (mapping.MethodRenames.Count > 0)
-                    System.Console.WriteLine($"    [diag] MethodRenames = {string.Join(", ", mapping.MethodRenames.Select(kv => $"{kv.Key} → {kv.Value}"))}");
-                else
-                    System.Console.WriteLine($"    [diag] MethodRenames = (none)");
-                System.Console.ResetColor();
+                Diag($"Mapping: sync=\"{mapping.SyncInterfaceName}\" async=\"{mapping.AsyncInterfaceName}\" renames={{{string.Join(", ", mapping.MethodRenames.Select(kv => $"{kv.Key}→{kv.Value}"))}}}", interfaceType);
             }
             else if (choiceNum == createOption)
             {
@@ -1133,46 +1154,26 @@ class Program
         var syncTypeNames = new HashSet<string>(mappings.Select(m => m.SyncInterfaceName));
         var filesToProcess = new HashSet<string>();
 
-        System.Console.ForegroundColor = ConsoleColor.DarkGray;
-        System.Console.WriteLine($"[diag] ApplyInterfaceReplacements: {mappings.Count} mapping(s), syncTypeNames = [{string.Join(", ", syncTypeNames)}]");
-        System.Console.ResetColor();
+        Diag($"ApplyInterfaceReplacements: {mappings.Count} mapping(s), syncTypeNames=[{string.Join(", ", syncTypeNames)}]");
 
-        var skippedNoImpl = 0;
-        var skippedNoIface = 0;
-        var skippedNoMatch = 0;
         foreach (var impl in callGraph.InterfaceImplementations)
         {
             if (!callGraph.Methods.TryGetValue(impl.ImplementingMethodId, out var implMethod))
-            { skippedNoImpl++; continue; }
+                continue;
             if (!callGraph.Methods.TryGetValue(impl.InterfaceMethodId, out var ifaceMethod))
-            { skippedNoIface++; continue; }
+                continue;
             if (!syncTypeNames.Contains(ifaceMethod.ContainingType))
-            { skippedNoMatch++; continue; }
+            {
+                Diag($"Skip impl {impl.ImplementingMethodId}: iface ContainingType=\"{ifaceMethod.ContainingType}\" not in syncTypeNames", impl.ImplementingMethodId);
+                continue;
+            }
             if (!string.IsNullOrEmpty(implMethod.FilePath) && implMethod.FilePath != "external")
                 filesToProcess.Add(implMethod.FilePath);
         }
 
-        System.Console.ForegroundColor = ConsoleColor.DarkGray;
-        System.Console.WriteLine($"[diag] InterfaceImplementations scanned: {callGraph.InterfaceImplementations.Count} total, skipped: {skippedNoImpl} no-impl, {skippedNoIface} no-iface, {skippedNoMatch} no-match");
-        if (skippedNoMatch > 0)
-        {
-            // Show what ContainingType values were seen but didn't match
-            var unmatchedTypes = new HashSet<string>();
-            foreach (var impl in callGraph.InterfaceImplementations)
-            {
-                if (!callGraph.Methods.TryGetValue(impl.InterfaceMethodId, out var ifm)) continue;
-                if (!syncTypeNames.Contains(ifm.ContainingType))
-                    unmatchedTypes.Add(ifm.ContainingType);
-            }
-            System.Console.WriteLine($"[diag] Unmatched ContainingType values: [{string.Join(", ", unmatchedTypes.Take(20))}]");
-        }
-        System.Console.ResetColor();
-
         if (filesToProcess.Count == 0)
         {
-            System.Console.ForegroundColor = ConsoleColor.DarkGray;
-            System.Console.WriteLine($"[diag] No files to process for interface replacement.");
-            System.Console.ResetColor();
+            Diag("No files to process for interface replacement.");
             return;
         }
 
@@ -1193,9 +1194,7 @@ class Program
             }
             else
             {
-                System.Console.ForegroundColor = ConsoleColor.DarkGray;
-                System.Console.WriteLine($"  [diag] No matches in: {filePath}");
-                System.Console.ResetColor();
+                Diag($"InterfaceReplacer returned null for: {filePath}", filePath);
             }
         }
     }

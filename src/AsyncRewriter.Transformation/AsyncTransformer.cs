@@ -15,6 +15,18 @@ namespace AsyncRewriter.Transformation;
 
 public class AsyncTransformer : IAsyncTransformer
 {
+    /// <summary>Set externally to enable filtered [diag] output for interface replacement.</summary>
+    public static string? DiagFilter { get; set; }
+
+    private static void Diag(string message, string? context = null)
+    {
+        if (DiagFilter == null) return;
+        if (context != null && !context.Contains(DiagFilter, StringComparison.OrdinalIgnoreCase)) return;
+        Console.ForegroundColor = ConsoleColor.DarkGray;
+        Console.WriteLine($"    [diag] {message}");
+        Console.ResetColor();
+    }
+
     public Task<TransformationResult> TransformProjectAsync(
         string projectPath,
         CallGraph callGraph,
@@ -338,23 +350,17 @@ public class AsyncTransformer : IAsyncTransformer
             var replaced = InterfaceReplacer.Transform(transformedSource, callGraph.InterfaceMappings);
             if (replaced != null)
             {
-                System.Console.ForegroundColor = ConsoleColor.DarkGray;
-                System.Console.WriteLine($"    [diag] InterfaceReplacer replaced interfaces in {filePath}");
-                System.Console.ResetColor();
+                Diag($"InterfaceReplacer replaced interfaces in {filePath}", filePath);
                 transformedSource = replaced;
             }
             else
             {
-                System.Console.ForegroundColor = ConsoleColor.DarkGray;
-                System.Console.WriteLine($"    [diag] InterfaceReplacer found no matches in {filePath} (mappings: {callGraph.InterfaceMappings.Count})");
-                System.Console.ResetColor();
+                Diag($"InterfaceReplacer found NO matches in {filePath} (mappings: {callGraph.InterfaceMappings.Count})", filePath);
             }
         }
         else
         {
-            System.Console.ForegroundColor = ConsoleColor.DarkGray;
-            System.Console.WriteLine($"    [diag] No InterfaceMappings on call graph for {filePath}");
-            System.Console.ResetColor();
+            Diag($"No InterfaceMappings on call graph for {filePath}", filePath);
         }
 
         return new FileTransformation
@@ -369,14 +375,10 @@ public class AsyncTransformer : IAsyncTransformer
     private static Dictionary<string, string> BuildMethodRenamesByMethodId(CallGraph callGraph)
     {
         var result = new Dictionary<string, string>();
-        System.Console.ForegroundColor = ConsoleColor.DarkGray;
-        System.Console.WriteLine($"[diag] BuildMethodRenamesByMethodId: {callGraph.InterfaceMappings.Count} mapping(s)");
-        System.Console.ResetColor();
+        Diag($"BuildMethodRenamesByMethodId: {callGraph.InterfaceMappings.Count} mapping(s)");
         foreach (var mapping in callGraph.InterfaceMappings)
         {
-            System.Console.ForegroundColor = ConsoleColor.DarkGray;
-            System.Console.WriteLine($"[diag]   Mapping: \"{mapping.SyncInterfaceName}\" → \"{mapping.AsyncInterfaceName}\", renames: {mapping.MethodRenames.Count}");
-            System.Console.ResetColor();
+            Diag($"  Mapping: \"{mapping.SyncInterfaceName}\" → \"{mapping.AsyncInterfaceName}\", renames: {mapping.MethodRenames.Count}", mapping.SyncInterfaceName);
             if (mapping.MethodRenames.Count == 0)
                 continue;
 
@@ -393,9 +395,7 @@ public class AsyncTransformer : IAsyncTransformer
                 result[impl.ImplementingMethodId] = newName;
             }
         }
-        System.Console.ForegroundColor = ConsoleColor.DarkGray;
-        System.Console.WriteLine($"[diag] BuildMethodRenamesByMethodId result: {result.Count} rename(s)");
-        System.Console.ResetColor();
+        Diag($"BuildMethodRenamesByMethodId result: {result.Count} rename(s)");
         return result;
     }
 
