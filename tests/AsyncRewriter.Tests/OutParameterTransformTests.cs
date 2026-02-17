@@ -48,6 +48,19 @@ public class OutParameterTransformTests
             string.Join("\n", diagnostics.Select(d => $"  {d.Location.GetLineSpan()}: {d.GetMessage()}")));
     }
 
+    private const string NamespacedAsyncOutResult = @"
+namespace AsyncRewriter.Generated
+{
+    public class AsyncOutResult<T>
+    {
+        public T Value { get; }
+        public bool HasValue { get; }
+        public AsyncOutResult(T value, bool hasValue) { Value = value; HasValue = hasValue; }
+        public bool TryGetValue(out T value) { value = HasValue ? Value : default!; return HasValue; }
+    }
+}
+";
+
     private const string StubTypes = @"
 using System.Threading.Tasks;
 
@@ -303,6 +316,150 @@ interface IRepo
             // Should use the custom namespace, not the default
             transformed.Should().Contain("using MyProject.Helpers;");
             transformed.Should().NotContain("using AsyncRewriter.Generated;");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
+    [Fact]
+    public async Task BoolTryPattern_SingleOutParam_ProducesCompilableCode()
+    {
+        var source = @"class Cache
+{
+    private string _value = ""hello"";
+    bool TryGetValue(string key, out string value)
+    {
+        value = _value;
+        return true;
+    }
+}";
+
+        var tempDir = Path.Combine(Path.GetTempPath(), $"outparam_test_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        var tempFile = Path.Combine(tempDir, "Cache.cs");
+        await File.WriteAllTextAsync(tempFile, source);
+
+        try
+        {
+            var callGraph = CreateFloodedCallGraphWithOutParam(tempFile,
+                methodId: "Cache.TryGetValue(string, string)",
+                methodName: "TryGetValue",
+                containingType: "Cache",
+                returnType: "Task<bool>",
+                parameters: new List<string> { "string key", "string value" },
+                paramRefKinds: new List<string?> { null, "out" },
+                startLine: 4, endLine: 8);
+
+            var result = await _transformer.TransformProjectAsync(tempDir, callGraph);
+
+            result.Success.Should().BeTrue();
+            result.ModifiedFiles.Should().HaveCount(1);
+
+            var transformed = result.ModifiedFiles[0].TransformedContent;
+
+            // The removed out parameter should be declared as a local variable
+            transformed.Should().Contain("string value = default!");
+
+            // The transformed code should compile successfully
+            AssertCompiles(transformed, NamespacedAsyncOutResult);
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
+    [Fact]
+    public async Task TuplePattern_SingleOutParam_ProducesCompilableCode()
+    {
+        var source = @"class Processor
+{
+    int Process(out string message)
+    {
+        message = ""ok"";
+        return 42;
+    }
+}";
+
+        var tempDir = Path.Combine(Path.GetTempPath(), $"outparam_test_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        var tempFile = Path.Combine(tempDir, "Processor.cs");
+        await File.WriteAllTextAsync(tempFile, source);
+
+        try
+        {
+            var callGraph = CreateFloodedCallGraphWithOutParam(tempFile,
+                methodId: "Processor.Process(string)",
+                methodName: "Process",
+                containingType: "Processor",
+                returnType: "Task<int>",
+                parameters: new List<string> { "string message" },
+                paramRefKinds: new List<string?> { "out" },
+                startLine: 3, endLine: 7);
+
+            var result = await _transformer.TransformProjectAsync(tempDir, callGraph);
+
+            result.Success.Should().BeTrue();
+            result.ModifiedFiles.Should().HaveCount(1);
+
+            var transformed = result.ModifiedFiles[0].TransformedContent;
+
+            // The removed out parameter should be declared as a local variable
+            transformed.Should().Contain("string message = default!");
+
+            // The transformed code should compile successfully
+            AssertCompiles(transformed);
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
+    [Fact]
+    public async Task BoolTryPattern_MultipleOutParams_ProducesCompilableCode()
+    {
+        var source = @"class Cache
+{
+    bool TryGet(string key, out string name, out int age)
+    {
+        name = ""Alice"";
+        age = 30;
+        return true;
+    }
+}";
+
+        var tempDir = Path.Combine(Path.GetTempPath(), $"outparam_test_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        var tempFile = Path.Combine(tempDir, "Cache.cs");
+        await File.WriteAllTextAsync(tempFile, source);
+
+        try
+        {
+            var callGraph = CreateFloodedCallGraphWithOutParam(tempFile,
+                methodId: "Cache.TryGet(string, string, int)",
+                methodName: "TryGet",
+                containingType: "Cache",
+                returnType: "Task<bool>",
+                parameters: new List<string> { "string key", "string name", "int age" },
+                paramRefKinds: new List<string?> { null, "out", "out" },
+                startLine: 3, endLine: 8);
+
+            var result = await _transformer.TransformProjectAsync(tempDir, callGraph);
+
+            result.Success.Should().BeTrue();
+            result.ModifiedFiles.Should().HaveCount(1);
+
+            var transformed = result.ModifiedFiles[0].TransformedContent;
+
+            // Both removed out parameters should be declared as local variables
+            transformed.Should().Contain("string name = default!");
+            transformed.Should().Contain("int age = default!");
+
+            // The transformed code should compile successfully
+            AssertCompiles(transformed, NamespacedAsyncOutResult);
         }
         finally
         {

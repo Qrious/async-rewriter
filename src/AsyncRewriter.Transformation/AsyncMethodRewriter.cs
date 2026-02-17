@@ -526,8 +526,44 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
 
         if (visited.Body != null)
         {
+            // Insert local variable declarations for removed out parameters.
+            // The out parameters were removed from the signature, but the method body
+            // still references them, so they need to become local variables.
+            var localDeclarations = new List<StatementSyntax>();
+            for (int i = 0; i < outInfo.OutParameterNames.Count; i++)
+            {
+                // Generate: Type name = default!;
+                var typeName = outInfo.OutParameterTypes[i];
+                var varName = outInfo.OutParameterNames[i];
+
+                var declaration = LocalDeclarationStatement(
+                    VariableDeclaration(ParseTypeName(typeName).WithTrailingTrivia(Space))
+                        .WithVariables(SingletonSeparatedList(
+                            VariableDeclarator(Identifier(varName))
+                                .WithInitializer(EqualsValueClause(
+                                    PostfixUnaryExpression(
+                                        SyntaxKind.SuppressNullableWarningExpression,
+                                        LiteralExpression(SyntaxKind.DefaultLiteralExpression,
+                                            Token(SyntaxKind.DefaultKeyword)))
+                                    .WithLeadingTrivia(Space))
+                                    .WithLeadingTrivia(Space)))))
+                    .WithLeadingTrivia(visited.Body.Statements.Any()
+                        ? visited.Body.Statements[0].GetLeadingTrivia()
+                        : TriviaList(Whitespace("        ")))
+                    .WithTrailingTrivia(LineFeed);
+                localDeclarations.Add(declaration);
+            }
+
             var bodyRewriter = new OutParameterReturnRewriter(outInfo);
             var newBody = (BlockSyntax)bodyRewriter.Visit(visited.Body);
+
+            // Prepend the local declarations to the body
+            if (localDeclarations.Count > 0)
+            {
+                var allStatements = localDeclarations.Concat(newBody.Statements).ToList();
+                newBody = newBody.WithStatements(List(allStatements));
+            }
+
             visited = visited.WithBody(newBody);
         }
         else if (visited.ExpressionBody != null)
