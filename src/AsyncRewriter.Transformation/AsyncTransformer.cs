@@ -129,7 +129,8 @@ public class AsyncTransformer : IAsyncTransformer
                     callSitesByLine[callSite.LineNumber] = new CallSiteInfo
                     {
                         CalleeMethodId = info.MethodId,
-                        LineNumber = callSite.LineNumber
+                        LineNumber = callSite.LineNumber,
+                        CalleeMethodName = ExtractMethodNameFromExpression(callSite.OriginalCallExpression)
                     };
                 }
             }
@@ -333,7 +334,8 @@ public class AsyncTransformer : IAsyncTransformer
                     callSitesByLine[call.LineNumber] = new CallSiteInfo
                     {
                         CalleeMethodId = call.CalleeId,
-                        LineNumber = call.LineNumber
+                        LineNumber = call.LineNumber,
+                        CalleeMethodName = ExtractMethodNameFromMethodId(call.CalleeId)
                     };
                 }
             }
@@ -685,5 +687,73 @@ public class AsyncTransformer : IAsyncTransformer
             parent = parent.Parent;
         }
         return string.Empty;
+    }
+
+    /// <summary>
+    /// Extracts the method name from a call expression like "_builder.Configure()" → "Configure",
+    /// or "LocalFunc()" → "LocalFunc".
+    /// Parses backwards from the opening paren to find the method name.
+    /// </summary>
+    internal static string? ExtractMethodNameFromExpression(string? expression)
+    {
+        if (string.IsNullOrEmpty(expression))
+            return null;
+
+        // Find the last '(' that is the method's argument list opener.
+        // We need to handle nested parens: e.g., "obj.Method(Foo(1))" → "Method"
+        // Walk backwards, tracking paren depth to find the outermost opening paren of the invocation.
+        var depth = 0;
+        var parenIdx = -1;
+        for (var i = expression.Length - 1; i >= 0; i--)
+        {
+            if (expression[i] == ')')
+                depth++;
+            else if (expression[i] == '(')
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    parenIdx = i;
+                    break;
+                }
+            }
+        }
+
+        if (parenIdx <= 0)
+            return null;
+
+        // Walk backwards from parenIdx to find the start of the method name
+        var nameEnd = parenIdx;
+        var nameStart = nameEnd - 1;
+        while (nameStart >= 0 && (char.IsLetterOrDigit(expression[nameStart]) || expression[nameStart] == '_'))
+            nameStart--;
+        nameStart++;
+
+        if (nameStart >= nameEnd)
+            return null;
+
+        return expression.Substring(nameStart, nameEnd - nameStart);
+    }
+
+    /// <summary>
+    /// Extracts the method name from a method ID like "IBuilder.Configure()" → "Configure",
+    /// or "Namespace.Type.Method(param)" → "Method".
+    /// </summary>
+    internal static string? ExtractMethodNameFromMethodId(string? methodId)
+    {
+        if (string.IsNullOrEmpty(methodId))
+            return null;
+
+        var parenIdx = methodId.IndexOf('(');
+        if (parenIdx < 0)
+            parenIdx = methodId.Length;
+
+        var lastDot = methodId.LastIndexOf('.', parenIdx - 1);
+        var nameStart = lastDot >= 0 ? lastDot + 1 : 0;
+
+        if (nameStart >= parenIdx)
+            return null;
+
+        return methodId.Substring(nameStart, parenIdx - nameStart);
     }
 }

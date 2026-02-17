@@ -67,6 +67,14 @@ static class Helper
 {
     public static Task Run() => Task.CompletedTask;
 }
+
+interface IBuilder
+{
+    Task<IBuilder> Configure();
+    IBuilder SetName(string name);
+    Task Build();
+    Task<int> GetCount();
+}
 ";
 
     [Fact]
@@ -918,6 +926,115 @@ class MyService
         {
             Directory.Delete(tempDir, true);
         }
+    }
+
+    [Fact]
+    public async Task TransformSourceAsync_MethodChain_AwaitWrappedInParentheses()
+    {
+        var source = @"class MyService
+{
+    private IBuilder _builder;
+    void Setup()
+    {
+        _builder.Configure().SetName(""test"");
+    }
+}";
+
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.Setup()",
+                OriginalReturnType = "void",
+                NewReturnType = "Task",
+                NeedsAsyncKeyword = true,
+                CallSitesToTransform = new List<CallSiteTransformation>
+                {
+                    new() { LineNumber = 6, OriginalCallExpression = "_builder.Configure()" }
+                }
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(source, transformations);
+
+        result.Should().Contain("(await _builder.Configure()).SetName(\"test\")");
+        result.Should().Contain("async Task Setup()");
+        AssertCompiles(result);
+    }
+
+    [Fact]
+    public async Task TransformSourceAsync_MethodChain_MultiLine_AwaitWrappedInParentheses()
+    {
+        var source = @"class MyService
+{
+    private IBuilder _builder;
+    void Setup()
+    {
+        _builder.Configure()
+            .SetName(""test"");
+    }
+}";
+
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.Setup()",
+                OriginalReturnType = "void",
+                NewReturnType = "Task",
+                NeedsAsyncKeyword = true,
+                CallSitesToTransform = new List<CallSiteTransformation>
+                {
+                    new() { LineNumber = 6, OriginalCallExpression = "_builder.Configure()" }
+                }
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(source, transformations);
+
+        result.Should().Contain("(await _builder.Configure())");
+        result.Should().Contain(".SetName(\"test\")");
+        result.Should().Contain("async Task Setup()");
+        AssertCompiles(result);
+    }
+
+    [Fact]
+    public async Task TransformSourceAsync_MethodChain_MultiLine_PreservesFormatting()
+    {
+        var source = @"class MyService
+{
+    private IBuilder _builder;
+    void Setup()
+    {
+        _builder.Configure()
+            .SetName(""test"")
+            .Build();
+    }
+}";
+
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.Setup()",
+                OriginalReturnType = "void",
+                NewReturnType = "Task",
+                NeedsAsyncKeyword = true,
+                CallSitesToTransform = new List<CallSiteTransformation>
+                {
+                    new() { LineNumber = 6, OriginalCallExpression = "_builder.Configure()" },
+                    new() { LineNumber = 8, OriginalCallExpression = "_builder.Configure().SetName(\"test\").Build()" }
+                }
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(source, transformations);
+
+        // Configure() should be parenthesized because it's chained
+        result.Should().Contain("(await _builder.Configure())");
+        // The multiline chain formatting should be preserved
+        result.Should().Contain(".SetName(\"test\")");
+        result.Should().Contain("async Task Setup()");
     }
 
     private static CallGraph CreateFloodedCallGraphWithInterface(string tempFile)
