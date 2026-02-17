@@ -30,6 +30,13 @@ public class CallGraph
     public List<InterfaceMapping> InterfaceMappings { get; set; } = new();
 
     /// <summary>
+    /// Namespace where the AsyncOutResult&lt;T&gt; helper class resides.
+    /// Used to add the correct using directive when BoolTryPattern out-parameter transformations are applied.
+    /// When null, the transformer will scan source files for an existing AsyncOutResult class.
+    /// </summary>
+    public string? AsyncOutResultNamespace { get; set; }
+
+    /// <summary>
     /// Calls indexed by the caller
     /// </summary>
     private ConcurrentDictionary<string, List<MethodCall>> _callsByCaller { get; init; } = new();

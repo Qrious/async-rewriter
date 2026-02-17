@@ -216,6 +216,101 @@ interface IRepo
     }
 
     [Fact]
+    public async Task BoolTryPattern_AddsUsingDirectiveForAsyncOutResult()
+    {
+        var source = @"class Cache
+{
+    private string _value = ""hello"";
+    bool TryGetValue(string key, out string value)
+    {
+        value = _value;
+        return true;
+    }
+}";
+
+        var tempDir = Path.Combine(Path.GetTempPath(), $"outparam_test_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        var tempFile = Path.Combine(tempDir, "Cache.cs");
+        await File.WriteAllTextAsync(tempFile, source);
+
+        try
+        {
+            var callGraph = CreateFloodedCallGraphWithOutParam(tempFile,
+                methodId: "Cache.TryGetValue(string, string)",
+                methodName: "TryGetValue",
+                containingType: "Cache",
+                returnType: "Task<bool>",
+                parameters: new List<string> { "string key", "string value" },
+                paramRefKinds: new List<string?> { null, "out" },
+                startLine: 4, endLine: 8);
+
+            var result = await _transformer.TransformProjectAsync(tempDir, callGraph);
+
+            result.Success.Should().BeTrue();
+            result.ModifiedFiles.Should().HaveCount(1);
+
+            var transformed = result.ModifiedFiles[0].TransformedContent;
+
+            // Should have using directive for AsyncOutResult namespace
+            transformed.Should().Contain("using AsyncRewriter.Generated;",
+                "BoolTryPattern uses AsyncOutResult<T> which lives in AsyncRewriter.Generated");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
+    [Fact]
+    public async Task BoolTryPattern_UsesCustomNamespaceForAsyncOutResult()
+    {
+        var source = @"class Cache
+{
+    private string _value = ""hello"";
+    bool TryGetValue(string key, out string value)
+    {
+        value = _value;
+        return true;
+    }
+}";
+
+        var tempDir = Path.Combine(Path.GetTempPath(), $"outparam_test_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        var tempFile = Path.Combine(tempDir, "Cache.cs");
+        await File.WriteAllTextAsync(tempFile, source);
+
+        try
+        {
+            var callGraph = CreateFloodedCallGraphWithOutParam(tempFile,
+                methodId: "Cache.TryGetValue(string, string)",
+                methodName: "TryGetValue",
+                containingType: "Cache",
+                returnType: "Task<bool>",
+                parameters: new List<string> { "string key", "string value" },
+                paramRefKinds: new List<string?> { null, "out" },
+                startLine: 4, endLine: 8);
+
+            // Set a custom namespace for AsyncOutResult
+            callGraph.AsyncOutResultNamespace = "MyProject.Helpers";
+
+            var result = await _transformer.TransformProjectAsync(tempDir, callGraph);
+
+            result.Success.Should().BeTrue();
+            result.ModifiedFiles.Should().HaveCount(1);
+
+            var transformed = result.ModifiedFiles[0].TransformedContent;
+
+            // Should use the custom namespace, not the default
+            transformed.Should().Contain("using MyProject.Helpers;");
+            transformed.Should().NotContain("using AsyncRewriter.Generated;");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
+    [Fact]
     public void OutParameterAnalyzer_DetectsOutParameterMethods()
     {
         var originalMethods = new ConcurrentDictionary<string, MethodNode>();
