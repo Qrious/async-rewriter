@@ -376,7 +376,9 @@ public class AsyncTransformer : IAsyncTransformer
         // Apply interface replacements if mappings are available
         if (callGraph.InterfaceMappings.Count > 0)
         {
-            transformedSource = InterfaceReplacer.Transform(transformedSource, callGraph.InterfaceMappings)
+            var transformedTypeNames = new HashSet<string>(
+                methodsByStartLine.Values.Select(m => m.ContainingType));
+            transformedSource = InterfaceReplacer.Transform(transformedSource, callGraph.InterfaceMappings, transformedTypeNames)
                 ?? transformedSource;
         }
         // else: no InterfaceMappings on call graph — nothing to replace

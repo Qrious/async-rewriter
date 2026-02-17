@@ -13,10 +13,12 @@ namespace AsyncRewriter.Transformation;
 public class InterfaceReplacer : CSharpSyntaxRewriter
 {
     private readonly Dictionary<string, string> _syncToAsync;
+    private readonly HashSet<string>? _transformedTypes;
+    private bool _insideNonTransformedBaseList;
 
     public bool AnyReplaced { get; private set; }
 
-    public InterfaceReplacer(IEnumerable<InterfaceMapping> mappings)
+    public InterfaceReplacer(IEnumerable<InterfaceMapping> mappings, HashSet<string>? transformedTypes = null)
     {
         _syncToAsync = new Dictionary<string, string>();
         foreach (var m in mappings)
@@ -34,11 +36,38 @@ public class InterfaceReplacer : CSharpSyntaxRewriter
             if (syncSimple != syncName)
                 _syncToAsync[syncSimple] = asyncSimple;
         }
+
+        _transformedTypes = transformedTypes;
+    }
+
+    public override SyntaxNode? VisitBaseList(BaseListSyntax node)
+    {
+        if (_transformedTypes != null)
+        {
+            // Check if the containing type was transformed
+            var typeDecl = node.Parent;
+            string? typeName = typeDecl switch
+            {
+                ClassDeclarationSyntax cls => cls.Identifier.Text,
+                StructDeclarationSyntax str => str.Identifier.Text,
+                _ => null
+            };
+
+            if (typeName != null && !_transformedTypes.Contains(typeName))
+            {
+                _insideNonTransformedBaseList = true;
+                var result = base.VisitBaseList(node);
+                _insideNonTransformedBaseList = false;
+                return result;
+            }
+        }
+
+        return base.VisitBaseList(node);
     }
 
     public override SyntaxNode? VisitIdentifierName(IdentifierNameSyntax node)
     {
-        if (_syncToAsync.TryGetValue(node.Identifier.Text, out var asyncName))
+        if (!_insideNonTransformedBaseList && _syncToAsync.TryGetValue(node.Identifier.Text, out var asyncName))
         {
             AnyReplaced = true;
             return node.WithIdentifier(Identifier(asyncName).WithTriviaFrom(node.Identifier));
@@ -49,7 +78,7 @@ public class InterfaceReplacer : CSharpSyntaxRewriter
     public override SyntaxNode? VisitGenericName(GenericNameSyntax node)
     {
         var visited = (GenericNameSyntax)base.VisitGenericName(node)!;
-        if (_syncToAsync.TryGetValue(node.Identifier.Text, out var asyncName))
+        if (!_insideNonTransformedBaseList && _syncToAsync.TryGetValue(node.Identifier.Text, out var asyncName))
         {
             AnyReplaced = true;
             return visited.WithIdentifier(Identifier(asyncName).WithTriviaFrom(visited.Identifier));
@@ -61,12 +90,13 @@ public class InterfaceReplacer : CSharpSyntaxRewriter
     /// Transforms a source file, replacing sync interface references with async equivalents.
     /// Returns the transformed source, or null if no changes were made.
     /// </summary>
-    public static string? Transform(string sourceCode, IEnumerable<InterfaceMapping> mappings)
+    public static string? Transform(string sourceCode, IEnumerable<InterfaceMapping> mappings,
+        HashSet<string>? transformedTypes = null)
     {
         var tree = CSharpSyntaxTree.ParseText(sourceCode);
         var root = tree.GetRoot();
 
-        var rewriter = new InterfaceReplacer(mappings);
+        var rewriter = new InterfaceReplacer(mappings, transformedTypes);
         var newRoot = rewriter.Visit(root);
 
         if (!rewriter.AnyReplaced)

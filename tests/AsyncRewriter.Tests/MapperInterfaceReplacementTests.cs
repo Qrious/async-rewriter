@@ -537,6 +537,37 @@ public class Validator
         result.Should().NotContain("IMapInto<");
     }
 
+    [Fact]
+    public void InterfaceReplacer_WithTransformedTypes_OnlyReplacesBaseListForTransformedClasses()
+    {
+        // Two classes in the same source: MapperA (transformed) and MapperD (not transformed)
+        // Only MapperA's base list should get IMapInto → IMapIntoAsync replacement.
+        // Both classes' field types should still be replaced (fields are not base lists).
+        var source = @"
+public class MapperA : IMapInto<int, string>
+{
+    private readonly IMapInto<bool, string> _mapperB;
+    public void MapInto(string dest, int src) { }
+}
+
+public class MapperD : IMapInto<long, string>
+{
+    public void MapInto(string dest, long src) { }
+}
+";
+
+        var transformedTypes = new HashSet<string> { "MapperA" };
+        var result = InterfaceReplacer.Transform(source, MapIntoMappings, transformedTypes);
+
+        result.Should().NotBeNull();
+        // MapperA base list: replaced
+        result.Should().Contain("MapperA : IMapIntoAsync<int, string>");
+        // MapperA field: replaced (not a base list)
+        result.Should().Contain("IMapIntoAsync<bool, string> _mapperB");
+        // MapperD base list: NOT replaced
+        result.Should().Contain("MapperD : IMapInto<long, string>");
+    }
+
     #endregion
 
     #region Full Scenario: Flooding + Interface Replacement
