@@ -752,4 +752,111 @@ public class AsyncFloodingAnalyzerTests
         gi.GenericMethodId.Should().Be("m_generic");
         gi.CallGraphId.Should().Be(result.Id);
     }
+
+    [Fact]
+    public async Task FloodWithLambdaAsyncOverload_AddsSyntheticCallEdge()
+    {
+        // Setup: GetName calls lambda, lambda calls session.GetName (root)
+        // Execute has async overload that returns Task<string>
+        var methods = new Dictionary<string, MethodNode>
+        {
+            ["GetName"] = MakeMethod("GetName", "GetName", "string"),
+            ["lambda1"] = MakeMethod("lambda1", "<lambda>", "string"),
+            ["session.GetName"] = MakeMethod("session.GetName", "GetName", "void"),
+            ["Execute_async"] = MakeMethod("Execute_async", "Execute", "Task<string>"),
+        };
+
+        var calls = new List<MethodCall>
+        {
+            MakeCall("GetName", "lambda1"),       // GetName -> lambda
+            MakeCall("lambda1", "session.GetName") // lambda -> session.GetName (root)
+        };
+
+        var lambdaOverloads = new ConcurrentBag<LambdaAsyncOverload>
+        {
+            new LambdaAsyncOverload
+            {
+                LambdaMethodId = "lambda1",
+                CallerMethodId = "GetName",
+                ParentCalleeMethodId = "Execute_sync",
+                AsyncOverloadMethodId = "Execute_async",
+                ParentCallLineNumber = 5,
+                FilePath = "test.cs"
+            }
+        };
+
+        var graphId = Guid.NewGuid().ToString();
+        var methodDict = new ConcurrentDictionary<string, MethodNode>(methods);
+        var callBag = new ConcurrentBag<MethodCall>(calls);
+        var graph = new CallGraph(callBag, lambdaAsyncOverloads: lambdaOverloads)
+        {
+            Id = graphId,
+            ProjectName = "TestProject",
+            Methods = methodDict
+        };
+
+        // Flood from session.GetName (the root async method)
+        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["session.GetName"]);
+
+        // The lambda should be flooded (it calls the root)
+        result.Methods["lambda1"].ReturnType.Should().StartWith("Task");
+
+        // GetName should be flooded (it calls the lambda)
+        result.Methods["GetName"].ReturnType.Should().Be("Task<string>");
+
+        // A synthetic call edge should exist from GetName -> Execute_async at line 5
+        result.Calls.Should().Contain(c =>
+            c.CallerId == "GetName"
+            && c.CalleeId == "Execute_async"
+            && c.LineNumber == 5);
+
+        // Execute_async should be marked as flooded (Task return type)
+        result.Methods["Execute_async"].ReturnType.Should().StartWith("Task");
+    }
+
+    [Fact]
+    public async Task FloodWithLambdaAsyncOverload_NoSyntheticEdge_WhenLambdaNotFlooded()
+    {
+        var methods = new Dictionary<string, MethodNode>
+        {
+            ["GetName"] = MakeMethod("GetName", "GetName", "string"),
+            ["lambda1"] = MakeMethod("lambda1", "<lambda>", "string"),
+            ["Execute_async"] = MakeMethod("Execute_async", "Execute", "Task<string>"),
+        };
+
+        var calls = new List<MethodCall>
+        {
+            MakeCall("GetName", "lambda1"),
+        };
+
+        var lambdaOverloads = new ConcurrentBag<LambdaAsyncOverload>
+        {
+            new LambdaAsyncOverload
+            {
+                LambdaMethodId = "lambda1",
+                CallerMethodId = "GetName",
+                ParentCalleeMethodId = "Execute_sync",
+                AsyncOverloadMethodId = "Execute_async",
+                ParentCallLineNumber = 5,
+                FilePath = "test.cs"
+            }
+        };
+
+        var graphId = Guid.NewGuid().ToString();
+        var methodDict = new ConcurrentDictionary<string, MethodNode>(methods);
+        var callBag = new ConcurrentBag<MethodCall>(calls);
+        var graph = new CallGraph(callBag, lambdaAsyncOverloads: lambdaOverloads)
+        {
+            Id = graphId,
+            ProjectName = "TestProject",
+            Methods = methodDict
+        };
+
+        // Flood from some unrelated method — lambda1 is NOT flooded
+        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["Execute_async"]);
+
+        // No synthetic edge should be added
+        result.Calls.Should().NotContain(c =>
+            c.CallerId == "GetName" && c.CalleeId == "Execute_async");
+    }
 }

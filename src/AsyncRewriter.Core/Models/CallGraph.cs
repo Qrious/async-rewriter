@@ -23,6 +23,8 @@ public class CallGraph
 
     public ConcurrentBag<GenericInstantiation> GenericInstantiations { get; } = new();
 
+    public ConcurrentBag<LambdaAsyncOverload> LambdaAsyncOverloads { get; } = new();
+
     /// <summary>
     /// Interface mappings from problematic interface analysis (sync → async interface names).
     /// When set, the transformer will replace interface references in source files.
@@ -55,7 +57,7 @@ public class CallGraph
 
     private ConcurrentDictionary<string, List<GenericInstantiation>> _instantiationsByGeneric { get; init; } = new();
 
-    public CallGraph(ConcurrentBag<MethodCall> methodCalls, ConcurrentBag<InterfaceImplementation>? interfaceImplementations = null, ConcurrentBag<MethodOverride>? methodOverrides = null, ConcurrentBag<GenericInstantiation>? genericInstantiations = null)
+    public CallGraph(ConcurrentBag<MethodCall> methodCalls, ConcurrentBag<InterfaceImplementation>? interfaceImplementations = null, ConcurrentBag<MethodOverride>? methodOverrides = null, ConcurrentBag<GenericInstantiation>? genericInstantiations = null, ConcurrentBag<LambdaAsyncOverload>? lambdaAsyncOverloads = null)
     {
         Calls = methodCalls;
         _callsByCaller = new ConcurrentDictionary<string, List<MethodCall>>(methodCalls
@@ -96,6 +98,11 @@ public class CallGraph
             _instantiationsByGeneric = new ConcurrentDictionary<string, List<GenericInstantiation>>(genericInstantiations
                 .GroupBy(gi => gi.GenericMethodId)
                 .Select(g => new KeyValuePair<string, List<GenericInstantiation>>(g.Key, g.ToList())));
+        }
+
+        if (lambdaAsyncOverloads != null)
+        {
+            LambdaAsyncOverloads = lambdaAsyncOverloads;
         }
     }
     

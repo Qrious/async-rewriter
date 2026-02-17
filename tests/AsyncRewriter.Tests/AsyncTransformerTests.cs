@@ -1316,6 +1316,80 @@ class MyService
         return graph;
     }
 
+    [Fact]
+    public async Task TransformSourceAsync_LambdaWithAsyncOverload_AwaitsParentCall()
+    {
+        // When a lambda arg becomes async, the parent Execute() call resolves to
+        // async overload returning Task<string>, so it needs await
+        var source = @"using System;
+using System.Threading.Tasks;
+class MyService
+{
+    string GetName()
+    {
+        return Execute(session => session.GetName());
+    }
+    T Execute<T>(Func<ISession, T> func) => default;
+    Task<T> Execute<T>(Func<ISession, Task<T>> func) => default;
+}
+interface ISession { string GetName(); }";
+
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.GetName()",
+                OriginalReturnType = "string",
+                NewReturnType = "Task<string>",
+                NeedsAsyncKeyword = true,
+                CallSitesToTransform = new List<CallSiteTransformation>
+                {
+                    // Line 7: the Execute() call needs await (async overload)
+                    new() { LineNumber = 7, OriginalCallExpression = "Execute(session => session.GetName())" }
+                }
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(source, transformations);
+
+        result.Should().Contain("async Task<string> GetName()");
+        result.Should().Contain("await Execute(");
+    }
+
+    [Fact]
+    public async Task TransformSourceAsync_LambdaWithoutAsyncOverload_NoAwaitOnParentCall()
+    {
+        // When there's no async overload, the parent call should NOT get await
+        var source = @"using System;
+class MyService
+{
+    string GetName()
+    {
+        return Execute(session => session.GetName());
+    }
+    T Execute<T>(Func<string, T> func) => default;
+}";
+
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.GetName()",
+                OriginalReturnType = "string",
+                NewReturnType = "Task<string>",
+                NeedsAsyncKeyword = true,
+                // No call sites to transform — no async overload detected
+                CallSitesToTransform = new List<CallSiteTransformation>()
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(source, transformations);
+
+        // Method return type should change but Execute should NOT be awaited
+        result.Should().Contain("Task<string> GetName()");
+        result.Should().NotContain("await Execute(");
+    }
+
     private static CallGraph CreateFloodedCallGraph(string tempFile)
     {
         var methods = new ConcurrentDictionary<string, MethodNode>();

@@ -28,6 +28,7 @@ public class CallGraphBuilder : ICallGraphBuilder
     private readonly ConcurrentBag<InterfaceImplementation> _implementations = new();
     private readonly ConcurrentBag<MethodOverride> _overrides = new();
     private readonly ConcurrentBag<GenericInstantiation> _genericInstantiations = new();
+    private readonly ConcurrentBag<LambdaAsyncOverload> _lambdaAsyncOverloads = new();
 
 
     public CallGraphBuilder(IMethodExtractorFactory methodExtractorFactory, IMethodCallExtractorFactory methodCallExtractorFactory, ILogger<CallGraphBuilder> logger)
@@ -54,10 +55,10 @@ public class CallGraphBuilder : ICallGraphBuilder
        // Build a resolver that can find SemanticModels across all projects in the solution
        var resolver = await SolutionSemanticModelResolver.CreateAsync(solution, cancellationToken);
 
-       await Build(solution, (Methods: _methods, Calls: _calls), async (root, semanticModel, filePath, context, ct) =>
-           await (await _methodCallExtractorFactory.Create()).Extract(callGraphId, root, semanticModel, filePath, context.Methods, context.Calls, resolver, ct), cancellationToken);
-       
-       return new CallGraph(_calls, _implementations, _overrides, _genericInstantiations)
+       await Build(solution, (Methods: _methods, Calls: _calls, LambdaOverloads: _lambdaAsyncOverloads), async (root, semanticModel, filePath, context, ct) =>
+           await (await _methodCallExtractorFactory.Create()).Extract(callGraphId, root, semanticModel, filePath, context.Methods, context.Calls, resolver, context.LambdaOverloads, ct), cancellationToken);
+
+       return new CallGraph(_calls, _implementations, _overrides, _genericInstantiations, _lambdaAsyncOverloads)
        {
            Methods = _methods,
        };

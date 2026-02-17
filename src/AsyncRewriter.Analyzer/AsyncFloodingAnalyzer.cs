@@ -97,6 +97,30 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
             }
         }
 
+        // Post-process: for lambdas that got flooded and have async overloads,
+        // add synthetic call edges so the parent invocation gets await
+        var syntheticCalls = new List<MethodCall>();
+        foreach (var lao in callGraph.LambdaAsyncOverloads)
+        {
+            if (floodedIds.Contains(lao.LambdaMethodId))
+            {
+                // The caller method is flooded (it's a caller of the lambda)
+                // Add an edge from the caller to the async overload so it gets await
+                syntheticCalls.Add(new MethodCall
+                {
+                    CallGraphId = callGraph.Id,
+                    Id = Guid.NewGuid().ToString(),
+                    CallerId = lao.CallerMethodId,
+                    CalleeId = lao.AsyncOverloadMethodId,
+                    LineNumber = lao.ParentCallLineNumber,
+                    FilePath = lao.FilePath
+                });
+
+                // Ensure the async overload is marked as flooded (it returns Task already)
+                floodedIds.Add(lao.AsyncOverloadMethodId);
+            }
+        }
+
         // Build new call graph with transformed return types
         var newGraphId = Guid.NewGuid().ToString();
         var newMethods = new ConcurrentDictionary<string, MethodNode>();
@@ -114,8 +138,9 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
             };
         }
 
+        var allCalls = callGraph.Calls.Concat(syntheticCalls);
         var newCalls = new ConcurrentBag<MethodCall>(
-            callGraph.Calls.Select(c => c with { CallGraphId = newGraphId }));
+            allCalls.Select(c => c with { CallGraphId = newGraphId }));
 
         var newImpls = new ConcurrentBag<InterfaceImplementation>(
             callGraph.InterfaceImplementations.Select(i => new InterfaceImplementation
@@ -141,7 +166,9 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                 GenericMethodId = gi.GenericMethodId
             }));
 
-        var newGraph = new CallGraph(newCalls, newImpls, newOverrides, newGenericInstantiations)
+        var newLambdaAsyncOverloads = new ConcurrentBag<LambdaAsyncOverload>(callGraph.LambdaAsyncOverloads);
+
+        var newGraph = new CallGraph(newCalls, newImpls, newOverrides, newGenericInstantiations, newLambdaAsyncOverloads)
         {
             Id = newGraphId,
             ProjectName = callGraph.ProjectName + "-async",
@@ -231,6 +258,25 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                 TryEnqueue(ovr.OverridingMethodId, FloodReason.Override);
         }
 
+        // Post-process lambda async overloads (same as AnalyzeFloodingAsync)
+        var syntheticCalls = new List<MethodCall>();
+        foreach (var lao in callGraph.LambdaAsyncOverloads)
+        {
+            if (floodedIds.Contains(lao.LambdaMethodId))
+            {
+                syntheticCalls.Add(new MethodCall
+                {
+                    CallGraphId = callGraph.Id,
+                    Id = Guid.NewGuid().ToString(),
+                    CallerId = lao.CallerMethodId,
+                    CalleeId = lao.AsyncOverloadMethodId,
+                    LineNumber = lao.ParentCallLineNumber,
+                    FilePath = lao.FilePath
+                });
+                floodedIds.Add(lao.AsyncOverloadMethodId);
+            }
+        }
+
         // Build new call graph with transformed return types (same as AnalyzeFloodingAsync)
         var newGraphId = Guid.NewGuid().ToString();
         var newMethods = new ConcurrentDictionary<string, MethodNode>();
@@ -248,8 +294,9 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
             };
         }
 
+        var allCalls = callGraph.Calls.Concat(syntheticCalls);
         var newCalls = new ConcurrentBag<MethodCall>(
-            callGraph.Calls.Select(c => c with { CallGraphId = newGraphId }));
+            allCalls.Select(c => c with { CallGraphId = newGraphId }));
 
         var newImpls = new ConcurrentBag<InterfaceImplementation>(
             callGraph.InterfaceImplementations.Select(i => new InterfaceImplementation
@@ -275,7 +322,9 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                 GenericMethodId = gi.GenericMethodId
             }));
 
-        var newGraph = new CallGraph(newCalls, newImpls, newOverrides, newGenericInstantiations)
+        var newLambdaAsyncOverloads = new ConcurrentBag<LambdaAsyncOverload>(callGraph.LambdaAsyncOverloads);
+
+        var newGraph = new CallGraph(newCalls, newImpls, newOverrides, newGenericInstantiations, newLambdaAsyncOverloads)
         {
             Id = newGraphId,
             ProjectName = callGraph.ProjectName + "-async",

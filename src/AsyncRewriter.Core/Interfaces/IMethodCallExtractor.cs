@@ -33,4 +33,15 @@ public interface IMethodCallExtractor
         ConcurrentBag<MethodCall> call,
         ISemanticModelResolver semanticModelResolver,
         CancellationToken cancellationToken = default);
+
+    Task Extract(
+        Guid callGraphId,
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        string filePath,
+        ConcurrentDictionary<string, MethodNode> methods,
+        ConcurrentBag<MethodCall> call,
+        ISemanticModelResolver semanticModelResolver,
+        ConcurrentBag<LambdaAsyncOverload> lambdaAsyncOverloads,
+        CancellationToken cancellationToken = default);
 }
