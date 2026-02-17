@@ -701,7 +701,8 @@ public class AsyncTransformer : IAsyncTransformer
     /// <summary>
     /// Resolves the namespace for the AsyncOutResult class.
     /// Uses the CallGraph's explicit setting if available, otherwise looks for an existing
-    /// AsyncOutResult type in the call graph's methods, falling back to the default namespace.
+    /// AsyncOutResult type in the call graph's methods, then tries to derive from the
+    /// methods being transformed, falling back to the default namespace.
     /// </summary>
     private static string ResolveAsyncOutResultNamespace(CallGraph callGraph, string filePath)
     {
@@ -715,7 +716,13 @@ public class AsyncTransformer : IAsyncTransformer
         if (asyncOutResultMethod != null && !string.IsNullOrEmpty(asyncOutResultMethod.ContainingNamespace))
             return asyncOutResultMethod.ContainingNamespace;
 
-        // 3. Fall back to default
+        // 3. Derive from TryPattern out-parameter methods that need the AsyncOutResult type
+        var tryPatternMethod = callGraph.Methods.Values
+            .FirstOrDefault(m => m.HasOutParameters && !string.IsNullOrEmpty(m.ContainingNamespace));
+        if (tryPatternMethod != null)
+            return tryPatternMethod.ContainingNamespace;
+
+        // 4. Fall back to default
         return AsyncOutResultGenerator.DefaultNamespace;
     }
 

@@ -404,6 +404,25 @@ class Program
                                 System.Console.WriteLine($"    {m.Method.Id}: {m.OriginalReturnType} → {m.NewAsyncReturnType} ({pattern})");
                             }
                             System.Console.WriteLine();
+
+                            // Prompt for AsyncOutResult namespace if BoolTryPattern methods exist
+                            var hasTryPattern = outParamMethods.Any(m => m.TransformKind == OutParameterTransformKind.BoolTryPattern);
+                            if (hasTryPattern)
+                            {
+                                // Auto-detect namespace from the first TryPattern method
+                                var detectedNs = outParamMethods
+                                    .Where(m => m.TransformKind == OutParameterTransformKind.BoolTryPattern
+                                        && !string.IsNullOrEmpty(m.Method.ContainingNamespace))
+                                    .Select(m => m.Method.ContainingNamespace)
+                                    .FirstOrDefault();
+
+                                var defaultNs = detectedNs ?? AsyncOutResultGenerator.DefaultNamespace;
+                                System.Console.Write($"Namespace for AsyncOutResult<T> class [{defaultNs}]: ");
+                                var nsResponse = System.Console.ReadLine()?.Trim();
+                                asyncGraph.AsyncOutResultNamespace = string.IsNullOrEmpty(nsResponse) ? defaultNs : nsResponse;
+                                System.Console.WriteLine($"  Using namespace: {asyncGraph.AsyncOutResultNamespace}");
+                                System.Console.WriteLine();
+                            }
                         }
 
                         System.Console.Write("Would you like to transform the source files? [Y/n] ");
