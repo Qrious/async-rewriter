@@ -311,6 +311,67 @@ interface IRepo
     }
 
     [Fact]
+    public async Task BoolTryPattern_DerivesNamespaceFromMethodWhenNotExplicitlySet()
+    {
+        var source = @"namespace X.Common
+{
+    class Cache
+    {
+        private string _value = ""hello"";
+        bool TryGetValue(string key, out string value)
+        {
+            value = _value;
+            return true;
+        }
+    }
+}";
+
+        var tempDir = Path.Combine(Path.GetTempPath(), $"outparam_test_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        var tempFile = Path.Combine(tempDir, "Cache.cs");
+        await File.WriteAllTextAsync(tempFile, source);
+
+        try
+        {
+            var methods = new ConcurrentDictionary<string, MethodNode>();
+            methods["Cache.TryGetValue(string, string)"] = new MethodNode
+            {
+                CallGraphId = "test",
+                Id = "Cache.TryGetValue(string, string)",
+                Name = "TryGetValue",
+                ContainingType = "Cache",
+                ContainingNamespace = "X.Common",
+                ReturnType = "Task<bool>",
+                Parameters = new List<string> { "string key", "string value" },
+                ParameterRefKinds = new List<string?> { null, "out" },
+                FilePath = tempFile,
+                StartLine = 6, EndLine = 10
+            };
+
+            var calls = new ConcurrentBag<MethodCall>();
+            var callGraph = new CallGraph(calls) { ProjectName = "test-async" };
+            foreach (var (k, v) in methods)
+                callGraph.Methods[k] = v;
+
+            // Do NOT set AsyncOutResultNamespace — should auto-derive from method's ContainingNamespace
+            var result = await _transformer.TransformProjectAsync(tempDir, callGraph);
+
+            result.Success.Should().BeTrue();
+            result.ModifiedFiles.Should().HaveCount(1);
+
+            var transformed = result.ModifiedFiles[0].TransformedContent;
+
+            // Should use the method's ContainingNamespace, not the hardcoded default
+            transformed.Should().Contain("using X.Common;");
+            transformed.Should().NotContain("using AsyncRewriter.Generated;");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
+    [Fact]
     public void OutParameterAnalyzer_DetectsOutParameterMethods()
     {
         var originalMethods = new ConcurrentDictionary<string, MethodNode>();
