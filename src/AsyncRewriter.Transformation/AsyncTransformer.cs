@@ -349,10 +349,19 @@ public class AsyncTransformer : IAsyncTransformer
 
         newRoot = EnsureUsingDirective(newRoot, "System.Threading.Tasks");
 
-        // Check if any out-parameter methods were transformed - if so, add call site rewriting
+        // Check if any out-parameter methods were transformed
         var hasOutParamMethods = methodsByStartLine.Values.Any(m => m.OutParameterInfo != null);
         if (hasOutParamMethods)
         {
+            // Add using for AsyncOutResult if any BoolTryPattern methods were transformed
+            var hasTryPattern = methodsByStartLine.Values.Any(m =>
+                m.OutParameterInfo is { IsTryPattern: true });
+            if (hasTryPattern)
+            {
+                var outResultNs = ResolveAsyncOutResultNamespace(callGraph, filePath);
+                newRoot = EnsureUsingDirective(newRoot, outResultNs);
+            }
+
             // Build out-parameter call site info for callers of out-param methods
             var outParamCallSites = BuildOutParameterCallSites(callGraph, outParamMethodsById, floodedMethodIds);
             if (outParamCallSites.Count > 0)
@@ -687,6 +696,27 @@ public class AsyncTransformer : IAsyncTransformer
             parent = parent.Parent;
         }
         return string.Empty;
+    }
+
+    /// <summary>
+    /// Resolves the namespace for the AsyncOutResult class.
+    /// Uses the CallGraph's explicit setting if available, otherwise looks for an existing
+    /// AsyncOutResult type in the call graph's methods, falling back to the default namespace.
+    /// </summary>
+    private static string ResolveAsyncOutResultNamespace(CallGraph callGraph, string filePath)
+    {
+        // 1. Use explicit setting from call graph if available
+        if (!string.IsNullOrEmpty(callGraph.AsyncOutResultNamespace))
+            return callGraph.AsyncOutResultNamespace;
+
+        // 2. Look for an existing AsyncOutResult class in the call graph's methods
+        var asyncOutResultMethod = callGraph.Methods.Values
+            .FirstOrDefault(m => m.ContainingType == AsyncOutResultGenerator.ClassName);
+        if (asyncOutResultMethod != null && !string.IsNullOrEmpty(asyncOutResultMethod.ContainingNamespace))
+            return asyncOutResultMethod.ContainingNamespace;
+
+        // 3. Fall back to default
+        return AsyncOutResultGenerator.DefaultNamespace;
     }
 
     /// <summary>
