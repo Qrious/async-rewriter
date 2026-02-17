@@ -112,8 +112,10 @@ static class SyncHelper
 
         var result = await _transformer.TransformSourceAsync(source, transformations);
 
-        result.Should().Contain("async Task Connect()");
-        result.Should().Contain("await _repo.Open()");
+        result.Should().Contain("Task Connect()");
+        result.Should().Contain("return _repo.Open();");
+        result.Should().NotContain("async");
+        result.Should().NotContain("await");
         result.Should().Contain("using System.Threading.Tasks;");
         AssertCompiles(result);
     }
@@ -147,8 +149,10 @@ static class SyncHelper
 
         var result = await _transformer.TransformSourceAsync(source, transformations);
 
-        result.Should().Contain("async Task<int> Fetch()");
-        result.Should().Contain("await _repo.GetValue()");
+        result.Should().Contain("Task<int> Fetch()");
+        result.Should().Contain("return _repo.GetValue();");
+        result.Should().NotContain("async");
+        result.Should().NotContain("await");
         AssertCompiles(result);
     }
 
@@ -388,8 +392,10 @@ class MyService
 
             result.Success.Should().BeTrue();
             result.ModifiedFiles.Should().HaveCount(1);
-            result.ModifiedFiles[0].TransformedContent.Should().Contain("async Task DoWork()");
-            result.ModifiedFiles[0].TransformedContent.Should().Contain("await _repo.Connect()");
+            result.ModifiedFiles[0].TransformedContent.Should().Contain("Task DoWork()");
+            result.ModifiedFiles[0].TransformedContent.Should().Contain("return _repo.Connect();");
+            result.ModifiedFiles[0].TransformedContent.Should().NotContain("async");
+            result.ModifiedFiles[0].TransformedContent.Should().NotContain("await");
             AssertCompiles(result.ModifiedFiles[0].TransformedContent);
         }
         finally
@@ -442,10 +448,12 @@ class MyService
 
         var result = await _transformer.TransformSourceAsync(source, transformations);
 
-        result.Should().Contain("async Task First()");
-        result.Should().Contain("await _repo.Open()");
-        result.Should().Contain("async Task<int> Second()");
-        result.Should().Contain("await _repo.GetCount()");
+        result.Should().Contain("Task First()");
+        result.Should().Contain("return _repo.Open();");
+        result.Should().Contain("Task<int> Second()");
+        result.Should().Contain("return _repo.GetCount();");
+        result.Should().NotContain("async");
+        result.Should().NotContain("await");
         AssertCompiles(result);
     }
 
@@ -1079,9 +1087,11 @@ class MyService
         var result = await _transformer.TransformSourceAsync(
             source, transformations, syncWrapperIds);
 
-        result.Should().Contain("await _repo.GetValue()");
+        result.Should().Contain("return _repo.GetValue();");
         result.Should().NotContain("RunSync");
-        result.Should().Contain("async Task<int> Fetch()");
+        result.Should().Contain("Task<int> Fetch()");
+        result.Should().NotContain("async");
+        result.Should().NotContain("await");
         AssertCompiles(result);
     }
 
@@ -1121,8 +1131,10 @@ class MyService
         var result = await _transformer.TransformSourceAsync(
             source, transformations, syncWrapperIds);
 
-        result.Should().Contain("await _repo.GetValue()");
+        result.Should().Contain("return _repo.GetValue();");
         result.Should().NotContain("RunSync");
+        result.Should().NotContain("async");
+        result.Should().NotContain("await");
         AssertCompiles(result);
     }
 
@@ -1162,9 +1174,11 @@ class MyService
         var result = await _transformer.TransformSourceAsync(
             source, transformations, syncWrapperIds);
 
-        result.Should().Contain("await _repo.Open()");
+        result.Should().Contain("return _repo.Open();");
         result.Should().NotContain("RunSync");
-        result.Should().Contain("async Task Process()");
+        result.Should().Contain("Task Process()");
+        result.Should().NotContain("async");
+        result.Should().NotContain("await");
         AssertCompiles(result);
     }
 
@@ -1192,9 +1206,11 @@ class MyService
 
             result.Success.Should().BeTrue();
             result.ModifiedFiles.Should().HaveCount(1);
-            result.ModifiedFiles[0].TransformedContent.Should().Contain("await _repo.GetValue()");
+            result.ModifiedFiles[0].TransformedContent.Should().Contain("return _repo.GetValue();");
             result.ModifiedFiles[0].TransformedContent.Should().NotContain("RunSync");
-            result.ModifiedFiles[0].TransformedContent.Should().Contain("async Task<int> Fetch()");
+            result.ModifiedFiles[0].TransformedContent.Should().Contain("Task<int> Fetch()");
+            result.ModifiedFiles[0].TransformedContent.Should().NotContain("async");
+            result.ModifiedFiles[0].TransformedContent.Should().NotContain("await");
             AssertCompiles(result.ModifiedFiles[0].TransformedContent);
         }
         finally
@@ -1352,8 +1368,10 @@ interface ISession { string GetName(); }";
 
         var result = await _transformer.TransformSourceAsync(source, transformations);
 
-        result.Should().Contain("async Task<string> GetName()");
-        result.Should().Contain("await Execute(");
+        result.Should().Contain("Task<string> GetName()");
+        result.Should().Contain("return Execute(");
+        result.Should().NotContain("async Task<string>");
+        result.Should().NotContain("await");
     }
 
     [Fact]
@@ -1437,5 +1455,77 @@ class MyService
         };
 
         return graph;
+    }
+
+    [Fact]
+    public async Task TransformSourceAsync_VoidMethod_MultipleStatements_StillUsesAsyncAwait()
+    {
+        var source = @"using System;
+
+class MyService
+{
+    private IRepo _repo;
+    void Process()
+    {
+        Console.WriteLine(""connecting"");
+        _repo.Open();
+    }
+}";
+
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.Process()",
+                OriginalReturnType = "void",
+                NewReturnType = "Task",
+                NeedsAsyncKeyword = true,
+                CallSitesToTransform = new List<CallSiteTransformation>
+                {
+                    new() { LineNumber = 9, OriginalCallExpression = "_repo.Open()" }
+                }
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(source, transformations);
+
+        result.Should().Contain("async Task Process()");
+        result.Should().Contain("await _repo.Open()");
+        AssertCompiles(result);
+    }
+
+    [Fact]
+    public async Task TransformSourceAsync_ReturningMethod_MismatchedReturnType_StillUsesAsyncAwait()
+    {
+        // When the awaited call returns a different type, async/await is still needed
+        var source = @"class MyService
+{
+    private IRepo _repo;
+    string Describe()
+    {
+        return _repo.GetValue().ToString();
+    }
+}";
+
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.Describe()",
+                OriginalReturnType = "string",
+                NewReturnType = "Task<string>",
+                NeedsAsyncKeyword = true,
+                CallSitesToTransform = new List<CallSiteTransformation>
+                {
+                    new() { LineNumber = 6, OriginalCallExpression = "_repo.GetValue()" }
+                }
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(source, transformations);
+
+        result.Should().Contain("async Task<string> Describe()");
+        result.Should().Contain("await");
+        AssertCompiles(result);
     }
 }

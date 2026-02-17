@@ -266,19 +266,19 @@ public class MapperScenarioIntegrationTests
             // Verify individual file transformations
             var mapperBFile = result.ModifiedFiles.FirstOrDefault(f => f.FilePath == mapperBPath);
             mapperBFile.Should().NotBeNull("MapperB should be transformed");
-            mapperBFile!.TransformedContent.Should().Contain("async Task MapInto(",
-                "MapperB.MapInto should become async");
-            mapperBFile.TransformedContent.Should().Contain("await",
-                "MapperB should have await for SaveAsync");
+            mapperBFile!.TransformedContent.Should().Contain("Task MapInto(",
+                "MapperB.MapInto should return Task");
+            mapperBFile.TransformedContent.Should().Contain("return _db.SaveAsync();",
+                "MapperB should directly return the task");
             mapperBFile.TransformedContent.Should().Contain("IMapIntoAsync<bool, string>",
                 "MapperB should implement IMapIntoAsync");
 
             var mapperAFile = result.ModifiedFiles.FirstOrDefault(f => f.FilePath == mapperAPath);
             mapperAFile.Should().NotBeNull("MapperA should be transformed");
-            mapperAFile!.TransformedContent.Should().Contain("async Task MapInto(",
-                "MapperA.MapInto should become async");
-            mapperAFile.TransformedContent.Should().Contain("await",
-                "MapperA should have await for MapperB.MapInto call");
+            mapperAFile!.TransformedContent.Should().Contain("Task MapInto(",
+                "MapperA.MapInto should return Task");
+            mapperAFile.TransformedContent.Should().Contain("return _mapperB.MapInto(",
+                "MapperA should directly return the task from MapperB.MapInto call");
             mapperAFile.TransformedContent.Should().Contain("IMapIntoAsync<int, string>",
                 "MapperA should implement IMapIntoAsync");
             mapperAFile.TransformedContent.Should().Contain("IMapIntoAsync<bool, string>",
@@ -286,8 +286,8 @@ public class MapperScenarioIntegrationTests
 
             var mapperCFile = result.ModifiedFiles.FirstOrDefault(f => f.FilePath == mapperCPath);
             mapperCFile.Should().NotBeNull("MapperC should be transformed");
-            mapperCFile!.TransformedContent.Should().Contain("async Task MapInto(",
-                "MapperC.MapInto should become async");
+            mapperCFile!.TransformedContent.Should().Contain("Task MapInto(",
+                "MapperC.MapInto should return Task");
             mapperCFile.TransformedContent.Should().Contain("IMapIntoAsync<double, string>",
                 "MapperC should implement IMapIntoAsync");
 

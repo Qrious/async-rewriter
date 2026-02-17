@@ -103,6 +103,11 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
             // Sync wrappers: just change the return type, don't add async/await
             // The wrapper body will be removed/rewritten separately
         }
+        else if (hasAwaitableCalls && TryOptimizeDirectTaskReturn(visited, originalReturnType) is { } optimized)
+        {
+            // Single awaitable call that can be returned directly without async/await
+            visited = optimized;
+        }
         else if (hasAwaitableCalls)
         {
             // Add async modifier
@@ -681,6 +686,52 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
                     IdentifierName("FromResult")))
                 .WithArgumentList(ArgumentList(SingletonSeparatedList(Argument(expr))));
         }
+    }
+
+    /// <summary>
+    /// If the method body is a single statement with an await that can be returned directly
+    /// (matching Task type), removes the await and returns the task directly without async.
+    /// Returns null if the optimization doesn't apply.
+    /// </summary>
+    private static MethodDeclarationSyntax? TryOptimizeDirectTaskReturn(
+        MethodDeclarationSyntax method, string originalReturnType)
+    {
+        if (method.Body == null || method.Body.Statements.Count != 1)
+            return null;
+
+        var stmt = method.Body.Statements[0];
+
+        // Case 1: void method → single ExpressionStatement with await
+        // e.g. { await _repo.Open(); } → { return _repo.Open(); }
+        if (originalReturnType == "void"
+            && stmt is ExpressionStatementSyntax { Expression: AwaitExpressionSyntax awaitExpr1 })
+        {
+            var returnStmt = ReturnStatement(
+                awaitExpr1.Expression.WithLeadingTrivia(Space))
+                .WithLeadingTrivia(stmt.GetLeadingTrivia())
+                .WithTrailingTrivia(stmt.GetTrailingTrivia());
+            return method.WithBody(method.Body.WithStatements(SingletonList<StatementSyntax>(returnStmt)));
+        }
+
+        // Case 2: returning method → single ReturnStatement with await
+        // e.g. { return await _repo.GetValue(); } → { return _repo.GetValue(); }
+        if (stmt is ReturnStatementSyntax { Expression: AwaitExpressionSyntax awaitExpr2 })
+        {
+            var unwrapped = awaitExpr2.Expression;
+            var newReturn = ((ReturnStatementSyntax)stmt).WithExpression(
+                unwrapped.WithLeadingTrivia(awaitExpr2.GetLeadingTrivia()));
+            return method.WithBody(method.Body.WithStatements(SingletonList<StatementSyntax>(newReturn)));
+        }
+
+        // Case 3: expression-bodied with await
+        if (method.ExpressionBody?.Expression is AwaitExpressionSyntax awaitExpr3)
+        {
+            return method.WithExpressionBody(
+                method.ExpressionBody.WithExpression(
+                    awaitExpr3.Expression.WithLeadingTrivia(awaitExpr3.GetLeadingTrivia())));
+        }
+
+        return null;
     }
 
     private static MethodDeclarationSyntax AddAsyncModifier(MethodDeclarationSyntax method)

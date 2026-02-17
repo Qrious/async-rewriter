@@ -704,8 +704,10 @@ public class MapperD : IMapInto<long, string>
 
         var transformed = await _transformer.TransformSourceAsync(source, transformations);
 
-        transformed.Should().Contain("async Task MapInto(");
-        transformed.Should().Contain("await _db.SaveAsync()");
+        transformed.Should().Contain("Task MapInto(");
+        transformed.Should().Contain("return _db.SaveAsync();");
+        transformed.Should().NotContain("async");
+        transformed.Should().NotContain("await");
 
         // Replace IMapInto with IMapIntoAsync in the transformed source
         var replaced = InterfaceReplacer.Transform(transformed, MapIntoMappings);
@@ -740,8 +742,10 @@ public class MapperD : IMapInto<long, string>
 
         var transformed = await _transformer.TransformSourceAsync(source, transformations);
 
-        transformed.Should().Contain("async Task MapInto(");
-        transformed.Should().Contain("await _mapperB.MapInto(destination, source > 0)");
+        transformed.Should().Contain("Task MapInto(");
+        transformed.Should().Contain("return _mapperB.MapInto(destination, source > 0);");
+        transformed.Should().NotContain("async");
+        transformed.Should().NotContain("await");
 
         // Replace interface references
         var replaced = InterfaceReplacer.Transform(transformed, MapIntoMappings);
@@ -778,8 +782,10 @@ public class MapperD : IMapInto<long, string>
 
         var transformed = await _transformer.TransformSourceAsync(source, transformations);
 
-        transformed.Should().Contain("async Task MapInto(");
-        transformed.Should().Contain("await _validator.ValidateAsync()");
+        transformed.Should().Contain("Task MapInto(");
+        transformed.Should().Contain("return _validator.ValidateAsync();");
+        transformed.Should().NotContain("async");
+        transformed.Should().NotContain("await");
 
         var replaced = InterfaceReplacer.Transform(transformed, MapIntoMappings);
         replaced.Should().NotBeNull();
