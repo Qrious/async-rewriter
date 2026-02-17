@@ -75,6 +75,12 @@ interface IBuilder
     Task Build();
     Task<int> GetCount();
 }
+
+static class SyncHelper
+{
+    public static T RunSync<T>(System.Func<Task<T>> func) => func().GetAwaiter().GetResult();
+    public static void RunSync(System.Func<Task> func) => func().GetAwaiter().GetResult();
+}
 ";
 
     [Fact]
@@ -1035,6 +1041,228 @@ class MyService
         // The multiline chain formatting should be preserved
         result.Should().Contain(".SetName(\"test\")");
         result.Should().Contain("async Task Setup()");
+    }
+
+    [Fact]
+    public async Task TransformSourceAsync_SyncWrapperCall_ExpressionLambda_Unwrapped()
+    {
+        var source = @"class MyService
+{
+    private IRepo _repo;
+    int Fetch()
+    {
+        return SyncHelper.RunSync(() => _repo.GetValue());
+    }
+}";
+
+        var syncWrapperIds = new HashSet<string> { "SyncHelper.RunSync<int>(Func<Task<int>>)" };
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.Fetch()",
+                OriginalReturnType = "int",
+                NewReturnType = "Task<int>",
+                NeedsAsyncKeyword = true,
+                CallSitesToTransform = new List<CallSiteTransformation>
+                {
+                    new()
+                    {
+                        LineNumber = 6,
+                        OriginalCallExpression = "SyncHelper.RunSync(() => _repo.GetValue())",
+                        CalledMethodSignature = "SyncHelper.RunSync<int>(Func<Task<int>>)"
+                    }
+                }
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(
+            source, transformations, syncWrapperIds);
+
+        result.Should().Contain("await _repo.GetValue()");
+        result.Should().NotContain("RunSync");
+        result.Should().Contain("async Task<int> Fetch()");
+        AssertCompiles(result);
+    }
+
+    [Fact]
+    public async Task TransformSourceAsync_SyncWrapperCall_BlockLambda_Unwrapped()
+    {
+        var source = @"class MyService
+{
+    private IRepo _repo;
+    int Fetch()
+    {
+        return SyncHelper.RunSync(() => { return _repo.GetValue(); });
+    }
+}";
+
+        var syncWrapperIds = new HashSet<string> { "SyncHelper.RunSync<int>(Func<Task<int>>)" };
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.Fetch()",
+                OriginalReturnType = "int",
+                NewReturnType = "Task<int>",
+                NeedsAsyncKeyword = true,
+                CallSitesToTransform = new List<CallSiteTransformation>
+                {
+                    new()
+                    {
+                        LineNumber = 6,
+                        OriginalCallExpression = "SyncHelper.RunSync(() => { return _repo.GetValue(); })",
+                        CalledMethodSignature = "SyncHelper.RunSync<int>(Func<Task<int>>)"
+                    }
+                }
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(
+            source, transformations, syncWrapperIds);
+
+        result.Should().Contain("await _repo.GetValue()");
+        result.Should().NotContain("RunSync");
+        AssertCompiles(result);
+    }
+
+    [Fact]
+    public async Task TransformSourceAsync_SyncWrapperCall_VoidReturn_Unwrapped()
+    {
+        var source = @"class MyService
+{
+    private IRepo _repo;
+    void Process()
+    {
+        SyncHelper.RunSync(() => _repo.Open());
+    }
+}";
+
+        var syncWrapperIds = new HashSet<string> { "SyncHelper.RunSync(Func<Task>)" };
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.Process()",
+                OriginalReturnType = "void",
+                NewReturnType = "Task",
+                NeedsAsyncKeyword = true,
+                CallSitesToTransform = new List<CallSiteTransformation>
+                {
+                    new()
+                    {
+                        LineNumber = 6,
+                        OriginalCallExpression = "SyncHelper.RunSync(() => _repo.Open())",
+                        CalledMethodSignature = "SyncHelper.RunSync(Func<Task>)"
+                    }
+                }
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(
+            source, transformations, syncWrapperIds);
+
+        result.Should().Contain("await _repo.Open()");
+        result.Should().NotContain("RunSync");
+        result.Should().Contain("async Task Process()");
+        AssertCompiles(result);
+    }
+
+    [Fact]
+    public async Task TransformProjectAsync_SyncWrapperCall_DetectedAndUnwrapped()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "async-rewriter-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        var tempFile = Path.Combine(tempDir, "TestService.cs");
+
+        try
+        {
+            var source = @"class TestService
+{
+    private IRepo _repo;
+    int Fetch()
+    {
+        return SyncHelper.RunSync(() => _repo.GetValue());
+    }
+}";
+            await File.WriteAllTextAsync(tempFile, source);
+
+            var callGraph = CreateFloodedCallGraphWithSyncWrapper(tempFile);
+            var result = await _transformer.TransformProjectAsync(tempDir, callGraph);
+
+            result.Success.Should().BeTrue();
+            result.ModifiedFiles.Should().HaveCount(1);
+            result.ModifiedFiles[0].TransformedContent.Should().Contain("await _repo.GetValue()");
+            result.ModifiedFiles[0].TransformedContent.Should().NotContain("RunSync");
+            result.ModifiedFiles[0].TransformedContent.Should().Contain("async Task<int> Fetch()");
+            AssertCompiles(result.ModifiedFiles[0].TransformedContent);
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
+    private static CallGraph CreateFloodedCallGraphWithSyncWrapper(string tempFile)
+    {
+        var methods = new ConcurrentDictionary<string, MethodNode>();
+        methods["TestService.Fetch()"] = new MethodNode
+        {
+            CallGraphId = "test",
+            Id = "TestService.Fetch()",
+            Name = "Fetch",
+            ContainingType = "TestService",
+            ContainingNamespace = "",
+            ReturnType = "Task<int>", // flooded
+            Parameters = new List<string>(),
+            FilePath = tempFile,
+            StartLine = 4,
+            EndLine = 7
+        };
+        methods["SyncHelper.RunSync<int>(Func<Task<int>>)"] = new MethodNode
+        {
+            CallGraphId = "test",
+            Id = "SyncHelper.RunSync<int>(Func<Task<int>>)",
+            Name = "RunSync",
+            ContainingType = "SyncHelper",
+            ContainingNamespace = "",
+            ReturnType = "Task<int>", // flooded (it was originally int with Func<Task<int>> param)
+            Parameters = new List<string> { "Func<Task<int>> func" },
+            FilePath = "external",
+            StartLine = 0,
+            EndLine = 0
+        };
+        methods["IRepo.GetValue()"] = new MethodNode
+        {
+            CallGraphId = "test",
+            Id = "IRepo.GetValue()",
+            Name = "GetValue",
+            ContainingType = "IRepo",
+            ContainingNamespace = "",
+            ReturnType = "Task<int>",
+            Parameters = new List<string>(),
+            FilePath = "external",
+            StartLine = 0,
+            EndLine = 0
+        };
+
+        var calls = new ConcurrentBag<MethodCall>();
+        calls.Add(new MethodCall
+        {
+            CallGraphId = "test",
+            Id = "call1",
+            CallerId = "TestService.Fetch()",
+            CalleeId = "SyncHelper.RunSync<int>(Func<Task<int>>)",
+            LineNumber = 6,
+            FilePath = tempFile
+        });
+
+        var graph = new CallGraph(calls)
+        {
+            Methods = methods
+        };
+
+        return graph;
     }
 
     private static CallGraph CreateFloodedCallGraphWithInterface(string tempFile)

@@ -126,9 +126,15 @@ public class AsyncTransformer : IAsyncTransformer
             {
                 if (!callSitesByLine.ContainsKey(callSite.LineNumber))
                 {
+                    // Use CalledMethodSignature as CalleeMethodId when available (it identifies the
+                    // actual callee), falling back to the parent method ID for backwards compatibility
+                    var calleeId = !string.IsNullOrEmpty(callSite.CalledMethodSignature)
+                        ? callSite.CalledMethodSignature
+                        : info.MethodId;
+
                     callSitesByLine[callSite.LineNumber] = new CallSiteInfo
                     {
-                        CalleeMethodId = info.MethodId,
+                        CalleeMethodId = calleeId,
                         LineNumber = callSite.LineNumber,
                         CalleeMethodName = ExtractMethodNameFromExpression(callSite.OriginalCallExpression)
                     };
@@ -341,7 +347,8 @@ public class AsyncTransformer : IAsyncTransformer
             }
         }
 
-        var rewriter = new AsyncMethodRewriter(methodsByStartLine, callSitesByLine);
+        var syncWrapperMethodIds = DetectSyncWrapperMethodIds(callGraph);
+        var rewriter = new AsyncMethodRewriter(methodsByStartLine, callSitesByLine, syncWrapperMethodIds);
         var newRoot = rewriter.Visit(root);
 
         if (!rewriter.AnyMethodTransformed)
@@ -615,6 +622,48 @@ public class AsyncTransformer : IAsyncTransformer
         return compilationUnit.AddUsings(usingDirective);
     }
 
+    private static readonly System.Text.RegularExpressions.Regex SyncWrapperFuncTaskRegex = new(
+        @"(?:System\.)?Func<(?:System\.Threading\.Tasks\.)?Task>",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static readonly System.Text.RegularExpressions.Regex SyncWrapperFuncTaskOfTRegex = new(
+        @"(?:System\.)?Func<(?:System\.Threading\.Tasks\.)?Task<(.+?)>>",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>
+    /// Detects sync wrapper methods in the call graph — methods with a Func&lt;Task&gt; or
+    /// Func&lt;Task&lt;T&gt;&gt; parameter that return void or T respectively.
+    /// Handles flooded call graphs where return types have been changed to Task/Task&lt;T&gt;.
+    /// </summary>
+    private static HashSet<string> DetectSyncWrapperMethodIds(CallGraph callGraph)
+    {
+        var result = new HashSet<string>();
+
+        foreach (var method in callGraph.Methods.Values)
+        {
+            // Use the original return type (reverse the flooding) for pattern matching
+            var originalReturnType = ReverseTaskReturnType(method.ReturnType);
+
+            foreach (var param in method.Parameters)
+            {
+                if (SyncWrapperFuncTaskRegex.IsMatch(param) && originalReturnType == "void")
+                {
+                    result.Add(method.Id);
+                    break;
+                }
+
+                var match = SyncWrapperFuncTaskOfTRegex.Match(param);
+                if (match.Success && originalReturnType == match.Groups[1].Value)
+                {
+                    result.Add(method.Id);
+                    break;
+                }
+            }
+        }
+
+        return result;
+    }
+
     private static bool IsTaskReturnType(string returnType)
     {
         return returnType == "Task"
@@ -797,6 +846,13 @@ public class AsyncTransformer : IAsyncTransformer
         if (nameStart >= parenIdx)
             return null;
 
-        return methodId.Substring(nameStart, parenIdx - nameStart);
+        var name = methodId.Substring(nameStart, parenIdx - nameStart);
+
+        // Strip generic type arguments (e.g., "RunSync<int>" → "RunSync")
+        var angleIdx = name.IndexOf('<');
+        if (angleIdx >= 0)
+            name = name.Substring(0, angleIdx);
+
+        return name;
     }
 }
