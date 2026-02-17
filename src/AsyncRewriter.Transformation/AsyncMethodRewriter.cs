@@ -389,16 +389,61 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         if (!_callSitesByLine.TryGetValue(line, out var callSiteInfo))
             return visited;
 
+        // When a CalleeMethodName is available, verify this invocation calls the expected method.
+        // This prevents wrapping a parent invocation in a chain (e.g., a.Method1().Method2())
+        // when only Method1 is the intended call site — both share the same start line.
+        if (callSiteInfo.CalleeMethodName is not null)
+        {
+            var invokedName = GetInvokedMethodName(node);
+            if (invokedName != null && invokedName != callSiteInfo.CalleeMethodName)
+                return visited;
+        }
+
         // Wrap with await — but only if not already awaited
         if (visited.Parent is AwaitExpressionSyntax)
             return visited;
 
         // Create await expression: move leading trivia to outer await, add space before invocation
         var leadingTrivia = visited.GetLeadingTrivia();
-        var awaitExpr = AwaitExpression(
+
+        // If this invocation is part of a member access chain (e.g., a.Method1().Method2()),
+        // wrap the await in parentheses so the result is (await a.Method1()).Method2()
+        // instead of the incorrect await a.Method1().Method2()
+        if (node.Parent is MemberAccessExpressionSyntax or ElementAccessExpressionSyntax
+                                                         or ConditionalAccessExpressionSyntax)
+        {
+            // Move trailing trivia (e.g., newline before .Method2()) to after the close paren
+            // so that multiline chains format as "(await a.Method1())\n  .Method2()"
+            // instead of "(await a.Method1()\n)  .Method2()"
+            var trailingTrivia = visited.GetTrailingTrivia();
+            var stripped = visited.WithoutLeadingTrivia().WithoutTrailingTrivia();
+            var awaitExpr = AwaitExpression(
+                Token(SyntaxKind.AwaitKeyword).WithTrailingTrivia(Space),
+                stripped);
+            return ParenthesizedExpression(awaitExpr)
+                .WithLeadingTrivia(leadingTrivia)
+                .WithTrailingTrivia(trailingTrivia);
+        }
+
+        var simpleAwaitExpr = AwaitExpression(
             Token(SyntaxKind.AwaitKeyword).WithTrailingTrivia(Space),
             visited.WithoutLeadingTrivia());
-        return awaitExpr.WithLeadingTrivia(leadingTrivia);
+        return simpleAwaitExpr.WithLeadingTrivia(leadingTrivia);
+    }
+
+    /// <summary>
+    /// Extracts the simple method name from an invocation expression.
+    /// For member access (e.g., obj.Method()), returns "Method".
+    /// For simple calls (e.g., Method()), returns "Method".
+    /// </summary>
+    private static string? GetInvokedMethodName(InvocationExpressionSyntax node)
+    {
+        return node.Expression switch
+        {
+            MemberAccessExpressionSyntax memberAccess => memberAccess.Name.Identifier.Text,
+            IdentifierNameSyntax identifier => identifier.Identifier.Text,
+            _ => null
+        };
     }
 
     /// <summary>
@@ -786,4 +831,10 @@ public class CallSiteInfo
 {
     public required string CalleeMethodId { get; init; }
     public required int LineNumber { get; init; }
+
+    /// <summary>
+    /// The simple method name of the callee (e.g., "Configure" for "IBuilder.Configure()").
+    /// Used to disambiguate when multiple invocations appear on the same line in a method chain.
+    /// </summary>
+    public string? CalleeMethodName { get; init; }
 }
