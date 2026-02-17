@@ -385,7 +385,7 @@ public class AsyncTransformer : IAsyncTransformer
         {
             var transformedTypeNames = new HashSet<string>(
                 methodsByStartLine.Values.Select(m => m.ContainingType));
-            transformedSource = InterfaceReplacer.Transform(transformedSource, callGraph.InterfaceMappings, transformedTypeNames)
+            transformedSource = InterfaceReplacer.Transform(transformedSource, callGraph.InterfaceMappings, transformedTypeNames, debug)
                 ?? transformedSource;
         }
         // else: no InterfaceMappings on call graph — nothing to replace
