@@ -403,6 +403,16 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         if (visited.Parent is AwaitExpressionSyntax)
             return visited;
 
+        // Determine the expression to await: either the invocation itself,
+        // or the unwrapped lambda body if this is a call to a sync wrapper
+        ExpressionSyntax expressionToAwait = visited;
+        if (_syncWrapperMethodIds.Contains(callSiteInfo.CalleeMethodId))
+        {
+            var unwrapped = TryUnwrapSyncWrapperCall(visited);
+            if (unwrapped != null)
+                expressionToAwait = unwrapped;
+        }
+
         // Create await expression: move leading trivia to outer await, add space before invocation
         var leadingTrivia = visited.GetLeadingTrivia();
 
@@ -416,7 +426,7 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
             // so that multiline chains format as "(await a.Method1())\n  .Method2()"
             // instead of "(await a.Method1()\n)  .Method2()"
             var trailingTrivia = visited.GetTrailingTrivia();
-            var stripped = visited.WithoutLeadingTrivia().WithoutTrailingTrivia();
+            var stripped = expressionToAwait.WithoutLeadingTrivia().WithoutTrailingTrivia();
             var awaitExpr = AwaitExpression(
                 Token(SyntaxKind.AwaitKeyword).WithTrailingTrivia(Space),
                 stripped);
@@ -427,7 +437,7 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
 
         var simpleAwaitExpr = AwaitExpression(
             Token(SyntaxKind.AwaitKeyword).WithTrailingTrivia(Space),
-            visited.WithoutLeadingTrivia());
+            expressionToAwait.WithoutLeadingTrivia());
         return simpleAwaitExpr.WithLeadingTrivia(leadingTrivia);
     }
 
@@ -444,6 +454,39 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
             IdentifierNameSyntax identifier => identifier.Identifier.Text,
             _ => null
         };
+    }
+
+    /// <summary>
+    /// Attempts to unwrap a sync wrapper invocation by extracting the body of the lambda argument.
+    /// For example: RunSync(() => _repo.GetAsync()) → _repo.GetAsync()
+    /// Returns null if the call cannot be unwrapped (no lambda argument, or complex lambda body).
+    /// </summary>
+    private static ExpressionSyntax? TryUnwrapSyncWrapperCall(InvocationExpressionSyntax invocation)
+    {
+        foreach (var arg in invocation.ArgumentList.Arguments)
+        {
+            if (arg.Expression is ParenthesizedLambdaExpressionSyntax parenLambda)
+            {
+                if (parenLambda.Body is ExpressionSyntax expr)
+                    return expr;
+                if (parenLambda.Body is BlockSyntax block
+                    && block.Statements.Count == 1
+                    && block.Statements[0] is ReturnStatementSyntax { Expression: not null } ret)
+                    return ret.Expression;
+            }
+
+            if (arg.Expression is SimpleLambdaExpressionSyntax simpleLambda)
+            {
+                if (simpleLambda.Body is ExpressionSyntax simpleExpr)
+                    return simpleExpr;
+                if (simpleLambda.Body is BlockSyntax simpleBlock
+                    && simpleBlock.Statements.Count == 1
+                    && simpleBlock.Statements[0] is ReturnStatementSyntax { Expression: not null } simpleRet)
+                    return simpleRet.Expression;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
