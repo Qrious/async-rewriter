@@ -635,6 +635,136 @@ interface IRepo
         node.HasOutParameters.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task OutParamMethod_WithAwaitableCalls_DoesNotUseTaskFromResult()
+    {
+        // An out-param method that also has awaitable calls should use async/await,
+        // NOT Task.FromResult wrapping (which produces wrong types in async methods)
+        var source = @"using System.Threading.Tasks;
+
+class Service
+{
+    private IRepo _repo;
+
+    bool TryConnect(out string status)
+    {
+        _repo.Open();
+        status = ""connected"";
+        return true;
+    }
+}
+
+interface IRepo
+{
+    Task Open();
+}
+";
+
+        var tempDir = Path.Combine(Path.GetTempPath(), $"outparam_test_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        var tempFile = Path.Combine(tempDir, "Service.cs");
+        await File.WriteAllTextAsync(tempFile, source);
+
+        try
+        {
+            var methods = new ConcurrentDictionary<string, MethodNode>();
+            var tryConnectId = "Service.TryConnect(string)";
+            methods[tryConnectId] = new MethodNode
+            {
+                CallGraphId = "test",
+                Id = tryConnectId,
+                Name = "TryConnect",
+                ContainingType = "Service",
+                ContainingNamespace = "",
+                ReturnType = "Task<bool>",
+                Parameters = new List<string> { "string status" },
+                ParameterRefKinds = new List<string?> { "out" },
+                FilePath = tempFile,
+                StartLine = 7,
+                EndLine = 12
+            };
+            methods["IRepo.Open()"] = new MethodNode
+            {
+                CallGraphId = "test",
+                Id = "IRepo.Open()",
+                Name = "Open",
+                ContainingType = "IRepo",
+                ContainingNamespace = "",
+                ReturnType = "Task",
+                Parameters = new List<string>(),
+                FilePath = tempFile,
+                StartLine = 16,
+                EndLine = 16
+            };
+
+            var calls = new ConcurrentBag<MethodCall>();
+            calls.Add(new MethodCall
+            {
+                CallGraphId = "test",
+                Id = $"{tryConnectId}->IRepo.Open()",
+                CallerId = tryConnectId,
+                CalleeId = "IRepo.Open()",
+                FilePath = tempFile,
+                LineNumber = 9
+            });
+
+            var graph = new CallGraph(calls) { ProjectName = "test-async" };
+            foreach (var (k, v) in methods)
+                graph.Methods[k] = v;
+
+            var result = await _transformer.TransformProjectAsync(tempDir, graph);
+
+            result.Success.Should().BeTrue();
+            var transformed = result.ModifiedFiles[0].TransformedContent;
+
+            // Method should be async (has awaitable calls)
+            transformed.Should().Contain("async Task<AsyncOutResult<string>>");
+            // Should NOT contain Task.FromResult (async method returns are auto-wrapped)
+            transformed.Should().NotContain("Task.FromResult");
+            // Should contain await for the inner call
+            transformed.Should().Contain("await");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
+    [Fact]
+    public void OutParameterCallSiteRewriter_DoesNotMatchWrongMethodByLine()
+    {
+        // If an unrelated invocation is on the same line as a registered out-param call site,
+        // it should NOT be transformed (method name mismatch)
+        var source = @"class Caller
+{
+    void Run()
+    {
+        var x = _client.GetWorkflowStateAsync(id);
+    }
+}";
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var root = tree.GetRoot();
+
+        // Register a call site for a DIFFERENT method at line 5
+        var callSites = new Dictionary<int, OutParameterCallSiteInfo>
+        {
+            [5] = new OutParameterCallSiteInfo
+            {
+                MethodName = "TryGetValueAsync",
+                IsTryPattern = true,
+                OutParameterIndices = new List<int> { 1 },
+                OutParameterNames = new List<string> { "value" },
+                LineNumber = 5
+            }
+        };
+
+        var rewriter = new OutParameterCallSiteRewriter(callSites);
+        var result = rewriter.Visit(root);
+
+        // The rewriter should NOT have transformed anything because method names don't match
+        rewriter.AnyTransformed.Should().BeFalse();
+    }
+
     private static CallGraph CreateCallGraphWithMethods(ConcurrentDictionary<string, MethodNode> methods)
     {
         var calls = new ConcurrentBag<MethodCall>();

@@ -63,6 +63,11 @@ public class OutParameterCallSiteRewriter : CSharpSyntaxRewriter
             if (!_callSitesByLine.TryGetValue(line, out var callSiteInfo))
                 continue;
 
+            // Verify the invocation's method name matches the expected call site
+            var invokedName = GetInvokedMethodName(invocation);
+            if (invokedName != null && !MethodNameMatches(invokedName, callSiteInfo.MethodName))
+                continue;
+
             if (callSiteInfo.IsTryPattern)
                 return TransformTryPatternCallSite(statement, invocation, callSiteInfo);
             else
@@ -194,6 +199,34 @@ public class OutParameterCallSiteRewriter : CSharpSyntaxRewriter
                     IdentifierName("var").WithTrailingTrivia(Space),
                     SingleVariableDesignation(Identifier(name))))).ToList();
         return ArgumentList(SeparatedList(args));
+    }
+
+    private static string? GetInvokedMethodName(InvocationExpressionSyntax invocation)
+    {
+        return invocation.Expression switch
+        {
+            MemberAccessExpressionSyntax memberAccess => memberAccess.Name.Identifier.Text,
+            IdentifierNameSyntax identifier => identifier.Identifier.Text,
+            _ => null
+        };
+    }
+
+    /// <summary>
+    /// Checks if the invoked method name matches the expected call site method name.
+    /// The call site MethodName may be the async version (e.g., "TryGetAsync") while
+    /// the invocation may still use the original sync name (e.g., "TryGet").
+    /// </summary>
+    private static bool MethodNameMatches(string invokedName, string callSiteMethodName)
+    {
+        if (string.Equals(invokedName, callSiteMethodName, StringComparison.Ordinal))
+            return true;
+        // callSiteMethodName might be the async variant: check if adding "Async" to invokedName matches
+        if (string.Equals(invokedName + "Async", callSiteMethodName, StringComparison.Ordinal))
+            return true;
+        // Or the invokedName might already be the async variant
+        if (string.Equals(invokedName, callSiteMethodName + "Async", StringComparison.Ordinal))
+            return true;
+        return false;
     }
 
     private static string ToCamelCase(string name)

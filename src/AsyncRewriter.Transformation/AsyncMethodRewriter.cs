@@ -566,7 +566,7 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
                 localDeclarations.Add(declaration);
             }
 
-            var bodyRewriter = new OutParameterReturnRewriter(outInfo);
+            var bodyRewriter = new OutParameterReturnRewriter(outInfo, isAsync: hasAwaitableCalls);
             var newBody = (BlockSyntax)bodyRewriter.Visit(visited.Body);
 
             // Prepend the local declarations to the body
@@ -596,10 +596,12 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
     private class OutParameterReturnRewriter : CSharpSyntaxRewriter
     {
         private readonly OutParameterTransformInfo _outInfo;
+        private readonly bool _isAsync;
 
-        public OutParameterReturnRewriter(OutParameterTransformInfo outInfo)
+        public OutParameterReturnRewriter(OutParameterTransformInfo outInfo, bool isAsync = false)
         {
             _outInfo = outInfo;
+            _isAsync = isAsync;
         }
 
         public override SyntaxNode? VisitReturnStatement(ReturnStatementSyntax node)
@@ -649,11 +651,11 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
                         Argument(returnExpr.WithoutLeadingTrivia()).WithLeadingTrivia(Space)
                     })));
 
-                return WrapInTaskFromResult(newExpr, $"AsyncOutResult<{innerType}>");
+                return _isAsync ? (ExpressionSyntax)newExpr : WrapInTaskFromResult(newExpr, $"AsyncOutResult<{innerType}>");
             }
             else
             {
-                // Tuple pattern: return Task.FromResult((returnExpr, out1, out2, ...))
+                // Tuple pattern: return (returnExpr, out1, out2, ...) or Task.FromResult(...)
                 var tupleArgs = new List<ArgumentSyntax>
                 {
                     Argument(returnExpr.WithoutLeadingTrivia())
@@ -663,10 +665,7 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
 
                 var tupleExpr = TupleExpression(SeparatedList(tupleArgs));
 
-                // Build the tuple type string for Task.FromResult
-                var elements = new List<string> { $"{returnExpr}" };
-                // We don't know the original return type string from here, just use the tuple directly
-                return WrapInTaskFromResult(tupleExpr);
+                return _isAsync ? (ExpressionSyntax)tupleExpr : WrapInTaskFromResult(tupleExpr);
             }
         }
 
