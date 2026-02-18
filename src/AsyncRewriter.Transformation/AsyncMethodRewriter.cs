@@ -415,7 +415,14 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         {
             var unwrapped = TryUnwrapSyncWrapperCall(visited);
             if (unwrapped != null)
+            {
+                // The lambda body may have already been visited and had await inserted
+                // (e.g., () => await _repo.GetAsync()). Strip the inner await to avoid
+                // producing "await await _repo.GetAsync()".
+                if (unwrapped is AwaitExpressionSyntax innerAwait)
+                    unwrapped = innerAwait.Expression;
                 expressionToAwait = unwrapped;
+            }
         }
 
         // Create await expression: move leading trivia to outer await, add space before invocation

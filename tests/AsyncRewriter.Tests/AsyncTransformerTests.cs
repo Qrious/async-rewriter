@@ -1281,6 +1281,91 @@ class MyService
         return graph;
     }
 
+    [Fact]
+    public async Task TransformProjectAsync_SyncWrapperCall_InnerCallAlsoFlooded_NoDoubleAwait()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "async-rewriter-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        var tempFile = Path.Combine(tempDir, "TestService.cs");
+
+        try
+        {
+            // Multi-line so inner call is on a different line than the RunSync call
+            var source = @"class TestService
+{
+    private IRepo _repo;
+    int Fetch()
+    {
+        return SyncHelper.RunSync(() =>
+            _repo.GetValue());
+    }
+}";
+            await File.WriteAllTextAsync(tempFile, source);
+
+            var methods = new ConcurrentDictionary<string, MethodNode>();
+            methods["TestService.Fetch()"] = new MethodNode
+            {
+                CallGraphId = "test", Id = "TestService.Fetch()", Name = "Fetch",
+                ContainingType = "TestService", ContainingNamespace = "",
+                ReturnType = "Task<int>", Parameters = new List<string>(),
+                FilePath = tempFile, StartLine = 4, EndLine = 8
+            };
+            methods["SyncHelper.RunSync<int>(Func<Task<int>>)"] = new MethodNode
+            {
+                CallGraphId = "test", Id = "SyncHelper.RunSync<int>(Func<Task<int>>)",
+                Name = "RunSync", ContainingType = "SyncHelper", ContainingNamespace = "",
+                ReturnType = "Task<int>", Parameters = new List<string> { "Func<Task<int>> func" },
+                FilePath = "external", StartLine = 0, EndLine = 0
+            };
+            // Lambda method (flooded)
+            methods["TestService.Fetch().lambda()"] = new MethodNode
+            {
+                CallGraphId = "test", Id = "TestService.Fetch().lambda()",
+                Name = "lambda", ContainingType = "TestService", ContainingNamespace = "",
+                ReturnType = "Task<int>", Parameters = new List<string>(),
+                FilePath = tempFile, StartLine = 6, EndLine = 7
+            };
+            methods["IRepo.GetValue()"] = new MethodNode
+            {
+                CallGraphId = "test", Id = "IRepo.GetValue()",
+                Name = "GetValue", ContainingType = "IRepo", ContainingNamespace = "",
+                ReturnType = "Task<int>", Parameters = new List<string>(),
+                FilePath = "external", StartLine = 0, EndLine = 0
+            };
+
+            var calls = new ConcurrentBag<MethodCall>();
+            // Fetch calls RunSync at line 6
+            calls.Add(new MethodCall
+            {
+                CallGraphId = "test", Id = "call1",
+                CallerId = "TestService.Fetch()", CalleeId = "SyncHelper.RunSync<int>(Func<Task<int>>)",
+                LineNumber = 6, FilePath = tempFile
+            });
+            // Lambda calls GetValue at line 7
+            calls.Add(new MethodCall
+            {
+                CallGraphId = "test", Id = "call2",
+                CallerId = "TestService.Fetch().lambda()", CalleeId = "IRepo.GetValue()",
+                LineNumber = 7, FilePath = tempFile
+            });
+
+            var graph = new CallGraph(calls) { Methods = methods };
+
+            var result = await _transformer.TransformProjectAsync(tempDir, graph);
+
+            result.Success.Should().BeTrue();
+            result.ModifiedFiles.Should().HaveCount(1);
+            var transformed = result.ModifiedFiles[0].TransformedContent;
+            transformed.Should().Contain("return _repo.GetValue();");
+            transformed.Should().NotContain("await await");
+            transformed.Should().NotContain("RunSync");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
     private static CallGraph CreateFloodedCallGraphWithInterface(string tempFile)
     {
         var methods = new ConcurrentDictionary<string, MethodNode>();
