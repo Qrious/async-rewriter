@@ -108,6 +108,13 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
             // Single awaitable call that can be returned directly without async/await
             visited = optimized;
         }
+        else if (hasAwaitableCalls && TryOptimizeExternalSyncWrapperUnwrap(visited, originalReturnType) is { } syncUnwrapped)
+        {
+            // External sync wrapper not in _syncWrapperMethodIds: body is a single call to something
+            // with an async lambda (e.g. ExternalLib.RunSync(async () => await _repo.Open())).
+            // Unwrap the lambda and return the inner Task directly.
+            visited = syncUnwrapped;
+        }
         else if (hasAwaitableCalls)
         {
             // Add async modifier
@@ -692,6 +699,90 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
                     IdentifierName("FromResult")))
                 .WithArgumentList(ArgumentList(SingletonSeparatedList(Argument(expr))));
         }
+    }
+
+    /// <summary>
+    /// If the (already-visited) method body is a single statement that calls a sync-wrapper-like
+    /// method with an async lambda whose body is a single await expression, unwraps the call.
+    /// Handles external sync wrappers that are not in _syncWrapperMethodIds.
+    /// Example: { ExternalHelper.RunSync(async () => await _repo.Open()); }
+    ///       →  { return _repo.Open(); }
+    /// Returns null if the optimization doesn't apply.
+    /// </summary>
+    private static MethodDeclarationSyntax? TryOptimizeExternalSyncWrapperUnwrap(
+        MethodDeclarationSyntax method, string originalReturnType)
+    {
+        if (method.Body == null || method.Body.Statements.Count != 1)
+            return null;
+
+        var stmt = method.Body.Statements[0];
+
+        // void method → single ExpressionStatement with invocation wrapping an async lambda
+        if (originalReturnType == "void"
+            && stmt is ExpressionStatementSyntax { Expression: InvocationExpressionSyntax invocation })
+        {
+            var innerExpr = TryExtractAsyncLambdaBody(invocation);
+            if (innerExpr != null)
+            {
+                var returnStmt = ReturnStatement(innerExpr.WithLeadingTrivia(Space))
+                    .WithLeadingTrivia(stmt.GetLeadingTrivia())
+                    .WithTrailingTrivia(stmt.GetTrailingTrivia());
+                return method.WithBody(method.Body.WithStatements(SingletonList<StatementSyntax>(returnStmt)));
+            }
+        }
+
+        // returning method → single ReturnStatement with invocation wrapping an async lambda
+        if (stmt is ReturnStatementSyntax { Expression: InvocationExpressionSyntax retInvocation })
+        {
+            var innerExpr = TryExtractAsyncLambdaBody(retInvocation);
+            if (innerExpr != null)
+            {
+                // Create a fresh ReturnStatement (like the void case above) so the return keyword
+                // doesn't carry the original token's trailing trivia (which would cause double-space).
+                var newReturn = ReturnStatement(innerExpr.WithLeadingTrivia(Space))
+                    .WithLeadingTrivia(stmt.GetLeadingTrivia())
+                    .WithTrailingTrivia(stmt.GetTrailingTrivia());
+                return method.WithBody(method.Body.WithStatements(SingletonList<StatementSyntax>(newReturn)));
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// If the invocation has an async lambda argument whose body is a single await expression,
+    /// returns the awaited expression (the inner Task-returning call).
+    /// Handles both expression-bodied and block-bodied lambdas.
+    /// </summary>
+    private static ExpressionSyntax? TryExtractAsyncLambdaBody(InvocationExpressionSyntax invocation)
+    {
+        foreach (var arg in invocation.ArgumentList.Arguments)
+        {
+            ExpressionSyntax? body = null;
+
+            if (arg.Expression is ParenthesizedLambdaExpressionSyntax parenLambda
+                && parenLambda.AsyncKeyword.IsKind(SyntaxKind.AsyncKeyword))
+            {
+                body = parenLambda.Body as ExpressionSyntax;
+                if (body == null && parenLambda.Body is BlockSyntax block && block.Statements.Count == 1)
+                {
+                    if (block.Statements[0] is ExpressionStatementSyntax exprStmt)
+                        body = exprStmt.Expression;
+                    else if (block.Statements[0] is ReturnStatementSyntax { Expression: not null } retStmt)
+                        body = retStmt.Expression;
+                }
+            }
+            else if (arg.Expression is SimpleLambdaExpressionSyntax simpleLambda
+                && simpleLambda.AsyncKeyword.IsKind(SyntaxKind.AsyncKeyword))
+            {
+                body = simpleLambda.Body as ExpressionSyntax;
+            }
+
+            if (body is AwaitExpressionSyntax awaitExpr)
+                return awaitExpr.Expression;
+        }
+
+        return null;
     }
 
     /// <summary>

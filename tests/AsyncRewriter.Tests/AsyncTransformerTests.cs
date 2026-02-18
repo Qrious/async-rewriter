@@ -1183,6 +1183,94 @@ class MyService
     }
 
     [Fact]
+    public async Task TransformSourceAsync_ExternalSyncWrapperCall_VoidReturn_Unwrapped()
+    {
+        // External sync wrapper: RunSync is NOT in syncWrapperIds because it's an external assembly
+        // method not tracked in the call graph. The inner call is attributed directly to Process().
+        var source = @"class MyService
+{
+    private IRepo _repo;
+    void Process()
+    {
+        ExternalHelper.RunSync(() => _repo.Open());
+    }
+}";
+
+        // No syncWrapperIds — the wrapper is external/untracked
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.Process()",
+                OriginalReturnType = "void",
+                NewReturnType = "Task",
+                NeedsAsyncKeyword = true,
+                CallSitesToTransform = new List<CallSiteTransformation>
+                {
+                    new()
+                    {
+                        LineNumber = 6,
+                        OriginalCallExpression = "_repo.Open()",
+                        CalledMethodSignature = "IRepo.Open()"
+                    }
+                }
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(source, transformations);
+
+        result.Should().Contain("return _repo.Open();");
+        result.Should().NotContain("RunSync");
+        result.Should().Contain("Task Process()");
+        result.Should().NotContain("async");
+        result.Should().NotContain("await");
+        AssertCompiles(result);
+    }
+
+    [Fact]
+    public async Task TransformSourceAsync_ExternalSyncWrapperCall_NonVoidReturn_Unwrapped()
+    {
+        // External sync wrapper for a non-void returning method.
+        var source = @"class MyService
+{
+    private IRepo _repo;
+    int Fetch()
+    {
+        return ExternalHelper.RunSync(() => _repo.GetValue());
+    }
+}";
+
+        var transformations = new List<AsyncTransformationInfo>
+        {
+            new()
+            {
+                MethodId = "MyService.Fetch()",
+                OriginalReturnType = "int",
+                NewReturnType = "Task<int>",
+                NeedsAsyncKeyword = true,
+                CallSitesToTransform = new List<CallSiteTransformation>
+                {
+                    new()
+                    {
+                        LineNumber = 6,
+                        OriginalCallExpression = "_repo.GetValue()",
+                        CalledMethodSignature = "IRepo.GetValue()"
+                    }
+                }
+            }
+        };
+
+        var result = await _transformer.TransformSourceAsync(source, transformations);
+
+        result.Should().Contain("return _repo.GetValue();");
+        result.Should().NotContain("RunSync");
+        result.Should().Contain("Task<int> Fetch()");
+        result.Should().NotContain("async");
+        result.Should().NotContain("await");
+        AssertCompiles(result);
+    }
+
+    [Fact]
     public async Task TransformProjectAsync_SyncWrapperCall_DetectedAndUnwrapped()
     {
         var tempDir = Path.Combine(Path.GetTempPath(), "async-rewriter-test-" + Guid.NewGuid().ToString("N"));
