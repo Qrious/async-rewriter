@@ -106,7 +106,9 @@ public class Neo4jFloodingDebugRepository : IAsyncDisposable, IDisposable
         foreach (var (methodId, info) in result.FloodedMethods)
         {
             if (info.FloodedById == null)
+            {
                 continue;
+            }
 
             relData.Add(new Dictionary<string, object>
             {

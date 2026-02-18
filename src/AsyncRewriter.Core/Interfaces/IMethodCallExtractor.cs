@@ -20,8 +20,8 @@ public interface IMethodCallExtractor
         SyntaxNode root,
         SemanticModel semanticModel,
         string filePath,
-        ConcurrentDictionary<string, MethodNode> methods,
-        ConcurrentBag<MethodCall> call,
+        ConcurrentDictionary<string, IMethodNode> methods,
+        ConcurrentBag<IMethodCall> call,
         CancellationToken cancellationToken = default);
 
     Task Extract(
@@ -29,8 +29,8 @@ public interface IMethodCallExtractor
         SyntaxNode root,
         SemanticModel semanticModel,
         string filePath,
-        ConcurrentDictionary<string, MethodNode> methods,
-        ConcurrentBag<MethodCall> call,
+        ConcurrentDictionary<string, IMethodNode> methods,
+        ConcurrentBag<IMethodCall> call,
         ISemanticModelResolver semanticModelResolver,
         CancellationToken cancellationToken = default);
 
@@ -39,8 +39,8 @@ public interface IMethodCallExtractor
         SyntaxNode root,
         SemanticModel semanticModel,
         string filePath,
-        ConcurrentDictionary<string, MethodNode> methods,
-        ConcurrentBag<MethodCall> call,
+        ConcurrentDictionary<string, IMethodNode> methods,
+        ConcurrentBag<IMethodCall> call,
         ISemanticModelResolver semanticModelResolver,
         ConcurrentBag<LambdaAsyncOverload> lambdaAsyncOverloads,
         CancellationToken cancellationToken = default);

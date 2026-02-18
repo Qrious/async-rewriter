@@ -22,19 +22,31 @@ public static class ProblematicInterfaceAnalyzer
         foreach (var impl in syncGraph.InterfaceImplementations)
         {
             if (!syncGraph.Methods.TryGetValue(impl.ImplementingMethodId, out var originalImpl))
+            {
                 continue;
+            }
+
             if (!asyncGraph.Methods.TryGetValue(impl.ImplementingMethodId, out var asyncImpl))
+            {
                 continue;
+            }
+
             if (originalImpl.ReturnType == asyncImpl.ReturnType)
+            {
                 continue;
+            }
 
             var isExternal = !syncGraph.Methods.TryGetValue(impl.InterfaceMethodId, out var interfaceMethod)
-                || interfaceMethod.FilePath == "external";
+                             || interfaceMethod.FilePath == "external";
             if (!isExternal)
+            {
                 continue;
+            }
 
             if (interfaceMethod?.IsReturnTypeParameter == true)
+            {
                 continue;
+            }
 
             // For generic instantiations, also check the generic definition node
             if (interfaceMethod != null)
@@ -43,7 +55,9 @@ public static class ProblematicInterfaceAnalyzer
                     .Any(gi => syncGraph.Methods.TryGetValue(gi.GenericMethodId, out var genericMethod)
                         && genericMethod.IsReturnTypeParameter);
                 if (isGenericReturnType)
+                {
                     continue;
+                }
             }
 
             var interfaceType = interfaceMethod?.ContainingType
@@ -57,7 +71,9 @@ public static class ProblematicInterfaceAnalyzer
             }
 
             if (!list.Any(e => e.InterfaceMethodId == impl.InterfaceMethodId))
-                list.Add(new ProblematicMethod(impl.InterfaceMethodId, interfaceMethod, originalImpl, asyncImpl));
+            {
+                list.Add(new ProblematicMethod(impl.InterfaceMethodId, interfaceMethod as MethodNode, originalImpl as MethodNode, asyncImpl as MethodNode));
+            }
         }
 
         return byInterfaceType;
@@ -87,14 +103,19 @@ public static class ProblematicInterfaceAnalyzer
 
         var candidateSimpleNames = new HashSet<string>(StringComparer.Ordinal);
         if (simpleName.StartsWith("I"))
+        {
             candidateSimpleNames.Add("IAsync" + simpleName.Substring(1));
+        }
+
         candidateSimpleNames.Add(simpleName + "Async");
 
         var candidateNames = new HashSet<string>(candidateSimpleNames, StringComparer.Ordinal);
         if (prefix.Length > 0)
         {
             foreach (var c in candidateSimpleNames)
+            {
                 candidateNames.Add(prefix + c);
+            }
         }
 
         var methodsByType = callGraph.Methods.Values
@@ -106,14 +127,18 @@ public static class ProblematicInterfaceAnalyzer
             var typeNameBase = typeName;
             var typeAngle = typeName.IndexOf('<');
             if (typeAngle >= 0)
+            {
                 typeNameBase = typeName.Substring(0, typeAngle);
+            }
 
             var typeSimpleName = typeNameBase.Contains('.')
                 ? typeNameBase.Substring(typeNameBase.LastIndexOf('.') + 1)
                 : typeNameBase;
 
             if (!candidateNames.Contains(typeNameBase) && !candidateSimpleNames.Contains(typeSimpleName))
+            {
                 continue;
+            }
 
             var allMatch = true;
             var methodRenames = new Dictionary<string, string>();
@@ -128,7 +153,9 @@ public static class ProblematicInterfaceAnalyzer
                     && NormalizeReturnType(cm.ReturnType) == NormalizeReturnType(expectedReturnType));
 
                 if (exactMatch)
+                {
                     continue;
+                }
 
                 // Check Async-suffixed name match
                 var asyncSuffixMatch = candidateMethods.Any(cm =>
@@ -146,7 +173,9 @@ public static class ProblematicInterfaceAnalyzer
             }
 
             if (allMatch)
+            {
                 return (typeName, methodRenames);
+            }
         }
 
         return null;
@@ -169,7 +198,10 @@ public static class ProblematicInterfaceAnalyzer
     {
         var angleBracketIndex = interfaceType.IndexOf('<');
         if (angleBracketIndex < 0)
+        {
             return null;
+        }
+
         return interfaceType.Substring(0, angleBracketIndex);
     }
 

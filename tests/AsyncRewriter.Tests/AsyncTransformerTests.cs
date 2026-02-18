@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
 using AsyncRewriter.Transformation;
 using FluentAssertions;
@@ -1309,7 +1310,7 @@ class MyService
 
     private static CallGraph CreateFloodedCallGraphWithSyncWrapper(string tempFile)
     {
-        var methods = new ConcurrentDictionary<string, MethodNode>();
+        var methods = new ConcurrentDictionary<string, IMethodNode>();
         methods["TestService.Fetch()"] = new MethodNode
         {
             CallGraphId = "test",
@@ -1350,7 +1351,7 @@ class MyService
             EndLine = 0
         };
 
-        var calls = new ConcurrentBag<MethodCall>();
+        var calls = new ConcurrentBag<IMethodCall>();
         calls.Add(new MethodCall
         {
             CallGraphId = "test",
@@ -1361,10 +1362,7 @@ class MyService
             FilePath = tempFile
         });
 
-        var graph = new CallGraph(calls)
-        {
-            Methods = methods
-        };
+        var graph = new CallGraph("test", methods, calls);
 
         return graph;
     }
@@ -1390,7 +1388,7 @@ class MyService
 }";
             await File.WriteAllTextAsync(tempFile, source);
 
-            var methods = new ConcurrentDictionary<string, MethodNode>();
+            var methods = new ConcurrentDictionary<string, IMethodNode>();
             methods["TestService.Fetch()"] = new MethodNode
             {
                 CallGraphId = "test", Id = "TestService.Fetch()", Name = "Fetch",
@@ -1421,7 +1419,7 @@ class MyService
                 FilePath = "external", StartLine = 0, EndLine = 0
             };
 
-            var calls = new ConcurrentBag<MethodCall>();
+            var calls = new ConcurrentBag<IMethodCall>();
             // Fetch calls RunSync at line 6
             calls.Add(new MethodCall
             {
@@ -1437,7 +1435,7 @@ class MyService
                 LineNumber = 7, FilePath = tempFile
             });
 
-            var graph = new CallGraph(calls) { Methods = methods };
+            var graph = new CallGraph("test", methods, calls);
 
             var result = await _transformer.TransformProjectAsync(tempDir, graph);
 
@@ -1456,7 +1454,7 @@ class MyService
 
     private static CallGraph CreateFloodedCallGraphWithInterface(string tempFile)
     {
-        var methods = new ConcurrentDictionary<string, MethodNode>();
+        var methods = new ConcurrentDictionary<string, IMethodNode>();
         methods["RepoImpl.Get()"] = new MethodNode
         {
             CallGraphId = "test",
@@ -1484,8 +1482,8 @@ class MyService
             EndLine = 0
         };
 
-        var calls = new ConcurrentBag<MethodCall>();
-        var impls = new ConcurrentBag<InterfaceImplementation>();
+        var calls = new ConcurrentBag<IMethodCall>();
+        var impls = new ConcurrentBag<IInterfaceImplementation>();
         impls.Add(new InterfaceImplementation
         {
             CallGraphId = "test",
@@ -1493,9 +1491,8 @@ class MyService
             InterfaceMethodId = "IRepository.Get()"
         });
 
-        var graph = new CallGraph(calls, impls)
+        var graph = new CallGraph("test", methods, calls, impls)
         {
-            Methods = methods,
             InterfaceMappings = new List<InterfaceMapping>
             {
                 new() { SyncInterfaceName = "IRepository", AsyncInterfaceName = "IRepositoryAsync" }
@@ -1583,7 +1580,7 @@ class MyService
 
     private static CallGraph CreateFloodedCallGraph(string tempFile)
     {
-        var methods = new ConcurrentDictionary<string, MethodNode>();
+        var methods = new ConcurrentDictionary<string, IMethodNode>();
         methods["TestService.DoWork()"] = new MethodNode
         {
             CallGraphId = "test",
@@ -1611,7 +1608,7 @@ class MyService
             EndLine = 0
         };
 
-        var calls = new ConcurrentBag<MethodCall>();
+        var calls = new ConcurrentBag<IMethodCall>();
         calls.Add(new MethodCall
         {
             CallGraphId = "test",
@@ -1622,10 +1619,7 @@ class MyService
             FilePath = tempFile
         });
 
-        var graph = new CallGraph(calls)
-        {
-            Methods = methods
-        };
+        var graph = new CallGraph("test", methods, calls);
 
         return graph;
     }

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Linq.Expressions;
 using AsyncRewriter.Analyzer;
+using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
 using AsyncRewriter.Transformation;
 using FluentAssertions;
@@ -35,7 +36,9 @@ public class MapperScenarioIntegrationTests
     {
         var syntaxTrees = new List<(string filePath, SyntaxTree tree)>();
         foreach (var (filePath, source) in sources)
+        {
             syntaxTrees.Add((filePath, CSharpSyntaxTree.ParseText(source, path: filePath)));
+        }
 
         var references = new List<MetadataReference>
         {
@@ -55,11 +58,11 @@ public class MapperScenarioIntegrationTests
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
         var callGraphId = Guid.NewGuid();
-        var methods = new ConcurrentDictionary<string, MethodNode>();
-        var calls = new ConcurrentBag<MethodCall>();
-        var interfaceImpls = new ConcurrentBag<InterfaceImplementation>();
-        var overrides = new ConcurrentBag<MethodOverride>();
-        var genericInstantiations = new ConcurrentBag<GenericInstantiation>();
+        var methods = new ConcurrentDictionary<string, IMethodNode>();
+        var calls = new ConcurrentBag<IMethodCall>();
+        var interfaceImpls = new ConcurrentBag<IInterfaceImplementation>();
+        var overrides = new ConcurrentBag<IMethodOverride>();
+        var genericInstantiations = new ConcurrentBag<IGenericInstantiation>();
 
         // Phase 1: Extract method declarations (like production CallGraphBuilder first pass)
         var methodExtractor = new MethodExtractor();
@@ -81,12 +84,7 @@ public class MapperScenarioIntegrationTests
                 methods, calls);
         }
 
-        return new CallGraph(calls, interfaceImpls, overrides, genericInstantiations)
-        {
-            Id = callGraphId.ToString(),
-            ProjectName = "TestProject",
-            Methods = methods
-        };
+        return new CallGraph(callGraphId.ToString(), methods, calls, interfaceImpls, overrides, genericInstantiations);
     }
 
     /// <summary>
@@ -214,7 +212,9 @@ public class MapperScenarioIntegrationTests
             }
             // Also add any detected sync wrappers
             foreach (var wrapper in syncWrappers)
+            {
                 rootMethodIds.Add(wrapper.MethodId);
+            }
 
             rootMethodIds.Should().NotBeEmpty("should have root async methods for flooding");
 

@@ -39,14 +39,18 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         var startLine = node.GetLocation().GetLineSpan().StartLinePosition.Line + 1; // 1-based
 
         if (!_methodsByStartLine.TryGetValue(startLine, out var info))
+        {
             return base.VisitMethodDeclaration(node);
+        }
 
         // Collect which call sites in this method need await
         var awaitLines = new List<int>();
         foreach (var callSite in _callSitesByLine)
         {
             if (callSite.Key >= info.StartLine && callSite.Key <= info.EndLine)
+            {
                 awaitLines.Add(callSite.Key);
+            }
         }
 
         var hasAwaitableCalls = awaitLines.Count > 0;
@@ -68,7 +72,9 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
             }
 
             if (info.DebugLines != null)
+            {
                 visited = PrependDebugComments(visited, info.DebugLines);
+            }
 
             _anyMethodTransformed = true;
             var effectiveName = info.NewMethodName ?? info.MethodName;
@@ -91,7 +97,9 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
 
         // Skip wrapping if return type is already Task-based (e.g. existing async interface methods)
         if (IsAlreadyTaskType(originalReturnType))
+        {
             return base.VisitMethodDeclaration(node);
+        }
 
         var newReturnType = originalReturnType == "void" ? "Task" : $"Task<{originalReturnType}>";
         var newReturnTypeSyntax = ParseTypeName(newReturnType).WithTriviaFrom(visited.ReturnType);
@@ -160,13 +168,17 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         var startLine = node.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
 
         if (!_methodsByStartLine.TryGetValue(startLine, out var info))
+        {
             return base.VisitLocalFunctionStatement(node);
+        }
 
         var awaitLines = new List<int>();
         foreach (var callSite in _callSitesByLine)
         {
             if (callSite.Key >= info.StartLine && callSite.Key <= info.EndLine)
+            {
                 awaitLines.Add(callSite.Key);
+            }
         }
 
         var hasAwaitableCalls = awaitLines.Count > 0;
@@ -179,7 +191,9 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
 
         // Skip wrapping if return type is already Task-based (e.g. existing async interface methods)
         if (IsAlreadyTaskType(originalReturnType))
+        {
             return base.VisitLocalFunctionStatement(node);
+        }
 
         var newReturnType = originalReturnType == "void" ? "Task" : $"Task<{originalReturnType}>";
         var newReturnTypeSyntax = ParseTypeName(newReturnType).WithTriviaFrom(visited.ReturnType);
@@ -248,7 +262,10 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         {
             // Skip the last whitespace trivia — we'll add it after comments
             if (i == existingLeading.Count - 1 && existingLeading[i].IsKind(SyntaxKind.WhitespaceTrivia))
+            {
                 continue;
+            }
+
             triviaList.Add(existingLeading[i]);
         }
 
@@ -269,7 +286,9 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
     private static LocalFunctionStatementSyntax AddAsyncModifierToLocalFunction(LocalFunctionStatementSyntax func)
     {
         if (func.Modifiers.Any(SyntaxKind.AsyncKeyword))
+        {
             return func;
+        }
 
         if (func.Modifiers.Count == 0)
         {
@@ -296,7 +315,9 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         string newReturnType)
     {
         if (func.Body == null && func.ExpressionBody == null)
+        {
             return func;
+        }
 
         if (originalReturnType == "void")
         {
@@ -339,7 +360,9 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         var visited = (SimpleLambdaExpressionSyntax)base.VisitSimpleLambdaExpression(node)!;
 
         if (visited.AsyncKeyword.IsKind(SyntaxKind.AsyncKeyword))
+        {
             return visited;
+        }
 
         if (ContainsDirectAwait(visited.Body))
         {
@@ -358,7 +381,9 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         var visited = (ParenthesizedLambdaExpressionSyntax)base.VisitParenthesizedLambdaExpression(node)!;
 
         if (visited.AsyncKeyword.IsKind(SyntaxKind.AsyncKeyword))
+        {
             return visited;
+        }
 
         if (ContainsDirectAwait(visited.Body))
         {
@@ -379,15 +404,19 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
     private static bool ContainsDirectAwait(SyntaxNode? node)
     {
         if (node == null)
+        {
             return false;
+        }
 
         foreach (var descendant in node.DescendantNodesAndSelf(n =>
-            n is not SimpleLambdaExpressionSyntax
-            and not ParenthesizedLambdaExpressionSyntax
-            and not LocalFunctionStatementSyntax))
+                     n is not SimpleLambdaExpressionSyntax
+                         and not ParenthesizedLambdaExpressionSyntax
+                         and not LocalFunctionStatementSyntax))
         {
             if (descendant is AwaitExpressionSyntax)
+            {
                 return true;
+            }
         }
 
         return false;
@@ -399,7 +428,9 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
 
         var line = node.GetLocation().GetLineSpan().StartLinePosition.Line + 1; // 1-based
         if (!_callSitesByLine.TryGetValue(line, out var callSiteInfo))
+        {
             return visited;
+        }
 
         // When a CalleeMethodName is available, verify this invocation calls the expected method.
         // This prevents wrapping a parent invocation in a chain (e.g., a.Method1().Method2())
@@ -408,12 +439,16 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         {
             var invokedName = GetInvokedMethodName(node);
             if (invokedName != null && invokedName != callSiteInfo.CalleeMethodName)
+            {
                 return visited;
+            }
         }
 
         // Wrap with await — but only if not already awaited
         if (visited.Parent is AwaitExpressionSyntax)
+        {
             return visited;
+        }
 
         // Determine the expression to await: either the invocation itself,
         // or the unwrapped lambda body if this is a call to a sync wrapper
@@ -427,7 +462,10 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
                 // (e.g., () => await _repo.GetAsync()). Strip the inner await to avoid
                 // producing "await await _repo.GetAsync()".
                 if (unwrapped is AwaitExpressionSyntax innerAwait)
+                {
                     unwrapped = innerAwait.Expression;
+                }
+
                 expressionToAwait = unwrapped;
             }
         }
@@ -487,21 +525,31 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
             if (arg.Expression is ParenthesizedLambdaExpressionSyntax parenLambda)
             {
                 if (parenLambda.Body is ExpressionSyntax expr)
+                {
                     return expr;
+                }
+
                 if (parenLambda.Body is BlockSyntax block
                     && block.Statements.Count == 1
                     && block.Statements[0] is ReturnStatementSyntax { Expression: not null } ret)
+                {
                     return ret.Expression;
+                }
             }
 
             if (arg.Expression is SimpleLambdaExpressionSyntax simpleLambda)
             {
                 if (simpleLambda.Body is ExpressionSyntax simpleExpr)
+                {
                     return simpleExpr;
+                }
+
                 if (simpleLambda.Body is BlockSyntax simpleBlock
                     && simpleBlock.Statements.Count == 1
                     && simpleBlock.Statements[0] is ReturnStatementSyntax { Expression: not null } simpleRet)
+                {
                     return simpleRet.Expression;
+                }
             }
         }
 
@@ -526,7 +574,9 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         for (int i = 0; i < visited.ParameterList.Parameters.Count; i++)
         {
             if (!outIndicesSet.Contains(i))
+            {
                 newParams.Add(visited.ParameterList.Parameters[i]);
+            }
         }
         visited = visited.WithParameterList(
             ParameterList(SeparatedList(newParams))
@@ -614,7 +664,9 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         public override SyntaxNode? VisitReturnStatement(ReturnStatementSyntax node)
         {
             if (node.Expression == null)
+            {
                 return node;
+            }
 
             var wrappedExpr = WrapReturnExpression(node.Expression);
             return node.WithExpression(wrappedExpr.WithLeadingTrivia(node.Expression.GetLeadingTrivia()));
@@ -668,7 +720,9 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
                     Argument(returnExpr.WithoutLeadingTrivia())
                 };
                 foreach (var name in _outInfo.OutParameterNames)
+                {
                     tupleArgs.Add(Argument(IdentifierName(name)));
+                }
 
                 var tupleExpr = TupleExpression(SeparatedList(tupleArgs));
 
@@ -713,7 +767,9 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         MethodDeclarationSyntax method, string originalReturnType)
     {
         if (method.Body == null || method.Body.Statements.Count != 1)
+        {
             return null;
+        }
 
         var stmt = method.Body.Statements[0];
 
@@ -767,9 +823,13 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
                 if (body == null && parenLambda.Body is BlockSyntax block && block.Statements.Count == 1)
                 {
                     if (block.Statements[0] is ExpressionStatementSyntax exprStmt)
+                    {
                         body = exprStmt.Expression;
+                    }
                     else if (block.Statements[0] is ReturnStatementSyntax { Expression: not null } retStmt)
+                    {
                         body = retStmt.Expression;
+                    }
                 }
             }
             else if (arg.Expression is SimpleLambdaExpressionSyntax simpleLambda
@@ -779,7 +839,9 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
             }
 
             if (body is AwaitExpressionSyntax awaitExpr)
+            {
                 return awaitExpr.Expression;
+            }
         }
 
         return null;
@@ -794,7 +856,9 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         MethodDeclarationSyntax method, string originalReturnType)
     {
         if (method.Body == null || method.Body.Statements.Count != 1)
+        {
             return null;
+        }
 
         var stmt = method.Body.Statements[0];
 
@@ -834,7 +898,9 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
     private static MethodDeclarationSyntax AddAsyncModifier(MethodDeclarationSyntax method)
     {
         if (method.Modifiers.Any(SyntaxKind.AsyncKeyword))
+        {
             return method;
+        }
 
         if (method.Modifiers.Count == 0)
         {
@@ -863,7 +929,9 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         string newReturnType)
     {
         if (method.Body == null && method.ExpressionBody == null)
+        {
             return method;
+        }
 
         if (originalReturnType == "void")
         {
@@ -994,7 +1062,9 @@ public class AsyncMethodRewriter : CSharpSyntaxRewriter
         public override SyntaxNode? VisitReturnStatement(ReturnStatementSyntax node)
         {
             if (node.Expression == null)
+            {
                 return node;
+            }
 
             var taskFromResult = InvocationExpression(
                 MemberAccessExpression(

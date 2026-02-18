@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using AsyncRewriter.Analyzer;
+using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
 using AsyncRewriter.Transformation;
 using FluentAssertions;
@@ -91,7 +92,9 @@ public class Validator
     {
         var syntaxTrees = new List<SyntaxTree> { CSharpSyntaxTree.ParseText(StubTypes) };
         foreach (var source in sources)
+        {
             syntaxTrees.Add(CSharpSyntaxTree.ParseText(source));
+        }
 
         var references = new List<MetadataReference>();
         var trustedAssemblies = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
@@ -126,24 +129,19 @@ public class Validator
     ];
 
     private static CallGraph CreateCallGraph(
-        Dictionary<string, MethodNode> methods,
+        Dictionary<string, IMethodNode> methods,
         List<MethodCall>? calls = null,
         List<InterfaceImplementation>? interfaceImpls = null,
         List<GenericInstantiation>? genericInstantiations = null)
     {
         var graphId = Guid.NewGuid().ToString();
-        var methodDict = new ConcurrentDictionary<string, MethodNode>(methods);
-        var callBag = new ConcurrentBag<MethodCall>(calls ?? []);
-        var implBag = new ConcurrentBag<InterfaceImplementation>(interfaceImpls ?? []);
-        var overrideBag = new ConcurrentBag<MethodOverride>();
-        var giBag = new ConcurrentBag<GenericInstantiation>(genericInstantiations ?? []);
+        var methodDict = new ConcurrentDictionary<string, IMethodNode>(methods);
+        var callBag = new ConcurrentBag<IMethodCall>(calls ?? []);
+        var implBag = new ConcurrentBag<IInterfaceImplementation>(interfaceImpls ?? []);
+        var overrideBag = new ConcurrentBag<IMethodOverride>();
+        var giBag = new ConcurrentBag<IGenericInstantiation>(genericInstantiations ?? []);
 
-        return new CallGraph(callBag, implBag, overrideBag, giBag)
-        {
-            Id = graphId,
-            ProjectName = "TestProject",
-            Methods = methodDict
-        };
+        return new CallGraph(graphId, methodDict, callBag, implBag, overrideBag, giBag);
     }
 
     private static MethodNode MakeMethod(string id, string name, string returnType,
@@ -189,7 +187,7 @@ public class Validator
         // - MapperD : IMapInto<long, string> — pure sync, no async calls
         // - Controller uses all 4 mappers via their interfaces
 
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             // Generic interface definition
             ["imap_generic"] = MakeMethod("imap_generic", "MapInto", "void",
@@ -305,7 +303,7 @@ public class Validator
         // Only mappers A, B, C (which have direct async call chains) should be flooded.
         // MapperD should stay sync because the generic interface can't propagate.
 
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["imap_generic"] = MakeMethod("imap_generic", "MapInto", "void",
                 "IMapInto<TSource, TTarget>", "external"),
@@ -396,7 +394,7 @@ public class Validator
         // After flooding with blocked generic, mappers A/B/C have changed return types.
         // Their interface methods (external) become problematic because
         // the impl return type changed but the interface return type did not.
-        var syncMethods = new Dictionary<string, MethodNode>
+        var syncMethods = new Dictionary<string, IMethodNode>
         {
             ["imap_int_string"] = MakeMethod("imap_int_string", "MapInto", "void",
                 "IMapInto<int, string>", "external"),
@@ -422,7 +420,7 @@ public class Validator
             });
 
         // After flooding: A, B, C have Task return types; D unchanged
-        var asyncMethods = new Dictionary<string, MethodNode>
+        var asyncMethods = new Dictionary<string, IMethodNode>
         {
             ["imap_int_string"] = MakeMethod("imap_int_string", "MapInto", "void",
                 "IMapInto<int, string>", "external"),
@@ -579,7 +577,7 @@ public class MapperD : IMapInto<long, string>
         var mapperASource = LoadTestData("MapperA");
 
         // Step 1: Build call graph and flood with blocked generic
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["imap_generic"] = MakeMethod("imap_generic", "MapInto", "void",
                 "IMapInto<TSource, TTarget>", "external"),

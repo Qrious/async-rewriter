@@ -18,10 +18,10 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
 {
     private SemanticModel _semanticModel = null!;
     private string _filePath = string.Empty;
-    private ConcurrentDictionary<string, MethodNode> _methods = null!;
-    private ConcurrentBag<InterfaceImplementation> _interfaceImplementations = null!;
-    private ConcurrentBag<MethodOverride> _methodOverrides = null!;
-    private ConcurrentBag<GenericInstantiation> _genericInstantiations = null!;
+    private ConcurrentDictionary<string, IMethodNode> _methods = null!;
+    private ConcurrentBag<IInterfaceImplementation> _interfaceImplementations = null!;
+    private ConcurrentBag<IMethodOverride> _methodOverrides = null!;
+    private ConcurrentBag<IGenericInstantiation> _genericInstantiations = null!;
     private Guid _callGraphId;
 
     public Task Extract(
@@ -29,12 +29,12 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
         SyntaxNode root,
         SemanticModel semanticModel,
         string filePath,
-        ConcurrentDictionary<string, MethodNode> methods,
-        ConcurrentBag<InterfaceImplementation> interfaceImplementations,
-        ConcurrentBag<MethodOverride> methodOverrides,
+        ConcurrentDictionary<string, IMethodNode> methods,
+        ConcurrentBag<IInterfaceImplementation> interfaceImplementations,
+        ConcurrentBag<IMethodOverride> methodOverrides,
         CancellationToken cancellationToken = default)
     {
-        return Extract(callGraphId, root, semanticModel, filePath, methods, interfaceImplementations, methodOverrides, new ConcurrentBag<GenericInstantiation>(), cancellationToken);
+        return Extract(callGraphId, root, semanticModel, filePath, methods, interfaceImplementations, methodOverrides, new ConcurrentBag<IGenericInstantiation>(), cancellationToken);
     }
 
     public async Task Extract(
@@ -42,10 +42,10 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
         SyntaxNode root,
         SemanticModel semanticModel,
         string filePath,
-        ConcurrentDictionary<string, MethodNode> methods,
-        ConcurrentBag<InterfaceImplementation> interfaceImplementations,
-        ConcurrentBag<MethodOverride> methodOverrides,
-        ConcurrentBag<GenericInstantiation> genericInstantiations,
+        ConcurrentDictionary<string, IMethodNode> methods,
+        ConcurrentBag<IInterfaceImplementation> interfaceImplementations,
+        ConcurrentBag<IMethodOverride> methodOverrides,
+        ConcurrentBag<IGenericInstantiation> genericInstantiations,
         CancellationToken cancellationToken = default)
     {
         _callGraphId = callGraphId;
@@ -113,13 +113,17 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
     {
         var interfaceSymbol = _semanticModel.GetDeclaredSymbol(node);
         if (interfaceSymbol == null)
+        {
             return;
+        }
 
         foreach (var member in node.Members.OfType<MethodDeclarationSyntax>())
         {
             var methodSymbol = _semanticModel.GetDeclaredSymbol(member) as IMethodSymbol;
             if (methodSymbol == null)
+            {
                 continue;
+            }
 
             var methodNode = CreateInterfaceMethodNode(member, methodSymbol);
             _methods[methodNode.Id] = methodNode;
@@ -358,7 +362,10 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
     private static List<string?>? GetParameterRefKinds(IMethodSymbol methodSymbol)
     {
         if (!methodSymbol.Parameters.Any(p => p.RefKind != RefKind.None))
+        {
             return null;
+        }
+
         return methodSymbol.Parameters.Select(p => p.RefKind switch
         {
             RefKind.Out => "out",
@@ -410,7 +417,9 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
 
             // current is now the outermost non-local method (or null)
             if (current != null)
+            {
                 parts.Add(GetMethodSignature(current));
+            }
 
             parts.Reverse();
             var containingType = originalMethod.ContainingType?.ToDisplayString() ?? "";

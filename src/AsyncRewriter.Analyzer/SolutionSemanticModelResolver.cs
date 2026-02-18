@@ -28,7 +28,9 @@ public class SolutionSemanticModelResolver : ISemanticModelResolver
         {
             var compilation = await project.GetCompilationAsync(cancellationToken);
             if (compilation != null)
+            {
                 compilations.Add(compilation);
+            }
         }
         return new SolutionSemanticModelResolver(compilations);
     }
@@ -38,7 +40,9 @@ public class SolutionSemanticModelResolver : ISemanticModelResolver
         foreach (var compilation in _compilations)
         {
             if (compilation.ContainsSyntaxTree(syntaxTree))
+            {
                 return compilation.GetSemanticModel(syntaxTree);
+            }
         }
         return null;
     }

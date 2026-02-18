@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using AsyncRewriter.Analyzer;
+using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
 using FluentAssertions;
 using Xunit;
@@ -11,25 +12,20 @@ public class AsyncFloodingAnalyzerTests
     private readonly AsyncFloodingAnalyzer _analyzer = new();
 
     private static CallGraph CreateCallGraph(
-        Dictionary<string, MethodNode> methods,
-        List<MethodCall>? calls = null,
-        List<InterfaceImplementation>? interfaceImpls = null,
-        List<MethodOverride>? overrides = null,
-        List<GenericInstantiation>? genericInstantiations = null)
+        Dictionary<string, IMethodNode> methods,
+        List<IMethodCall>? calls = null,
+        List<IInterfaceImplementation>? interfaceImpls = null,
+        List<IMethodOverride>? overrides = null,
+        List<IGenericInstantiation>? genericInstantiations = null)
     {
         var graphId = Guid.NewGuid().ToString();
-        var methodDict = new ConcurrentDictionary<string, MethodNode>(methods);
-        var callBag = new ConcurrentBag<MethodCall>(calls ?? []);
-        var implBag = new ConcurrentBag<InterfaceImplementation>(interfaceImpls ?? []);
-        var overrideBag = new ConcurrentBag<MethodOverride>(overrides ?? []);
-        var giBag = new ConcurrentBag<GenericInstantiation>(genericInstantiations ?? []);
+        var methodDict = new ConcurrentDictionary<string, IMethodNode>(methods);
+        var callBag = new ConcurrentBag<IMethodCall>(calls ?? []);
+        var implBag = new ConcurrentBag<IInterfaceImplementation>(interfaceImpls ?? []);
+        var overrideBag = new ConcurrentBag<IMethodOverride>(overrides ?? []);
+        var giBag = new ConcurrentBag<IGenericInstantiation>(genericInstantiations ?? []);
 
-        var graph = new CallGraph(callBag, implBag, overrideBag, giBag)
-        {
-            Id = graphId,
-            ProjectName = "TestProject",
-            Methods = methodDict
-        };
+        var graph = new CallGraph(graphId, methodDict, callBag, implBag, overrideBag, giBag);
         return graph;
     }
 
@@ -62,7 +58,7 @@ public class AsyncFloodingAnalyzerTests
     [Fact]
     public async Task FloodFromRoot_MarksRootMethod()
     {
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m1"] = MakeMethod("m1", "DoWork", "void")
         };
@@ -76,12 +72,12 @@ public class AsyncFloodingAnalyzerTests
     [Fact]
     public async Task FloodFromRoot_TransformsVoidToTask()
     {
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m1"] = MakeMethod("m1", "Root", "void"),
             ["m2"] = MakeMethod("m2", "Caller", "void")
         };
-        var calls = new List<MethodCall> { MakeCall("m2", "m1") };
+        var calls = new List<IMethodCall> { MakeCall("m2", "m1") };
         var graph = CreateCallGraph(methods, calls);
 
         var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m1"]);
@@ -93,12 +89,12 @@ public class AsyncFloodingAnalyzerTests
     [Fact]
     public async Task FloodFromRoot_TransformsReturnTypeToTaskOfT()
     {
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m1"] = MakeMethod("m1", "Root", "int"),
             ["m2"] = MakeMethod("m2", "Caller", "string")
         };
-        var calls = new List<MethodCall> { MakeCall("m2", "m1") };
+        var calls = new List<IMethodCall> { MakeCall("m2", "m1") };
         var graph = CreateCallGraph(methods, calls);
 
         var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m1"]);
@@ -110,7 +106,7 @@ public class AsyncFloodingAnalyzerTests
     [Fact]
     public async Task FloodFromRoot_PreservesAlreadyTaskReturnType()
     {
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m1"] = MakeMethod("m1", "Root", "Task<int>")
         };
@@ -124,7 +120,7 @@ public class AsyncFloodingAnalyzerTests
     [Fact]
     public async Task FloodFromRoot_PreservesTaskReturnType()
     {
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m1"] = MakeMethod("m1", "Root", "Task")
         };
@@ -138,7 +134,7 @@ public class AsyncFloodingAnalyzerTests
     [Fact]
     public async Task FloodFromRoot_DoesNotFloodUnrelatedMethods()
     {
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m1"] = MakeMethod("m1", "Root", "void"),
             ["m2"] = MakeMethod("m2", "Unrelated", "int")
@@ -156,13 +152,13 @@ public class AsyncFloodingAnalyzerTests
     public async Task FloodFromRoot_FloodsTransitiveCallers()
     {
         // m3 -> m2 -> m1 (root)
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m1"] = MakeMethod("m1", "Root", "void"),
             ["m2"] = MakeMethod("m2", "Middle", "bool"),
             ["m3"] = MakeMethod("m3", "Top", "string")
         };
-        var calls = new List<MethodCall>
+        var calls = new List<IMethodCall>
         {
             MakeCall("m2", "m1"),
             MakeCall("m3", "m2")
@@ -182,16 +178,16 @@ public class AsyncFloodingAnalyzerTests
         // m2 calls interface method m_iface; m1 implements m_iface
         // Interface IService has no generic type parameters, so return type "void"
         // cannot be adjusted via type arguments — flooding must propagate.
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m1"] = MakeMethod("m1", "Impl", "void"),
             ["m_iface"] = MakeMethod("m_iface", "DoWork", "void") with { ContainingType = "IService" },
             ["m2"] = MakeMethod("m2", "Consumer", "int")
         };
-        var calls = new List<MethodCall> { MakeCall("m2", "m_iface") };
-        var impls = new List<InterfaceImplementation>
+        var calls = new List<IMethodCall> { MakeCall("m2", "m_iface") };
+        var impls = new List<IInterfaceImplementation>
         {
-            new() { CallGraphId = "g", ImplementingMethodId = "m1", InterfaceMethodId = "m_iface" }
+            new InterfaceImplementation { CallGraphId = "g", ImplementingMethodId = "m1", InterfaceMethodId = "m_iface" }
         };
         var graph = CreateCallGraph(methods, calls, impls);
 
@@ -207,16 +203,16 @@ public class AsyncFloodingAnalyzerTests
     {
         // m_override overrides m_base; m_caller calls m_base
         // Flooding from m_override should flood m_base (via override) and then m_caller
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m_override"] = MakeMethod("m_override", "DoWork", "void"),
             ["m_base"] = MakeMethod("m_base", "DoWork", "void"),
             ["m_caller"] = MakeMethod("m_caller", "Run", "string")
         };
-        var calls = new List<MethodCall> { MakeCall("m_caller", "m_base") };
-        var overrides = new List<MethodOverride>
+        var calls = new List<IMethodCall> { MakeCall("m_caller", "m_base") };
+        var overrides = new List<IMethodOverride>
         {
-            new() { CallGraphId = "g", OverridingMethodId = "m_override", BaseMethodId = "m_base" }
+            new MethodOverride { CallGraphId = "g", OverridingMethodId = "m_override", BaseMethodId = "m_base" }
         };
         var graph = CreateCallGraph(methods, calls, overrides: overrides);
 
@@ -231,16 +227,16 @@ public class AsyncFloodingAnalyzerTests
     public async Task FloodFromRoot_FloodsFromNonGenericInterfaceToImplementors()
     {
         // Non-generic interface: flooding from the interface method should flood all implementors
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m_iface"] = MakeMethod("m_iface", "DoWork", "void") with { ContainingType = "IService" },
             ["m_impl1"] = MakeMethod("m_impl1", "DoWork", "void"),
             ["m_impl2"] = MakeMethod("m_impl2", "DoWork", "void")
         };
-        var impls = new List<InterfaceImplementation>
+        var impls = new List<IInterfaceImplementation>
         {
-            new() { CallGraphId = "g", ImplementingMethodId = "m_impl1", InterfaceMethodId = "m_iface" },
-            new() { CallGraphId = "g", ImplementingMethodId = "m_impl2", InterfaceMethodId = "m_iface" }
+            new InterfaceImplementation { CallGraphId = "g", ImplementingMethodId = "m_impl1", InterfaceMethodId = "m_iface" },
+            new InterfaceImplementation { CallGraphId = "g", ImplementingMethodId = "m_impl2", InterfaceMethodId = "m_iface" }
         };
         var graph = CreateCallGraph(methods, interfaceImpls: impls);
 
@@ -256,7 +252,7 @@ public class AsyncFloodingAnalyzerTests
     {
         // Generic interface where return type is a type parameter:
         // flooding the generic interface should NOT flood through GenericInstantiation to instantiations or implementations
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m_iface_generic"] = MakeMethod("m_iface_generic", "Map", "TDestination?") with { ContainingType = "IMapper<TSource, TDestination>" },
             ["m_iface_foo"] = MakeMethod("m_iface_foo", "Map", "FooOutput?") with { ContainingType = "IMapper<FooInput, FooOutput>" },
@@ -264,15 +260,15 @@ public class AsyncFloodingAnalyzerTests
             ["m_impl1"] = MakeMethod("m_impl1", "Map", "FooOutput?") with { ContainingType = "FooMapper" },
             ["m_impl2"] = MakeMethod("m_impl2", "Map", "BarOutput?") with { ContainingType = "BarMapper" }
         };
-        var impls = new List<InterfaceImplementation>
+        var impls = new List<IInterfaceImplementation>
         {
-            new() { CallGraphId = "g", ImplementingMethodId = "m_impl1", InterfaceMethodId = "m_iface_foo" },
-            new() { CallGraphId = "g", ImplementingMethodId = "m_impl2", InterfaceMethodId = "m_iface_bar" }
+            new InterfaceImplementation { CallGraphId = "g", ImplementingMethodId = "m_impl1", InterfaceMethodId = "m_iface_foo" },
+            new InterfaceImplementation { CallGraphId = "g", ImplementingMethodId = "m_impl2", InterfaceMethodId = "m_iface_bar" }
         };
-        var genericInstantiations = new List<GenericInstantiation>
+        var genericInstantiations = new List<IGenericInstantiation>
         {
-            new() { CallGraphId = "g", InstantiatedMethodId = "m_iface_foo", GenericMethodId = "m_iface_generic" },
-            new() { CallGraphId = "g", InstantiatedMethodId = "m_iface_bar", GenericMethodId = "m_iface_generic" }
+            new GenericInstantiation { CallGraphId = "g", InstantiatedMethodId = "m_iface_foo", GenericMethodId = "m_iface_generic" },
+            new GenericInstantiation { CallGraphId = "g", InstantiatedMethodId = "m_iface_bar", GenericMethodId = "m_iface_generic" }
         };
         var graph = CreateCallGraph(methods, interfaceImpls: impls, genericInstantiations: genericInstantiations);
 
@@ -294,14 +290,14 @@ public class AsyncFloodingAnalyzerTests
     public async Task FloodFromRoot_FloodsFromBaseToOverrides()
     {
         // Flooding from base method should also flood overriding methods
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m_base"] = MakeMethod("m_base", "DoWork", "int"),
             ["m_child"] = MakeMethod("m_child", "DoWork", "int")
         };
-        var overrides = new List<MethodOverride>
+        var overrides = new List<IMethodOverride>
         {
-            new() { CallGraphId = "g", OverridingMethodId = "m_child", BaseMethodId = "m_base" }
+            new MethodOverride { CallGraphId = "g", OverridingMethodId = "m_child", BaseMethodId = "m_base" }
         };
         var graph = CreateCallGraph(methods, overrides: overrides);
 
@@ -314,14 +310,14 @@ public class AsyncFloodingAnalyzerTests
     [Fact]
     public async Task FloodFromRoot_HandlesMultipleRoots()
     {
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m1"] = MakeMethod("m1", "Root1", "void"),
             ["m2"] = MakeMethod("m2", "Root2", "int"),
             ["m3"] = MakeMethod("m3", "CallerOf1", "string"),
             ["m4"] = MakeMethod("m4", "CallerOf2", "bool")
         };
-        var calls = new List<MethodCall>
+        var calls = new List<IMethodCall>
         {
             MakeCall("m3", "m1"),
             MakeCall("m4", "m2")
@@ -340,12 +336,12 @@ public class AsyncFloodingAnalyzerTests
     public async Task FloodFromRoot_HandlesCyclicCalls()
     {
         // m1 -> m2 -> m1 (cycle)
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m1"] = MakeMethod("m1", "A", "void"),
             ["m2"] = MakeMethod("m2", "B", "void")
         };
-        var calls = new List<MethodCall>
+        var calls = new List<IMethodCall>
         {
             MakeCall("m1", "m2"),
             MakeCall("m2", "m1")
@@ -361,7 +357,7 @@ public class AsyncFloodingAnalyzerTests
     [Fact]
     public async Task FloodFromRoot_CreatesNewCallGraphWithDifferentId()
     {
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m1"] = MakeMethod("m1", "Root", "void")
         };
@@ -370,18 +366,17 @@ public class AsyncFloodingAnalyzerTests
         var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m1"]);
 
         result.Id.Should().NotBe(graph.Id);
-        result.ProjectName.Should().Be("TestProject-async");
     }
 
     [Fact]
     public async Task FloodFromRoot_PreservesCallRelationships()
     {
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m1"] = MakeMethod("m1", "Root", "void"),
             ["m2"] = MakeMethod("m2", "Caller", "void")
         };
-        var calls = new List<MethodCall> { MakeCall("m2", "m1") };
+        var calls = new List<IMethodCall> { MakeCall("m2", "m1") };
         var graph = CreateCallGraph(methods, calls);
 
         var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m1"]);
@@ -396,14 +391,14 @@ public class AsyncFloodingAnalyzerTests
     [Fact]
     public async Task FloodFromRoot_PreservesInterfaceImplementations()
     {
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m1"] = MakeMethod("m1", "Impl", "void"),
             ["m_iface"] = MakeMethod("m_iface", "DoWork", "void")
         };
-        var impls = new List<InterfaceImplementation>
+        var impls = new List<IInterfaceImplementation>
         {
-            new() { CallGraphId = "g", ImplementingMethodId = "m1", InterfaceMethodId = "m_iface" }
+            new InterfaceImplementation { CallGraphId = "g", ImplementingMethodId = "m1", InterfaceMethodId = "m_iface" }
         };
         var graph = CreateCallGraph(methods, interfaceImpls: impls);
 
@@ -419,12 +414,12 @@ public class AsyncFloodingAnalyzerTests
     [Fact]
     public async Task FloodFromRoot_SupportsCancellation()
     {
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m1"] = MakeMethod("m1", "Root", "void"),
             ["m2"] = MakeMethod("m2", "Caller", "void")
         };
-        var calls = new List<MethodCall> { MakeCall("m2", "m1") };
+        var calls = new List<IMethodCall> { MakeCall("m2", "m1") };
         var graph = CreateCallGraph(methods, calls);
 
         var cts = new CancellationTokenSource();
@@ -438,12 +433,12 @@ public class AsyncFloodingAnalyzerTests
     [Fact]
     public async Task FloodFromRoot_ReportsProgress()
     {
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m1"] = MakeMethod("m1", "Root", "void"),
             ["m2"] = MakeMethod("m2", "Caller", "void")
         };
-        var calls = new List<MethodCall> { MakeCall("m2", "m1") };
+        var calls = new List<IMethodCall> { MakeCall("m2", "m1") };
         var graph = CreateCallGraph(methods, calls);
 
         var progressCalls = new List<(string method, int current, int total)>();
@@ -472,12 +467,12 @@ public class AsyncFloodingAnalyzerTests
     [Fact]
     public async Task GetTransformationInfo_ReturnsFloodedMethods()
     {
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m1"] = MakeMethod("m1", "Root", "void"),
             ["m2"] = MakeMethod("m2", "Caller", "int")
         };
-        var calls = new List<MethodCall> { MakeCall("m2", "m1") };
+        var calls = new List<IMethodCall> { MakeCall("m2", "m1") };
         var graph = CreateCallGraph(methods, calls);
 
         var asyncGraph = await _analyzer.AnalyzeFloodingAsync(graph, ["m1"]);
@@ -491,14 +486,14 @@ public class AsyncFloodingAnalyzerTests
     [Fact]
     public async Task GetTransformationInfo_IncludesInterfaceMethodIds()
     {
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m1"] = MakeMethod("m1", "Impl", "void"),
             ["m_iface"] = MakeMethod("m_iface", "DoWork", "void")
         };
-        var impls = new List<InterfaceImplementation>
+        var impls = new List<IInterfaceImplementation>
         {
-            new() { CallGraphId = "g", ImplementingMethodId = "m1", InterfaceMethodId = "m_iface" }
+            new InterfaceImplementation { CallGraphId = "g", ImplementingMethodId = "m1", InterfaceMethodId = "m_iface" }
         };
         var graph = CreateCallGraph(methods, interfaceImpls: impls);
 
@@ -532,7 +527,7 @@ public class AsyncFloodingAnalyzerTests
         //   - BarMapper.Map stays unchanged
         //   - Callers of IMapper.Map stay unchanged
 
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             // Generic interface method: IMapper<TSource, TDestination>.Map(TSource) -> TDestination?
             ["imap_map_generic"] = MakeMethod("imap_map_generic", "Map", "TDestination?") with { ContainingType = "IMapper<TSource, TDestination>" },
@@ -554,7 +549,7 @@ public class AsyncFloodingAnalyzerTests
             ["task_wrapper"] = MakeMethod("task_wrapper", "RunSync", "FooOutput") with { ContainingType = "SyncHelper" },
         };
 
-        var calls = new List<MethodCall>
+        var calls = new List<IMethodCall>
         {
             // FooMapper.Map calls the task wrapper (this is why it needs to become async)
             MakeCall("foo_map", "task_wrapper"),
@@ -562,16 +557,16 @@ public class AsyncFloodingAnalyzerTests
             MakeCall("consumer", "imap_map_foo"),
         };
 
-        var impls = new List<InterfaceImplementation>
+        var impls = new List<IInterfaceImplementation>
         {
-            new() { CallGraphId = "g", ImplementingMethodId = "foo_map", InterfaceMethodId = "imap_map_foo" },
-            new() { CallGraphId = "g", ImplementingMethodId = "bar_map", InterfaceMethodId = "imap_map_bar" },
+            new InterfaceImplementation { CallGraphId = "g", ImplementingMethodId = "foo_map", InterfaceMethodId = "imap_map_foo" },
+            new InterfaceImplementation { CallGraphId = "g", ImplementingMethodId = "bar_map", InterfaceMethodId = "imap_map_bar" },
         };
 
-        var genericInstantiations = new List<GenericInstantiation>
+        var genericInstantiations = new List<IGenericInstantiation>
         {
-            new() { CallGraphId = "g", InstantiatedMethodId = "imap_map_foo", GenericMethodId = "imap_map_generic" },
-            new() { CallGraphId = "g", InstantiatedMethodId = "imap_map_bar", GenericMethodId = "imap_map_generic" },
+            new GenericInstantiation { CallGraphId = "g", InstantiatedMethodId = "imap_map_foo", GenericMethodId = "imap_map_generic" },
+            new GenericInstantiation { CallGraphId = "g", InstantiatedMethodId = "imap_map_bar", GenericMethodId = "imap_map_generic" },
         };
 
         var graph = CreateCallGraph(methods, calls, impls, genericInstantiations: genericInstantiations);
@@ -612,7 +607,7 @@ public class AsyncFloodingAnalyzerTests
     {
         // Generic interface where return type is NOT a type parameter (e.g. void):
         // flooding from instantiated → generic should propagate
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m_iface_generic"] = MakeMethod("m_iface_generic", "Execute", "void") with { ContainingType = "IHandler<TRequest>" },
             ["m_iface_foo"] = MakeMethod("m_iface_foo", "Execute", "void") with { ContainingType = "IHandler<FooRequest>" },
@@ -620,15 +615,15 @@ public class AsyncFloodingAnalyzerTests
             ["m_impl_foo"] = MakeMethod("m_impl_foo", "Execute", "void") with { ContainingType = "FooHandler" },
             ["m_impl_bar"] = MakeMethod("m_impl_bar", "Execute", "void") with { ContainingType = "BarHandler" },
         };
-        var impls = new List<InterfaceImplementation>
+        var impls = new List<IInterfaceImplementation>
         {
-            new() { CallGraphId = "g", ImplementingMethodId = "m_impl_foo", InterfaceMethodId = "m_iface_foo" },
-            new() { CallGraphId = "g", ImplementingMethodId = "m_impl_bar", InterfaceMethodId = "m_iface_bar" },
+            new InterfaceImplementation { CallGraphId = "g", ImplementingMethodId = "m_impl1", InterfaceMethodId = "m_iface_foo" },
+            new InterfaceImplementation { CallGraphId = "g", ImplementingMethodId = "m_impl2", InterfaceMethodId = "m_iface_bar" }
         };
-        var genericInstantiations = new List<GenericInstantiation>
+        var genericInstantiations = new List<IGenericInstantiation>
         {
-            new() { CallGraphId = "g", InstantiatedMethodId = "m_iface_foo", GenericMethodId = "m_iface_generic" },
-            new() { CallGraphId = "g", InstantiatedMethodId = "m_iface_bar", GenericMethodId = "m_iface_generic" },
+            new GenericInstantiation { CallGraphId = "g", InstantiatedMethodId = "m_iface_foo", GenericMethodId = "m_iface_generic" },
+            new GenericInstantiation { CallGraphId = "g", InstantiatedMethodId = "m_iface_bar", GenericMethodId = "m_iface_generic" }
         };
         var graph = CreateCallGraph(methods, interfaceImpls: impls, genericInstantiations: genericInstantiations);
 
@@ -651,7 +646,7 @@ public class AsyncFloodingAnalyzerTests
     {
         // Same setup as FloodFromRoot_FloodsThroughGenericInstantiation_WhenReturnTypeIsNotTypeParameter
         // but with the generic method ID blocked — flooding should NOT cross the instantiation↔generic boundary
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m_iface_generic"] = MakeMethod("m_iface_generic", "Execute", "void") with { ContainingType = "IHandler<TRequest>" },
             ["m_iface_foo"] = MakeMethod("m_iface_foo", "Execute", "void") with { ContainingType = "IHandler<FooRequest>" },
@@ -659,15 +654,15 @@ public class AsyncFloodingAnalyzerTests
             ["m_impl_foo"] = MakeMethod("m_impl_foo", "Execute", "void") with { ContainingType = "FooHandler" },
             ["m_impl_bar"] = MakeMethod("m_impl_bar", "Execute", "void") with { ContainingType = "BarHandler" },
         };
-        var impls = new List<InterfaceImplementation>
+        var impls = new List<IInterfaceImplementation>
         {
-            new() { CallGraphId = "g", ImplementingMethodId = "m_impl_foo", InterfaceMethodId = "m_iface_foo" },
-            new() { CallGraphId = "g", ImplementingMethodId = "m_impl_bar", InterfaceMethodId = "m_iface_bar" },
+            new InterfaceImplementation { CallGraphId = "g", ImplementingMethodId = "m_impl_foo", InterfaceMethodId = "m_iface_foo" },
+            new InterfaceImplementation { CallGraphId = "g", ImplementingMethodId = "m_impl_bar", InterfaceMethodId = "m_iface_bar" },
         };
-        var genericInstantiations = new List<GenericInstantiation>
+        var genericInstantiations = new List<IGenericInstantiation>
         {
-            new() { CallGraphId = "g", InstantiatedMethodId = "m_iface_foo", GenericMethodId = "m_iface_generic" },
-            new() { CallGraphId = "g", InstantiatedMethodId = "m_iface_bar", GenericMethodId = "m_iface_generic" },
+            new GenericInstantiation { CallGraphId = "g", InstantiatedMethodId = "m_iface_foo", GenericMethodId = "m_iface_generic" },
+            new GenericInstantiation { CallGraphId = "g", InstantiatedMethodId = "m_iface_bar", GenericMethodId = "m_iface_generic" },
         };
         var graph = CreateCallGraph(methods, interfaceImpls: impls, genericInstantiations: genericInstantiations);
 
@@ -691,7 +686,7 @@ public class AsyncFloodingAnalyzerTests
     public async Task FloodFromRoot_BlockedGenericMethodIds_DebugVersion_PreventsInstantiationToGenericPropagation()
     {
         // Same test as above but using the debug (WithDebug) overload
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m_iface_generic"] = MakeMethod("m_iface_generic", "Execute", "void") with { ContainingType = "IHandler<TRequest>" },
             ["m_iface_foo"] = MakeMethod("m_iface_foo", "Execute", "void") with { ContainingType = "IHandler<FooRequest>" },
@@ -699,15 +694,15 @@ public class AsyncFloodingAnalyzerTests
             ["m_impl_foo"] = MakeMethod("m_impl_foo", "Execute", "void") with { ContainingType = "FooHandler" },
             ["m_impl_bar"] = MakeMethod("m_impl_bar", "Execute", "void") with { ContainingType = "BarHandler" },
         };
-        var impls = new List<InterfaceImplementation>
+        var impls = new List<IInterfaceImplementation>
         {
-            new() { CallGraphId = "g", ImplementingMethodId = "m_impl_foo", InterfaceMethodId = "m_iface_foo" },
-            new() { CallGraphId = "g", ImplementingMethodId = "m_impl_bar", InterfaceMethodId = "m_iface_bar" },
+            new InterfaceImplementation { CallGraphId = "g", ImplementingMethodId = "m_impl_foo", InterfaceMethodId = "m_iface_foo" },
+            new InterfaceImplementation { CallGraphId = "g", ImplementingMethodId = "m_impl_bar", InterfaceMethodId = "m_iface_bar" },
         };
-        var genericInstantiations = new List<GenericInstantiation>
+        var genericInstantiations = new List<IGenericInstantiation>
         {
-            new() { CallGraphId = "g", InstantiatedMethodId = "m_iface_foo", GenericMethodId = "m_iface_generic" },
-            new() { CallGraphId = "g", InstantiatedMethodId = "m_iface_bar", GenericMethodId = "m_iface_generic" },
+            new GenericInstantiation { CallGraphId = "g", InstantiatedMethodId = "m_iface_foo", GenericMethodId = "m_iface_generic" },
+            new GenericInstantiation { CallGraphId = "g", InstantiatedMethodId = "m_iface_bar", GenericMethodId = "m_iface_generic" },
         };
         var graph = CreateCallGraph(methods, interfaceImpls: impls, genericInstantiations: genericInstantiations);
 
@@ -733,14 +728,14 @@ public class AsyncFloodingAnalyzerTests
     [Fact]
     public async Task FloodFromRoot_PreservesGenericInstantiations()
     {
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["m_generic"] = MakeMethod("m_generic", "Map", "TDestination") with { ContainingType = "IMapper<TSource, TDestination>" },
             ["m_inst"] = MakeMethod("m_inst", "Map", "Foo") with { ContainingType = "IMapper<Bar, Foo>" },
         };
-        var genericInstantiations = new List<GenericInstantiation>
+        var genericInstantiations = new List<IGenericInstantiation>
         {
-            new() { CallGraphId = "g", InstantiatedMethodId = "m_inst", GenericMethodId = "m_generic" },
+            new GenericInstantiation { CallGraphId = "g", InstantiatedMethodId = "m_inst", GenericMethodId = "m_generic" },
         };
         var graph = CreateCallGraph(methods, genericInstantiations: genericInstantiations);
 
@@ -758,7 +753,7 @@ public class AsyncFloodingAnalyzerTests
     {
         // Setup: GetName calls lambda, lambda calls session.GetName (root)
         // Execute has async overload that returns Task<string>
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["GetName"] = MakeMethod("GetName", "GetName", "string"),
             ["lambda1"] = MakeMethod("lambda1", "<lambda>", "string"),
@@ -766,7 +761,7 @@ public class AsyncFloodingAnalyzerTests
             ["Execute_async"] = MakeMethod("Execute_async", "Execute", "Task<string>"),
         };
 
-        var calls = new List<MethodCall>
+        var calls = new List<IMethodCall>
         {
             MakeCall("GetName", "lambda1"),       // GetName -> lambda
             MakeCall("lambda1", "session.GetName") // lambda -> session.GetName (root)
@@ -786,14 +781,9 @@ public class AsyncFloodingAnalyzerTests
         };
 
         var graphId = Guid.NewGuid().ToString();
-        var methodDict = new ConcurrentDictionary<string, MethodNode>(methods);
-        var callBag = new ConcurrentBag<MethodCall>(calls);
-        var graph = new CallGraph(callBag, lambdaAsyncOverloads: lambdaOverloads)
-        {
-            Id = graphId,
-            ProjectName = "TestProject",
-            Methods = methodDict
-        };
+        var methodDict = new ConcurrentDictionary<string, IMethodNode>(methods.Select(kvp => new KeyValuePair<string, IMethodNode>(kvp.Key, kvp.Value)));
+        var callBag = new ConcurrentBag<IMethodCall>(calls.Cast<IMethodCall>());
+        var graph = new CallGraph(graphId, methodDict, callBag, lambdaAsyncOverloads: lambdaOverloads);
 
         // Flood from session.GetName (the root async method)
         var result = await _analyzer.AnalyzeFloodingAsync(graph, ["session.GetName"]);
@@ -817,14 +807,14 @@ public class AsyncFloodingAnalyzerTests
     [Fact]
     public async Task FloodWithLambdaAsyncOverload_NoSyntheticEdge_WhenLambdaNotFlooded()
     {
-        var methods = new Dictionary<string, MethodNode>
+        var methods = new Dictionary<string, IMethodNode>
         {
             ["GetName"] = MakeMethod("GetName", "GetName", "string"),
             ["lambda1"] = MakeMethod("lambda1", "<lambda>", "string"),
             ["Execute_async"] = MakeMethod("Execute_async", "Execute", "Task<string>"),
         };
 
-        var calls = new List<MethodCall>
+        var calls = new List<IMethodCall>
         {
             MakeCall("GetName", "lambda1"),
         };
@@ -843,14 +833,9 @@ public class AsyncFloodingAnalyzerTests
         };
 
         var graphId = Guid.NewGuid().ToString();
-        var methodDict = new ConcurrentDictionary<string, MethodNode>(methods);
-        var callBag = new ConcurrentBag<MethodCall>(calls);
-        var graph = new CallGraph(callBag, lambdaAsyncOverloads: lambdaOverloads)
-        {
-            Id = graphId,
-            ProjectName = "TestProject",
-            Methods = methodDict
-        };
+        var methodDict = new ConcurrentDictionary<string, IMethodNode>(methods.Select(kvp => new KeyValuePair<string, IMethodNode>(kvp.Key, kvp.Value)));
+        var callBag = new ConcurrentBag<IMethodCall>(calls.Cast<IMethodCall>());
+        var graph = new CallGraph(graphId, methodDict, callBag, lambdaAsyncOverloads: lambdaOverloads);
 
         // Flood from some unrelated method — lambda1 is NOT flooded
         var result = await _analyzer.AnalyzeFloodingAsync(graph, ["Execute_async"]);

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using AsyncRewriter.Analyzer;
+using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
 using FluentAssertions;
 using Xunit;
@@ -15,17 +16,17 @@ public class ProblematicInterfaceAnalyzerTests
         List<GenericInstantiation>? genericInstantiations = null)
     {
         var graphId = Guid.NewGuid().ToString();
-        var methodDict = new ConcurrentDictionary<string, MethodNode>(methods);
-        var callBag = new ConcurrentBag<MethodCall>(calls ?? []);
-        var implBag = new ConcurrentBag<InterfaceImplementation>(interfaceImpls ?? []);
-        var genBag = new ConcurrentBag<GenericInstantiation>(genericInstantiations ?? []);
-
-        return new CallGraph(callBag, implBag, genericInstantiations: genBag)
+        var methodDict = new ConcurrentDictionary<string, IMethodNode>();
+        foreach (var kvp in methods)
         {
-            Id = graphId,
-            ProjectName = "TestProject",
-            Methods = methodDict
-        };
+            methodDict[kvp.Key] = kvp.Value;
+        }
+
+        var callBag = new ConcurrentBag<IMethodCall>(calls ?? []);
+        var implBag = new ConcurrentBag<IInterfaceImplementation>(interfaceImpls ?? []);
+        var genBag = new ConcurrentBag<IGenericInstantiation>(genericInstantiations ?? []);
+
+        return new CallGraph(graphId, methodDict, callBag, implBag, genericInstantiations: genBag);
     }
 
     private static MethodNode MakeMethod(string id, string name, string returnType,

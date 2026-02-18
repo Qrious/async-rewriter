@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -8,8 +7,6 @@ using System.Threading.Tasks;
 using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
 using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.MSBuild;
 using Microsoft.Extensions.Logging;
 
@@ -23,11 +20,11 @@ public class CallGraphBuilder : ICallGraphBuilder
     private readonly IMethodExtractorFactory _methodExtractorFactory;
     private readonly IMethodCallExtractorFactory _methodCallExtractorFactory;
     private readonly ILogger<CallGraphBuilder> _logger;
-    private readonly ConcurrentDictionary<string, MethodNode> _methods = new();
-    private readonly ConcurrentBag<MethodCall> _calls = new();
-    private readonly ConcurrentBag<InterfaceImplementation> _implementations = new();
-    private readonly ConcurrentBag<MethodOverride> _overrides = new();
-    private readonly ConcurrentBag<GenericInstantiation> _genericInstantiations = new();
+    private readonly ConcurrentDictionary<string, IMethodNode> _methods = new();
+    private readonly ConcurrentBag<IMethodCall> _calls = new();
+    private readonly ConcurrentBag<IInterfaceImplementation> _implementations = new();
+    private readonly ConcurrentBag<IMethodOverride> _overrides = new();
+    private readonly ConcurrentBag<IGenericInstantiation> _genericInstantiations = new();
     private readonly ConcurrentBag<LambdaAsyncOverload> _lambdaAsyncOverloads = new();
 
 
@@ -37,7 +34,7 @@ public class CallGraphBuilder : ICallGraphBuilder
         _methodCallExtractorFactory = methodCallExtractorFactory;
         _logger = logger;
     }
-    
+
     public async Task<CallGraph> Build(
         string solutionPath,
         CancellationToken cancellationToken = default)
@@ -48,22 +45,19 @@ public class CallGraphBuilder : ICallGraphBuilder
 
         _logger.LogInformation($"Loading solution {Path.GetFileName(solutionPath)}...");
         var solution = await workspace.OpenSolutionAsync(solutionPath, cancellationToken: cancellationToken);
-        
+
        await Build(solution, (Methods: _methods, Implementations: _implementations, Overrides: _overrides, GenericInstantiations: _genericInstantiations), async (root, semanticModel, filePath, context, ct) =>
            await (await _methodExtractorFactory.Create()).Extract(callGraphId, root, semanticModel, filePath, context.Methods, context.Implementations, context.Overrides, context.GenericInstantiations, ct), cancellationToken);
-       
+
        // Build a resolver that can find SemanticModels across all projects in the solution
        var resolver = await SolutionSemanticModelResolver.CreateAsync(solution, cancellationToken);
 
        await Build(solution, (Methods: _methods, Calls: _calls, LambdaOverloads: _lambdaAsyncOverloads), async (root, semanticModel, filePath, context, ct) =>
            await (await _methodCallExtractorFactory.Create()).Extract(callGraphId, root, semanticModel, filePath, context.Methods, context.Calls, resolver, context.LambdaOverloads, ct), cancellationToken);
 
-       return new CallGraph(_calls, _implementations, _overrides, _genericInstantiations, _lambdaAsyncOverloads)
-       {
-           Methods = _methods,
-       };
+       return new CallGraph(callGraphId.ToString(), _methods, _calls, _implementations, _overrides, _genericInstantiations, _lambdaAsyncOverloads);
     }
-    
+
     private async Task Build<T>(Solution solution, T context, Func<SyntaxNode, SemanticModel, string, T, CancellationToken , Task> builder, CancellationToken cancellationToken = default)
     {
         // Process all projects in the solution
@@ -85,7 +79,7 @@ public class CallGraphBuilder : ICallGraphBuilder
             var trees = compilation.SyntaxTrees.ToList();
             var total = trees.Count;
             var processed = 0;
-            
+
             // Process syntax trees in parallel
             await Parallel.ForEachAsync(
                 trees,

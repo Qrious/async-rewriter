@@ -6,7 +6,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
+using Microsoft.Extensions.Logging;
 using Neo4j.Driver;
+using ILogger = Microsoft.Extensions.Logging.ILogger;
 
 namespace AsyncRewriter.Neo4j;
 
@@ -17,17 +19,14 @@ namespace AsyncRewriter.Neo4j;
 /// </summary>
 public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, IDisposable
 {
+    private readonly ILogger _logger;
     private readonly IDriver _driver;
     private const int BatchSize = 500;
 
-    public Neo4jCallGraphRepository(string uri, string user, string password)
+    public Neo4jCallGraphRepository(Neo4JCredentials credentials, ILogger logger)
     {
-        _driver = GraphDatabase.Driver(uri, AuthTokens.Basic(user, password));
-    }
-
-    public Neo4jCallGraphRepository(IDriver driver)
-    {
-        _driver = driver;
+        _logger = logger;
+        _driver = GraphDatabase.Driver(credentials.Url, AuthTokens.Basic(credentials.Username, credentials.Password));
     }
 
     /// <summary>
@@ -47,20 +46,14 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
         await session.RunAsync("CREATE INDEX method_ns_type IF NOT EXISTS FOR (m:Method) ON (m.callGraphId, m.containingNamespace, m.containingType)");
     }
 
-    public Task StoreCallGraphAsync(CallGraph callGraph, CancellationToken cancellationToken = default)
-    {
-        return StoreCallGraphAsync(callGraph, null, cancellationToken);
-    }
-
     public async Task StoreCallGraphAsync(
-        CallGraph callGraph,
-        Action<string, int, int>? progressCallback,
+        ICallGraph callGraph,
         CancellationToken cancellationToken = default)
     {
         await using var session = _driver.AsyncSession();
 
         // 1. Clean any existing data for this call graph
-        progressCallback?.Invoke("Clearing existing data", 0, 3);
+        _logger.LogInformation("Clearing existing data");
         await session.ExecuteWriteAsync(async tx =>
         {
             await tx.RunAsync(
@@ -78,7 +71,7 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
             cancellationToken.ThrowIfCancellationRequested();
             var batch = methods.Skip(i).Take(BatchSize).ToList();
             var processed = Math.Min(i + BatchSize, totalMethods);
-            progressCallback?.Invoke("Creating Method nodes", processed, totalMethods);
+            _logger.LogInformation("Creating Method nodes", processed, totalMethods);
 
             await session.ExecuteWriteAsync(async tx =>
             {
@@ -122,7 +115,7 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
             cancellationToken.ThrowIfCancellationRequested();
             var batch = calls.Skip(i).Take(BatchSize).ToList();
             var processed = Math.Min(i + BatchSize, totalCalls);
-            progressCallback?.Invoke("Creating CALLS relationships", processed, totalCalls);
+            _logger.LogInformation("Creating ({Processed}/{Total}) CALLS relationships", processed, totalCalls);
 
             await session.ExecuteWriteAsync(async tx =>
             {
@@ -160,7 +153,7 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
             cancellationToken.ThrowIfCancellationRequested();
             var batch = implementations.Skip(i).Take(BatchSize).ToList();
             var processed = Math.Min(i + BatchSize, totalImpls);
-            progressCallback?.Invoke("Creating IMPLEMENTS relationships", processed, totalImpls);
+            _logger.LogInformation("Creating ({Processed}/{Total}) IMPLEMENTS relationships", processed, totalImpls);
 
             await session.ExecuteWriteAsync(async tx =>
             {
@@ -191,7 +184,7 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
             cancellationToken.ThrowIfCancellationRequested();
             var batch = overrides.Skip(i).Take(BatchSize).ToList();
             var processed = Math.Min(i + BatchSize, totalOverrides);
-            progressCallback?.Invoke("Creating OVERRIDES relationships", processed, totalOverrides);
+            _logger.LogInformation("Creating ({Processed}/{Total}) OVERRIDES relationships", processed, totalOverrides);
 
             await session.ExecuteWriteAsync(async tx =>
             {
@@ -212,82 +205,7 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
                     });
             });
         }
-
-        progressCallback?.Invoke("Done", totalMethods + totalCalls + totalImpls + totalOverrides, totalMethods + totalCalls + totalImpls + totalOverrides);
-    }
-
-    public async Task<CallGraph?> GetCallGraphAsync(string id, CancellationToken cancellationToken = default)
-    {
-        await using var session = _driver.AsyncSession();
-
-        return await session.ExecuteReadAsync(async tx =>
-        {
-            // Check if any methods exist for this call graph
-            var checkResult = await tx.RunAsync(
-                "MATCH (m:Method {callGraphId: $id}) RETURN m LIMIT 1",
-                new { id });
-            var checkRecord = await checkResult.SingleAsync();
-            if (checkRecord == null) return null;
-
-            return await ReadCallGraphFromTransaction(tx, id);
-        });
-    }
-
-    public async Task<CallGraph?> GetCallGraphByProjectAsync(string projectName, CancellationToken cancellationToken = default)
-    {
-        await using var session = _driver.AsyncSession();
-
-        return await session.ExecuteReadAsync(async tx =>
-        {
-            // Find a callGraphId for methods that belong to this project's namespace
-            // Since we no longer have a CallGraph node, we look for methods whose namespace matches the project name
-            var result = await tx.RunAsync(
-                "MATCH (m:Method) WHERE m.containingNamespace STARTS WITH $projectName RETURN m.callGraphId AS callGraphId LIMIT 1",
-                new { projectName });
-            var record = await result.SingleAsync();
-            if (record == null) return null;
-
-            var callGraphId = record["callGraphId"].As<string>();
-            return await ReadCallGraphFromTransaction(tx, callGraphId);
-        });
-    }
-
-    public async Task<List<MethodNode>> FindCallersAsync(string methodId, int depth = -1, CancellationToken cancellationToken = default)
-    {
-        await using var session = _driver.AsyncSession();
-
-        var depthClause = depth < 0 ? "*" : $"*1..{depth}";
-
-        return await session.ExecuteReadAsync(async tx =>
-        {
-            var result = await tx.RunAsync(
-                $"MATCH (caller:Method)-[:CALLS{depthClause}]->(target:Method {{id: $methodId}}) " +
-                "WHERE caller.id <> $methodId " +
-                "RETURN DISTINCT caller",
-                new { methodId });
-
-            var records = await result.ToListAsync();
-            return records.Select(r => MapToMethodNode(r["caller"].As<INode>())).ToList();
-        });
-    }
-
-    public async Task<List<MethodNode>> FindCalleesAsync(string methodId, int depth = -1, CancellationToken cancellationToken = default)
-    {
-        await using var session = _driver.AsyncSession();
-
-        var depthClause = depth < 0 ? "*" : $"*1..{depth}";
-
-        return await session.ExecuteReadAsync(async tx =>
-        {
-            var result = await tx.RunAsync(
-                $"MATCH (source:Method {{id: $methodId}})-[:CALLS{depthClause}]->(callee:Method) " +
-                "WHERE callee.id <> $methodId " +
-                "RETURN DISTINCT callee",
-                new { methodId });
-
-            var records = await result.ToListAsync();
-            return records.Select(r => MapToMethodNode(r["callee"].As<INode>())).ToList();
-        });
+        _logger.LogInformation("Finished storing call graph");
     }
 
     public async Task DeleteCallGraphAsync(string id, CancellationToken cancellationToken = default)
@@ -302,6 +220,19 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
         });
     }
 
+    public Task DeleteAllCallGraphsAsync(CancellationToken cancellationToken = default)
+    {
+        return Task.Run(async () =>
+        {
+            await using var session = _driver.AsyncSession();
+
+            await session.ExecuteWriteAsync(async tx =>
+            {
+                await tx.RunAsync("MATCH (n:Method) DETACH DELETE n");
+            });
+        }, cancellationToken);
+    }
+
     private async Task<CallGraph> ReadCallGraphFromTransaction(IAsyncQueryRunner tx, string callGraphId)
     {
         // Fetch all methods
@@ -310,7 +241,7 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
             new { callGraphId });
         var methodRecords = await methodsResult.ToListAsync();
 
-        var methods = new ConcurrentDictionary<string, MethodNode>();
+        var methods = new ConcurrentDictionary<string, IMethodNode>();
         foreach (var record in methodRecords)
         {
             var method = MapToMethodNode(record["m"].As<INode>());
@@ -324,7 +255,7 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
             new { callGraphId });
         var callRecords = await callsResult.ToListAsync();
 
-        var callsBag = new ConcurrentBag<MethodCall>();
+        var callsBag = new ConcurrentBag<IMethodCall>();
         foreach (var record in callRecords)
         {
             var rel = record["r"].As<IRelationship>();
@@ -347,7 +278,7 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
             new { callGraphId });
         var implRecords = await implsResult.ToListAsync();
 
-        var implsBag = new ConcurrentBag<InterfaceImplementation>();
+        var implsBag = new ConcurrentBag<IInterfaceImplementation>();
         foreach (var record in implRecords)
         {
             implsBag.Add(new InterfaceImplementation
@@ -365,7 +296,7 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
             new { callGraphId });
         var overrideRecords = await overridesResult.ToListAsync();
 
-        var overridesBag = new ConcurrentBag<MethodOverride>();
+        var overridesBag = new ConcurrentBag<IMethodOverride>();
         foreach (var record in overrideRecords)
         {
             overridesBag.Add(new MethodOverride
@@ -376,12 +307,287 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
             });
         }
 
-        return new CallGraph(callsBag, implsBag, overridesBag)
-        {
-            Id = callGraphId,
-            Methods = methods,
-        };
+        return new CallGraph(callGraphId, methods, callsBag, implsBag, overridesBag);
     }
+
+    public async Task Save<TMethodMetadata, TCallMetadata>(ICallGraphWithMetadata<TMethodMetadata, TCallMetadata> callGraphWithMetadata, CancellationToken cancellationToken)
+        where TMethodMetadata : IGraphMetadata<TMethodMetadata>
+        where TCallMetadata : IGraphMetadata<TCallMetadata>
+    {
+        await using var session = _driver.AsyncSession();
+
+        var methodsList = callGraphWithMetadata.Methods.ToArray();
+        var callsList = callGraphWithMetadata.Calls.ToArray();
+        var totalMethods = methodsList.Length;
+        var totalCalls = callsList.Length;
+
+        // Process methods in batches of 1000
+        const int batchSize = 1000;
+
+        for (int i = 0; i < totalMethods; i += batchSize)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var batchEnd = Math.Min(i + batchSize, totalMethods);
+            var batch = new object[batchEnd - i];
+
+            for (int j = 0; j < batch.Length; j++)
+            {
+                var (key, method) = methodsList[i + j];
+
+                var methodDict = new Dictionary<string, object>
+                {
+                    ["id"] = method.Id,
+                    ["name"] = method.Name,
+                    ["containingType"] = method.ContainingType,
+                    ["containingNamespace"] = method.ContainingNamespace,
+                    ["returnType"] = method.ReturnType,
+                    ["parameters"] = method.Parameters.Select(p => p.ToString()).ToList(),
+                    ["filePath"] = method.FilePath,
+                    ["startLine"] = method.StartLine,
+                    ["endLine"] = method.EndLine,
+                    ["callGraphId"] = callGraphWithMetadata.Id
+                };
+
+                // Add metadata if available
+                if (callGraphWithMetadata.TryGetMethodMetadata(method.Id, out var metadata))
+                {
+                    foreach (var kvp in metadata.ToDictionary())
+                    {
+                        methodDict[kvp.Key] = kvp.Value;
+                    }
+                }
+
+                batch[j] = methodDict;
+            }
+
+            await session.ExecuteWriteAsync(async tx =>
+            {
+                await tx.RunAsync(
+                    @"UNWIND $methods AS method
+                      CREATE (m:Method)
+                      SET m = method",
+                    new { methods = batch });
+            });
+
+            _logger.LogInformation("Writing methods ({methodsProcessed}/{totalMethods})...", batchEnd, totalMethods);
+        }
+
+        for (int i = 0; i < totalCalls; i += batchSize)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var batchEnd = Math.Min(i + batchSize, totalCalls);
+            var batch = new object[batchEnd - i];
+
+            for (int j = 0; j < batch.Length; j++)
+            {
+                var call = callsList[i + j];
+
+                var callDict = new Dictionary<string, object>
+                {
+                    ["Caller"] = call.CallerId,
+                    ["Callee"] = call.CalleeId,
+                    ["LineNumber"] = call.LineNumber,
+                    ["FilePath"] = call.FilePath,
+                    ["CallGraphId"] = callGraphWithMetadata.Id.ToString()
+                };
+
+                // Add metadata if available
+                var callKey = $"{call.CallerId}|{call.CalleeId}|{call.LineNumber}";
+                if (callGraphWithMetadata.TryGetCallMetadata(callKey, out var metadata))
+                {
+                    foreach (var kvp in metadata.ToDictionary())
+                    {
+                        callDict[kvp.Key] = kvp.Value;
+                    }
+                }
+
+                batch[j] = callDict;
+            }
+
+            await session.ExecuteWriteAsync(async tx =>
+            {
+                await tx.RunAsync(
+                    @"UNWIND $calls AS call
+                      MATCH (caller:Method {id: call.Caller, callGraphId: call.CallGraphId})
+                      MATCH (callee:Method {id: call.Callee, callGraphId: call.CallGraphId})
+                      CREATE (caller)-[r:CALLS]->(callee)
+                      SET r = call",
+                    new { calls = batch });
+            });
+
+            _logger.LogInformation("Writing calls ({callsProcessed}/{totalCalls})...", batchEnd, totalCalls);
+        }
+    }
+
+    public async Task<ICallGraphWithMetadata<TMethodMetadata, TCallMetadata>> Load<TMethodMetadata, TCallMetadata>(Guid id, CancellationToken cancellationToken)
+        where TMethodMetadata : IGraphMetadata<TMethodMetadata>
+        where TCallMetadata : IGraphMetadata<TCallMetadata>
+    {
+        await using var session = _driver.AsyncSession();
+
+        _logger.LogInformation("Loading call graph with metadata from Neo4j...");
+
+        // Load all methods with all their properties
+        var methodsDict = new ConcurrentDictionary<string, IMethodNode>();
+        var methodMetadataDict = new Dictionary<string, Dictionary<string, string>>();
+
+        var methodsCursor = await session.RunAsync(
+            @"MATCH (m:Method)
+              WHERE m.callGraphId = $callGraphId
+              RETURN m",
+            new { callGraphId = id.ToString() });
+
+        var methodCount = 0;
+        await foreach (var record in methodsCursor)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var node = record["m"].As<INode>();
+            var properties = node.Properties;
+
+            var methodId = properties["id"].As<string>();
+            var parameters = properties["parameters"].As<List<string>>()
+                .ToList();
+
+            var method = new MethodNode
+            {
+                CallGraphId = id.ToString(),
+                Id = methodId,
+                Name = properties["name"].As<string>(),
+                ContainingType = properties["containingType"].As<string>(),
+                ContainingNamespace = properties["containingNamespace"].As<string>(),
+                ReturnType = properties["returnType"].As<string>(),
+                Parameters = parameters,
+                FilePath = properties["filePath"].As<string>(),
+                StartLine = properties.ContainsKey("startLine") ? properties["startLine"].As<int>() : 0,
+                EndLine = properties.ContainsKey("endLine") ? properties["endLine"].As<int>() : 0
+            };
+
+            methodsDict[methodId] = method;
+
+            // Extract metadata (properties starting with "meta_")
+            var metadata = new Dictionary<string, string>();
+            foreach (var kvp in properties)
+            {
+                if (kvp.Key.StartsWith("meta_"))
+                {
+                    // Remove the "meta_" prefix when storing
+                    var metadataKey = kvp.Key.Substring(5);
+                    metadata[metadataKey] = kvp.Value?.ToString() ?? string.Empty;
+                }
+            }
+
+            if (metadata.Count > 0)
+            {
+                methodMetadataDict[methodId] = metadata;
+            }
+
+            methodCount++;
+            if (methodCount % 1000 == 0)
+            {
+                _logger.LogInformation("Loaded {methodCount} methods with metadata...", methodCount);
+            }
+        }
+
+        _logger.LogInformation("Loaded {totalMethods} methods with metadata", methodCount);
+
+        // Load all calls with all their properties
+        var calls = new ConcurrentBag<IMethodCall>();
+        var callMetadataDict = new Dictionary<string, Dictionary<string, string>>();
+
+        var callsCursor = await session.RunAsync(
+            @"MATCH (caller:Method)-[r:CALLS]->(callee:Method)
+              WHERE r.CallGraphId = $callGraphId
+              RETURN caller.id AS callerId, callee.id AS calleeId, r",
+            new { callGraphId = id.ToString() });
+
+        var callCount = 0;
+        await foreach (var record in callsCursor)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var relationship = record["r"].As<IRelationship>();
+            var properties = relationship.Properties;
+            var callerId = record["callerId"].As<string>();
+            var calleeId = record["calleeId"].As<string>();
+
+            var call = new MethodCall
+            {
+                Id = properties["id"].As<string>(),
+                CallGraphId = id.ToString(),
+                CallerId = callerId,
+                CalleeId = calleeId,
+                LineNumber = properties.ContainsKey("LineNumber") ? properties["LineNumber"].As<int>() : 0,
+                FilePath = properties.ContainsKey("FilePath") ? properties["FilePath"].As<string?>() : null
+            };
+
+            calls.Add(call);
+
+            // Extract metadata (properties starting with "meta_")
+            var metadata = new Dictionary<string, string>();
+            foreach (var kvp in properties)
+            {
+                if (kvp.Key.StartsWith("meta_"))
+                {
+                    // Remove the "meta_" prefix when storing
+                    var metadataKey = kvp.Key.Substring(5);
+                    metadata[metadataKey] = kvp.Value?.ToString() ?? string.Empty;
+                }
+            }
+
+            if (metadata.Count > 0)
+            {
+                var callKey = $"{callerId}|{calleeId}|{call.LineNumber}";
+                callMetadataDict[callKey] = metadata;
+            }
+
+            callCount++;
+            if (callCount % 5000 == 0)
+            {
+                _logger.LogInformation("Loaded {callCount} calls with metadata...", callCount);
+            }
+        }
+
+        _logger.LogInformation("Loaded {totalCalls} calls with metadata", callCount);
+        _logger.LogInformation("Call graph with metadata loaded successfully");
+
+        // Create the base call graph
+        var callGraph = new CallGraph(id.ToString(), methodsDict, calls);
+
+        // Cast metadata dictionaries to the generic types
+        var typedMethodMetadata = methodMetadataDict.ToDictionary(
+            kvp => kvp.Key,
+            kvp => TMethodMetadata.FromDictionary(kvp.Value)
+        );
+
+        var typedCallMetadata = callMetadataDict.ToDictionary(
+            kvp => kvp.Key,
+            kvp => TCallMetadata.FromDictionary(kvp.Value)
+        );
+
+        return new CallGraphWithMetadata<TMethodMetadata, TCallMetadata>(
+            id,
+            callGraph,
+            typedMethodMetadata,
+            typedCallMetadata
+        );
+    }
+
+    private async Task Batch<T>(int total, int batchSize, Func<int, int, Task> processBatch, CancellationToken cancellationToken)
+    {
+
+        for (int i = 0; i < total; i += batchSize)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _logger.LogInformation("Creating ({Processed}/{Total}) {Type}", i, total, typeof(T).Name);
+            var batchStart = i;
+            var batchEnd = Math.Min(i + batchSize, total);
+            await processBatch(batchStart, batchEnd);
+        }
+    }
+
 
     private static MethodNode MapToMethodNode(INode node)
     {

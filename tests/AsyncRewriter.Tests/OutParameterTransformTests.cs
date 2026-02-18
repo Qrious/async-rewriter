@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
 using AsyncRewriter.Transformation;
 using FluentAssertions;
@@ -17,16 +18,25 @@ public class OutParameterTransformTests
     private static void AssertCompiles(string source, string? extraStubs = null)
     {
         var syntaxTree = CSharpSyntaxTree.ParseText(source);
-        var trees = new List<SyntaxTree> { syntaxTree, CSharpSyntaxTree.ParseText(StubTypes) };
+        var trees = new List<SyntaxTree>
+        {
+            syntaxTree,
+            CSharpSyntaxTree.ParseText(StubTypes)
+        };
+
         if (extraStubs != null)
+        {
             trees.Add(CSharpSyntaxTree.ParseText(extraStubs));
+        }
 
         var references = new List<MetadataReference>();
         var trustedAssemblies = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
             .Split(Path.PathSeparator);
+
         foreach (var assembly in trustedAssemblies)
         {
             var name = Path.GetFileNameWithoutExtension(assembly);
+
             if (name is "System.Runtime" or "System.Threading.Tasks" or "System.Console"
                 or "System.Private.CoreLib" or "netstandard" or "System.ValueTuple")
             {
@@ -107,8 +117,16 @@ interface IRepo
                 methodName: "TryGetValue",
                 containingType: "Cache",
                 returnType: "Task<bool>",
-                parameters: new List<string> { "string key", "string value" },
-                paramRefKinds: new List<string?> { null, "out" },
+                parameters: new List<string>
+                {
+                    "string key",
+                    "string value"
+                },
+                paramRefKinds: new List<string?>
+                {
+                    null,
+                    "out"
+                },
                 startLine: 4, endLine: 8);
 
             var result = await _transformer.TransformProjectAsync(tempDir, callGraph);
@@ -157,8 +175,14 @@ interface IRepo
                 methodName: "Process",
                 containingType: "Processor",
                 returnType: "Task<int>",
-                parameters: new List<string> { "string message" },
-                paramRefKinds: new List<string?> { "out" },
+                parameters: new List<string>
+                {
+                    "string message"
+                },
+                paramRefKinds: new List<string?>
+                {
+                    "out"
+                },
                 startLine: 3, endLine: 7);
 
             var result = await _transformer.TransformProjectAsync(tempDir, callGraph);
@@ -204,8 +228,18 @@ interface IRepo
                 methodName: "TryGet",
                 containingType: "Cache",
                 returnType: "Task<bool>",
-                parameters: new List<string> { "string key", "string name", "int age" },
-                paramRefKinds: new List<string?> { null, "out", "out" },
+                parameters: new List<string>
+                {
+                    "string key",
+                    "string name",
+                    "int age"
+                },
+                paramRefKinds: new List<string?>
+                {
+                    null,
+                    "out",
+                    "out"
+                },
                 startLine: 3, endLine: 8);
 
             var result = await _transformer.TransformProjectAsync(tempDir, callGraph);
@@ -253,8 +287,16 @@ interface IRepo
                 methodName: "TryGetValue",
                 containingType: "Cache",
                 returnType: "Task<bool>",
-                parameters: new List<string> { "string key", "string value" },
-                paramRefKinds: new List<string?> { null, "out" },
+                parameters: new List<string>
+                {
+                    "string key",
+                    "string value"
+                },
+                paramRefKinds: new List<string?>
+                {
+                    null,
+                    "out"
+                },
                 startLine: 4, endLine: 8);
 
             var result = await _transformer.TransformProjectAsync(tempDir, callGraph);
@@ -299,8 +341,16 @@ interface IRepo
                 methodName: "TryGetValue",
                 containingType: "Cache",
                 returnType: "Task<bool>",
-                parameters: new List<string> { "string key", "string value" },
-                paramRefKinds: new List<string?> { null, "out" },
+                parameters: new List<string>
+                {
+                    "string key",
+                    "string value"
+                },
+                paramRefKinds: new List<string?>
+                {
+                    null,
+                    "out"
+                },
                 startLine: 4, endLine: 8);
 
             // Set a custom namespace for AsyncOutResult
@@ -348,8 +398,16 @@ interface IRepo
                 methodName: "TryGetValue",
                 containingType: "Cache",
                 returnType: "Task<bool>",
-                parameters: new List<string> { "string key", "string value" },
-                paramRefKinds: new List<string?> { null, "out" },
+                parameters: new List<string>
+                {
+                    "string key",
+                    "string value"
+                },
+                paramRefKinds: new List<string?>
+                {
+                    null,
+                    "out"
+                },
                 startLine: 4, endLine: 8);
 
             var result = await _transformer.TransformProjectAsync(tempDir, callGraph);
@@ -395,8 +453,14 @@ interface IRepo
                 methodName: "Process",
                 containingType: "Processor",
                 returnType: "Task<int>",
-                parameters: new List<string> { "string message" },
-                paramRefKinds: new List<string?> { "out" },
+                parameters: new List<string>
+                {
+                    "string message"
+                },
+                paramRefKinds: new List<string?>
+                {
+                    "out"
+                },
                 startLine: 3, endLine: 7);
 
             var result = await _transformer.TransformProjectAsync(tempDir, callGraph);
@@ -443,8 +507,18 @@ interface IRepo
                 methodName: "TryGet",
                 containingType: "Cache",
                 returnType: "Task<bool>",
-                parameters: new List<string> { "string key", "string name", "int age" },
-                paramRefKinds: new List<string?> { null, "out", "out" },
+                parameters: new List<string>
+                {
+                    "string key",
+                    "string name",
+                    "int age"
+                },
+                paramRefKinds: new List<string?>
+                {
+                    null,
+                    "out",
+                    "out"
+                },
                 startLine: 3, endLine: 8);
 
             var result = await _transformer.TransformProjectAsync(tempDir, callGraph);
@@ -470,7 +544,7 @@ interface IRepo
     [Fact]
     public void OutParameterAnalyzer_DetectsOutParameterMethods()
     {
-        var originalMethods = new ConcurrentDictionary<string, MethodNode>();
+        var originalMethods = new ConcurrentDictionary<string, IMethodNode>();
         originalMethods["Svc.TryGet(string, Foo)"] = new MethodNode
         {
             CallGraphId = "test",
@@ -479,15 +553,23 @@ interface IRepo
             ContainingType = "Svc",
             ContainingNamespace = "",
             ReturnType = "bool",
-            Parameters = new List<string> { "string key", "Foo value" },
-            ParameterRefKinds = new List<string?> { null, "out" },
+            Parameters = new List<string>
+            {
+                "string key",
+                "Foo value"
+            },
+            ParameterRefKinds = new List<string?>
+            {
+                null,
+                "out"
+            },
             FilePath = "/test/Svc.cs",
             StartLine = 1,
             EndLine = 5
         };
 
-        var asyncMethods = new ConcurrentDictionary<string, MethodNode>();
-        asyncMethods["Svc.TryGet(string, Foo)"] = originalMethods["Svc.TryGet(string, Foo)"] with
+        var asyncMethods = new ConcurrentDictionary<string, IMethodNode>();
+        asyncMethods["Svc.TryGet(string, Foo)"] = (MethodNode)originalMethods["Svc.TryGet(string, Foo)"] with
         {
             ReturnType = "Task<bool>"
         };
@@ -508,7 +590,7 @@ interface IRepo
     [Fact]
     public void OutParameterAnalyzer_DetectsTuplePattern()
     {
-        var originalMethods = new ConcurrentDictionary<string, MethodNode>();
+        var originalMethods = new ConcurrentDictionary<string, IMethodNode>();
         originalMethods["Svc.Process(string)"] = new MethodNode
         {
             CallGraphId = "test",
@@ -517,15 +599,21 @@ interface IRepo
             ContainingType = "Svc",
             ContainingNamespace = "",
             ReturnType = "int",
-            Parameters = new List<string> { "string result" },
-            ParameterRefKinds = new List<string?> { "out" },
+            Parameters = new List<string>
+            {
+                "string result"
+            },
+            ParameterRefKinds = new List<string?>
+            {
+                "out"
+            },
             FilePath = "/test/Svc.cs",
             StartLine = 1,
             EndLine = 5
         };
 
-        var asyncMethods = new ConcurrentDictionary<string, MethodNode>();
-        asyncMethods["Svc.Process(string)"] = originalMethods["Svc.Process(string)"] with
+        var asyncMethods = new ConcurrentDictionary<string, IMethodNode>();
+        asyncMethods["Svc.Process(string)"] = (MethodNode)originalMethods["Svc.Process(string)"] with
         {
             ReturnType = "Task<int>"
         };
@@ -554,15 +642,22 @@ interface IRepo
         var references = new List<MetadataReference>();
         var trustedAssemblies = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")!)
             .Split(Path.PathSeparator);
+
         foreach (var assembly in trustedAssemblies)
         {
             var name = Path.GetFileNameWithoutExtension(assembly);
+
             if (name is "System.Runtime" or "System.Private.CoreLib" or "netstandard")
+            {
                 references.Add(MetadataReference.CreateFromFile(assembly));
+            }
         }
 
         var compilation = CSharpCompilation.Create("Test",
-            new[] { tree }, references,
+            new[]
+            {
+                tree
+            }, references,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
         var diagnostics = compilation.GetDiagnostics()
@@ -583,8 +678,16 @@ interface IRepo
             ContainingType = "Test",
             ContainingNamespace = "",
             ReturnType = "bool",
-            Parameters = new List<string> { "string key", "string value" },
-            ParameterRefKinds = new List<string?> { null, "out" },
+            Parameters = new List<string>
+            {
+                "string key",
+                "string value"
+            },
+            ParameterRefKinds = new List<string?>
+            {
+                null,
+                "out"
+            },
             FilePath = "/test.cs",
             StartLine = 1,
             EndLine = 3
@@ -604,7 +707,10 @@ interface IRepo
             ContainingType = "Test",
             ContainingNamespace = "",
             ReturnType = "void",
-            Parameters = new List<string> { "string key" },
+            Parameters = new List<string>
+            {
+                "string key"
+            },
             ParameterRefKinds = null,
             FilePath = "/test.cs",
             StartLine = 1,
@@ -625,8 +731,14 @@ interface IRepo
             ContainingType = "Test",
             ContainingNamespace = "",
             ReturnType = "void",
-            Parameters = new List<string> { "string key" },
-            ParameterRefKinds = new List<string?> { "ref" },
+            Parameters = new List<string>
+            {
+                "string key"
+            },
+            ParameterRefKinds = new List<string?>
+            {
+                "ref"
+            },
             FilePath = "/test.cs",
             StartLine = 1,
             EndLine = 3
@@ -667,7 +779,7 @@ interface IRepo
 
         try
         {
-            var methods = new ConcurrentDictionary<string, MethodNode>();
+            var methods = new ConcurrentDictionary<string, IMethodNode>();
             var tryConnectId = "Service.TryConnect(string)";
             methods[tryConnectId] = new MethodNode
             {
@@ -677,8 +789,14 @@ interface IRepo
                 ContainingType = "Service",
                 ContainingNamespace = "",
                 ReturnType = "Task<bool>",
-                Parameters = new List<string> { "string status" },
-                ParameterRefKinds = new List<string?> { "out" },
+                Parameters = new List<string>
+                {
+                    "string status"
+                },
+                ParameterRefKinds = new List<string?>
+                {
+                    "out"
+                },
                 FilePath = tempFile,
                 StartLine = 7,
                 EndLine = 12
@@ -697,7 +815,7 @@ interface IRepo
                 EndLine = 16
             };
 
-            var calls = new ConcurrentBag<MethodCall>();
+            var calls = new ConcurrentBag<IMethodCall>();
             calls.Add(new MethodCall
             {
                 CallGraphId = "test",
@@ -708,9 +826,7 @@ interface IRepo
                 LineNumber = 9
             });
 
-            var graph = new CallGraph(calls) { ProjectName = "test-async" };
-            foreach (var (k, v) in methods)
-                graph.Methods[k] = v;
+            var graph = new CallGraph("test", methods, calls);
 
             var result = await _transformer.TransformProjectAsync(tempDir, graph);
 
@@ -752,8 +868,14 @@ interface IRepo
             {
                 MethodName = "TryGetValueAsync",
                 IsTryPattern = true,
-                OutParameterIndices = new List<int> { 1 },
-                OutParameterNames = new List<string> { "value" },
+                OutParameterIndices = new List<int>
+                {
+                    1
+                },
+                OutParameterNames = new List<string>
+                {
+                    "value"
+                },
                 LineNumber = 5
             }
         };
@@ -765,12 +887,11 @@ interface IRepo
         rewriter.AnyTransformed.Should().BeFalse();
     }
 
-    private static CallGraph CreateCallGraphWithMethods(ConcurrentDictionary<string, MethodNode> methods)
+    private static CallGraph CreateCallGraphWithMethods(ConcurrentDictionary<string, IMethodNode> methods)
     {
-        var calls = new ConcurrentBag<MethodCall>();
-        var graph = new CallGraph(calls);
-        foreach (var (k, v) in methods)
-            graph.Methods[k] = v;
+        var calls = new ConcurrentBag<IMethodCall>();
+        var graph = new CallGraph("test", methods, calls);
+
         return graph;
     }
 
@@ -785,7 +906,7 @@ interface IRepo
         int startLine,
         int endLine)
     {
-        var methods = new ConcurrentDictionary<string, MethodNode>();
+        var methods = new ConcurrentDictionary<string, IMethodNode>();
         methods[methodId] = new MethodNode
         {
             CallGraphId = "test",
@@ -801,10 +922,14 @@ interface IRepo
             EndLine = endLine
         };
 
-        var calls = new ConcurrentBag<MethodCall>();
-        var graph = new CallGraph(calls) { ProjectName = "test-async" };
+        var calls = new ConcurrentBag<IMethodCall>();
+        var graph = new CallGraph("test", methods, calls);
+
         foreach (var (k, v) in methods)
+        {
             graph.Methods[k] = v;
+        }
+
         return graph;
     }
 }

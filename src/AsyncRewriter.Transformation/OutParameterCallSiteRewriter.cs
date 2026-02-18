@@ -61,17 +61,25 @@ public class OutParameterCallSiteRewriter : CSharpSyntaxRewriter
         {
             var line = invocation.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
             if (!_callSitesByLine.TryGetValue(line, out var callSiteInfo))
+            {
                 continue;
+            }
 
             // Verify the invocation's method name matches the expected call site
             var invokedName = GetInvokedMethodName(invocation);
             if (invokedName != null && !MethodNameMatches(invokedName, callSiteInfo.MethodName))
+            {
                 continue;
+            }
 
             if (callSiteInfo.IsTryPattern)
+            {
                 return TransformTryPatternCallSite(statement, invocation, callSiteInfo);
+            }
             else
+            {
                 return TransformTuplePatternCallSite(statement, invocation, callSiteInfo);
+            }
         }
 
         return null;
@@ -173,7 +181,9 @@ public class OutParameterCallSiteRewriter : CSharpSyntaxRewriter
         for (int i = 0; i < argList.Arguments.Count; i++)
         {
             if (!outSet.Contains(i))
+            {
                 result.Add(argList.Arguments[i]);
+            }
         }
         return result;
     }
@@ -219,19 +229,32 @@ public class OutParameterCallSiteRewriter : CSharpSyntaxRewriter
     private static bool MethodNameMatches(string invokedName, string callSiteMethodName)
     {
         if (string.Equals(invokedName, callSiteMethodName, StringComparison.Ordinal))
+        {
             return true;
+        }
+
         // callSiteMethodName might be the async variant: check if adding "Async" to invokedName matches
         if (string.Equals(invokedName + "Async", callSiteMethodName, StringComparison.Ordinal))
+        {
             return true;
+        }
+
         // Or the invokedName might already be the async variant
         if (string.Equals(invokedName, callSiteMethodName + "Async", StringComparison.Ordinal))
+        {
             return true;
+        }
+
         return false;
     }
 
     private static string ToCamelCase(string name)
     {
-        if (string.IsNullOrEmpty(name)) return name;
+        if (string.IsNullOrEmpty(name))
+        {
+            return name;
+        }
+
         return char.ToLowerInvariant(name[0]) + name.Substring(1);
     }
 }

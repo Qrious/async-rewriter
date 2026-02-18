@@ -38,7 +38,9 @@ public class InterfaceReplacer : CSharpSyntaxRewriter
             var syncSimple = GetSimpleName(syncName);
             var asyncSimple = GetSimpleName(asyncName);
             if (syncSimple != syncName)
+            {
                 _syncToAsync[syncSimple] = asyncSimple;
+            }
         }
 
         _transformedTypes = transformedTypes;
@@ -94,7 +96,11 @@ public class InterfaceReplacer : CSharpSyntaxRewriter
 
     private void RecordReplacement(string syncName, string asyncName)
     {
-        if (!_debug || _currentTypeName == null) return;
+        if (!_debug || _currentTypeName == null)
+        {
+            return;
+        }
+
         if (!_replacementsByType.TryGetValue(_currentTypeName, out var list))
         {
             list = new List<string>();
@@ -102,7 +108,9 @@ public class InterfaceReplacer : CSharpSyntaxRewriter
         }
         var entry = $"Interface replaced: {syncName} → {asyncName} (external interface was problematic after async flooding)";
         if (!list.Contains(entry))
+        {
             list.Add(entry);
+        }
     }
 
     /// <summary>
@@ -119,7 +127,9 @@ public class InterfaceReplacer : CSharpSyntaxRewriter
         var newRoot = rewriter.Visit(root);
 
         if (!rewriter.AnyReplaced)
+        {
             return null;
+        }
 
         // Insert debug comments above class/struct declarations that had interface replacements
         if (debug && rewriter._replacementsByType.Count > 0)
@@ -179,7 +189,10 @@ internal class InterfaceDebugCommentInserter : CSharpSyntaxRewriter
     {
         var visited = (ClassDeclarationSyntax)base.VisitClassDeclaration(node)!;
         if (_replacementsByType.TryGetValue(node.Identifier.Text, out var lines))
+        {
             return PrependDebugComments(visited, lines);
+        }
+
         return visited;
     }
 
@@ -187,7 +200,10 @@ internal class InterfaceDebugCommentInserter : CSharpSyntaxRewriter
     {
         var visited = (StructDeclarationSyntax)base.VisitStructDeclaration(node)!;
         if (_replacementsByType.TryGetValue(node.Identifier.Text, out var lines))
+        {
             return PrependDebugComments(visited, lines);
+        }
+
         return visited;
     }
 
@@ -211,7 +227,10 @@ internal class InterfaceDebugCommentInserter : CSharpSyntaxRewriter
         for (var i = 0; i < existingLeading.Count; i++)
         {
             if (i == existingLeading.Count - 1 && existingLeading[i].IsKind(SyntaxKind.WhitespaceTrivia))
+            {
                 continue;
+            }
+
             triviaList.Add(existingLeading[i]);
         }
 

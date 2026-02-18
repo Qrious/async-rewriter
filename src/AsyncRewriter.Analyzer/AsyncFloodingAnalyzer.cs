@@ -51,19 +51,25 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
             foreach (var caller in callGraph.GetCallers(methodId))
             {
                 if (floodedIds.Add(caller.Id))
+                {
                     queue.Enqueue(caller.Id);
+                }
             }
 
             // Flood through interface implementations (both directions)
             foreach (var impl in callGraph.GetInterfaceMethodsFor(methodId))
             {
                 if (floodedIds.Add(impl.InterfaceMethodId))
+                {
                     queue.Enqueue(impl.InterfaceMethodId);
+                }
             }
             foreach (var impl in callGraph.GetImplementationsOf(methodId))
             {
                 if (floodedIds.Add(impl.ImplementingMethodId))
+                {
                     queue.Enqueue(impl.ImplementingMethodId);
+                }
             }
 
             // Flood through generic instantiations:
@@ -74,26 +80,34 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                 if (!HasGenericReturnType(callGraph, gi.GenericMethodId)
                     && blockedGenericMethodIds?.Contains(gi.GenericMethodId) != true
                     && floodedIds.Add(gi.GenericMethodId))
+                {
                     queue.Enqueue(gi.GenericMethodId);
+                }
             }
             foreach (var gi in callGraph.GetInstantiationsOf(methodId))
             {
                 if (!HasGenericReturnType(callGraph, methodId)
                     && blockedGenericMethodIds?.Contains(methodId) != true
                     && floodedIds.Add(gi.InstantiatedMethodId))
+                {
                     queue.Enqueue(gi.InstantiatedMethodId);
+                }
             }
 
             // Flood through overrides (both directions)
             foreach (var ovr in callGraph.GetBaseMethodsFor(methodId))
             {
                 if (floodedIds.Add(ovr.BaseMethodId))
+                {
                     queue.Enqueue(ovr.BaseMethodId);
+                }
             }
             foreach (var ovr in callGraph.GetOverridesOf(methodId))
             {
                 if (floodedIds.Add(ovr.OverridingMethodId))
+                {
                     queue.Enqueue(ovr.OverridingMethodId);
+                }
             }
         }
 
@@ -123,10 +137,11 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
 
         // Build new call graph with transformed return types
         var newGraphId = Guid.NewGuid().ToString();
-        var newMethods = new ConcurrentDictionary<string, MethodNode>();
+        var newMethods = new ConcurrentDictionary<string, IMethodNode>();
 
-        foreach (var (id, method) in callGraph.Methods)
+        foreach (var (id, methodNode) in callGraph.Methods)
         {
+            var method = (MethodNode)methodNode;
             var newReturnType = floodedIds.Contains(id)
                 ? TransformReturnType(method.ReturnType)
                 : method.ReturnType;
@@ -139,10 +154,10 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
         }
 
         var allCalls = callGraph.Calls.Concat(syntheticCalls);
-        var newCalls = new ConcurrentBag<MethodCall>(
-            allCalls.Select(c => c with { CallGraphId = newGraphId }));
+        var newCalls = new ConcurrentBag<IMethodCall>(
+            allCalls.Select(c => (MethodCall)c with { CallGraphId = newGraphId }));
 
-        var newImpls = new ConcurrentBag<InterfaceImplementation>(
+        var newImpls = new ConcurrentBag<IInterfaceImplementation>(
             callGraph.InterfaceImplementations.Select(i => new InterfaceImplementation
             {
                 CallGraphId = newGraphId,
@@ -150,7 +165,7 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                 InterfaceMethodId = i.InterfaceMethodId
             }));
 
-        var newOverrides = new ConcurrentBag<MethodOverride>(
+        var newOverrides = new ConcurrentBag<IMethodOverride>(
             callGraph.MethodOverrides.Select(o => new MethodOverride
             {
                 CallGraphId = newGraphId,
@@ -158,7 +173,7 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                 BaseMethodId = o.BaseMethodId
             }));
 
-        var newGenericInstantiations = new ConcurrentBag<GenericInstantiation>(
+        var newGenericInstantiations = new ConcurrentBag<IGenericInstantiation>(
             callGraph.GenericInstantiations.Select(gi => new GenericInstantiation
             {
                 CallGraphId = newGraphId,
@@ -168,12 +183,7 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
 
         var newLambdaAsyncOverloads = new ConcurrentBag<LambdaAsyncOverload>(callGraph.LambdaAsyncOverloads);
 
-        var newGraph = new CallGraph(newCalls, newImpls, newOverrides, newGenericInstantiations, newLambdaAsyncOverloads)
-        {
-            Id = newGraphId,
-            ProjectName = callGraph.ProjectName + "-async",
-            Methods = newMethods
-        };
+        var newGraph = new CallGraph(newGraphId, newMethods, newCalls, newImpls, newOverrides, newGenericInstantiations, newLambdaAsyncOverloads);
 
         return Task.FromResult(newGraph);
     }
@@ -230,32 +240,46 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
             }
 
             foreach (var caller in callGraph.GetCallers(methodId))
+            {
                 TryEnqueue(caller.Id, FloodReason.Caller);
+            }
 
             foreach (var impl in callGraph.GetInterfaceMethodsFor(methodId))
+            {
                 TryEnqueue(impl.InterfaceMethodId, FloodReason.InterfaceMethod);
+            }
 
             foreach (var impl in callGraph.GetImplementationsOf(methodId))
+            {
                 TryEnqueue(impl.ImplementingMethodId, FloodReason.InterfaceImpl);
+            }
 
             foreach (var gi in callGraph.GetGenericMethodsFor(methodId))
             {
                 if (!HasGenericReturnType(callGraph, gi.GenericMethodId)
                     && blockedGenericMethodIds?.Contains(gi.GenericMethodId) != true)
+                {
                     TryEnqueue(gi.GenericMethodId, FloodReason.GenericInstantiation);
+                }
             }
             foreach (var gi in callGraph.GetInstantiationsOf(methodId))
             {
                 if (!HasGenericReturnType(callGraph, methodId)
                     && blockedGenericMethodIds?.Contains(methodId) != true)
+                {
                     TryEnqueue(gi.InstantiatedMethodId, FloodReason.GenericInstantiation);
+                }
             }
 
             foreach (var ovr in callGraph.GetBaseMethodsFor(methodId))
+            {
                 TryEnqueue(ovr.BaseMethodId, FloodReason.BaseMethod);
+            }
 
             foreach (var ovr in callGraph.GetOverridesOf(methodId))
+            {
                 TryEnqueue(ovr.OverridingMethodId, FloodReason.Override);
+            }
         }
 
         // Post-process lambda async overloads (same as AnalyzeFloodingAsync)
@@ -279,10 +303,11 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
 
         // Build new call graph with transformed return types (same as AnalyzeFloodingAsync)
         var newGraphId = Guid.NewGuid().ToString();
-        var newMethods = new ConcurrentDictionary<string, MethodNode>();
+        var newMethods = new ConcurrentDictionary<string, IMethodNode>();
 
-        foreach (var (id, m) in callGraph.Methods)
+        foreach (var (id, methodNode) in callGraph.Methods)
         {
+            var m = (MethodNode)methodNode;
             var newReturnType = floodedIds.Contains(id)
                 ? TransformReturnType(m.ReturnType)
                 : m.ReturnType;
@@ -295,10 +320,10 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
         }
 
         var allCalls = callGraph.Calls.Concat(syntheticCalls);
-        var newCalls = new ConcurrentBag<MethodCall>(
-            allCalls.Select(c => c with { CallGraphId = newGraphId }));
+        var newCalls = new ConcurrentBag<IMethodCall>(
+            allCalls.Select(c => (MethodCall)c with { CallGraphId = newGraphId }));
 
-        var newImpls = new ConcurrentBag<InterfaceImplementation>(
+        var newImpls = new ConcurrentBag<IInterfaceImplementation>(
             callGraph.InterfaceImplementations.Select(i => new InterfaceImplementation
             {
                 CallGraphId = newGraphId,
@@ -306,7 +331,7 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                 InterfaceMethodId = i.InterfaceMethodId
             }));
 
-        var newOverrides = new ConcurrentBag<MethodOverride>(
+        var newOverrides = new ConcurrentBag<IMethodOverride>(
             callGraph.MethodOverrides.Select(o => new MethodOverride
             {
                 CallGraphId = newGraphId,
@@ -314,7 +339,7 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                 BaseMethodId = o.BaseMethodId
             }));
 
-        var newGenericInstantiations = new ConcurrentBag<GenericInstantiation>(
+        var newGenericInstantiations = new ConcurrentBag<IGenericInstantiation>(
             callGraph.GenericInstantiations.Select(gi => new GenericInstantiation
             {
                 CallGraphId = newGraphId,
@@ -324,12 +349,7 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
 
         var newLambdaAsyncOverloads = new ConcurrentBag<LambdaAsyncOverload>(callGraph.LambdaAsyncOverloads);
 
-        var newGraph = new CallGraph(newCalls, newImpls, newOverrides, newGenericInstantiations, newLambdaAsyncOverloads)
-        {
-            Id = newGraphId,
-            ProjectName = callGraph.ProjectName + "-async",
-            Methods = newMethods
-        };
+        var newGraph = new CallGraph(newGraphId, newMethods, newCalls, newImpls, newOverrides, newGenericInstantiations, newLambdaAsyncOverloads);
 
         return Task.FromResult((newGraph, floodingResult));
     }
@@ -343,7 +363,9 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
             // A method was flooded if its return type is Task-based
             var returnType = method.ReturnType;
             if (!IsTaskType(returnType))
+            {
                 continue;
+            }
 
             var interfaceMethods = callGraph.GetInterfaceMethodsFor(id)
                 .Select(i => i.InterfaceMethodId)
@@ -365,10 +387,14 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
     public static string TransformReturnType(string returnType)
     {
         if (IsTaskType(returnType))
+        {
             return returnType;
+        }
 
         if (returnType == "void")
+        {
             return "Task";
+        }
 
         return $"Task<{returnType}>";
     }
@@ -381,11 +407,15 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
     private static bool HasGenericReturnType(CallGraph callGraph, string interfaceMethodId)
     {
         if (!callGraph.Methods.TryGetValue(interfaceMethodId, out var method))
+        {
             return false;
+        }
 
         var typeParams = ParseGenericTypeParameters(method.ContainingType);
         if (typeParams.Count == 0)
+        {
             return false;
+        }
 
         var returnType = method.ReturnType.TrimEnd('?');
         return typeParams.Contains(returnType);
@@ -398,10 +428,16 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
     public static List<string> ParseGenericTypeParameters(string containingType)
     {
         var startIndex = containingType.IndexOf('<');
-        if (startIndex < 0) return [];
+        if (startIndex < 0)
+        {
+            return [];
+        }
 
         var endIndex = containingType.LastIndexOf('>');
-        if (endIndex < 0) return [];
+        if (endIndex < 0)
+        {
+            return [];
+        }
 
         var paramString = containingType.Substring(startIndex + 1, endIndex - startIndex - 1);
 

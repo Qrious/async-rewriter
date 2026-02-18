@@ -18,18 +18,26 @@ public static class OutParameterAnalyzer
 
         foreach (var (id, asyncMethod) in asyncGraph.Methods)
         {
-            if (!originalGraph.Methods.TryGetValue(id, out var originalMethod))
+            if (!originalGraph.Methods.TryGetValue(id, out var originalMethodValue) || originalMethodValue is not MethodNode originalMethod)
+            {
                 continue;
+            }
 
             // Only consider methods whose return type changed (i.e., flooded)
             if (originalMethod.ReturnType == asyncMethod.ReturnType)
+            {
                 continue;
+            }
 
             if (!originalMethod.HasOutParameters)
+            {
                 continue;
+            }
 
             if (string.IsNullOrEmpty(originalMethod.FilePath) || originalMethod.FilePath == "external")
+            {
                 continue;
+            }
 
             var refKinds = originalMethod.ParameterRefKinds!;
             var outIndices = new List<int>();
@@ -79,7 +87,9 @@ public static class OutParameterAnalyzer
         {
             string innerType;
             if (outTypes.Count == 1)
+            {
                 innerType = outTypes[0];
+            }
             else
             {
                 var tupleElements = outTypes.Zip(outNames, (t, n) => $"{t} {n}");
@@ -91,7 +101,10 @@ public static class OutParameterAnalyzer
         {
             var elements = new List<string> { $"{originalReturnType} Result" };
             for (int i = 0; i < outTypes.Count; i++)
+            {
                 elements.Add($"{outTypes[i]} {outNames[i]}");
+            }
+
             return $"Task<({string.Join(", ", elements)})>";
         }
     }

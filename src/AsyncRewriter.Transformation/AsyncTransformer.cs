@@ -214,31 +214,37 @@ public class AsyncTransformer : IAsyncTransformer
         return Task.FromResult(newRoot.ToFullString());
     }
 
-    private Dictionary<string, List<(MethodNode Method, string OriginalReturnType, List<MethodCall> CallsToAwait)>>
+    private Dictionary<string, List<(IMethodNode Method, string OriginalReturnType, List<IMethodCall> CallsToAwait)>>
         BuildTransformationsByFile(CallGraph callGraph)
     {
-        var result = new Dictionary<string, List<(MethodNode, string, List<MethodCall>)>>();
+        var result = new Dictionary<string, List<(IMethodNode, string, List<IMethodCall>)>>();
 
         // Find all methods that need transformation (return type is Task-based)
         var floodedMethodIds = new HashSet<string>();
         foreach (var (id, method) in callGraph.Methods)
         {
             if (IsTaskReturnType(method.ReturnType))
+            {
                 floodedMethodIds.Add(id);
+            }
         }
 
         foreach (var methodId in floodedMethodIds)
         {
             var method = callGraph.Methods[methodId];
             if (string.IsNullOrEmpty(method.FilePath) || method.FilePath == "external")
+            {
                 continue;
+            }
 
             // Find calls from this method to other flooded methods that need await
-            var callsToAwait = new List<MethodCall>();
+            var callsToAwait = new List<IMethodCall>();
             foreach (var call in callGraph.Calls)
             {
                 if (call.CallerId == methodId && floodedMethodIds.Contains(call.CalleeId))
+                {
                     callsToAwait.Add(call);
+                }
             }
 
             // Determine original return type (reverse the Task transformation)
@@ -258,7 +264,7 @@ public class AsyncTransformer : IAsyncTransformer
     private async Task<FileTransformation?> TransformFileInternalAsync(
         string filePath,
         string sourceCode,
-        List<(MethodNode Method, string OriginalReturnType, List<MethodCall> CallsToAwait)> methodInfos,
+        List<(IMethodNode Method, string OriginalReturnType, List<IMethodCall> CallsToAwait)> methodInfos,
         CallGraph callGraph,
         Dictionary<string, string> methodRenamesByMethodId,
         Dictionary<string, OutParameterMethod> outParamMethodsById,
@@ -276,7 +282,9 @@ public class AsyncTransformer : IAsyncTransformer
         foreach (var (id, method) in callGraph.Methods)
         {
             if (IsTaskReturnType(method.ReturnType))
+            {
                 floodedMethodIds.Add(id);
+            }
         }
 
         // Build a callee-to-caller lookup for debug info
@@ -352,7 +360,9 @@ public class AsyncTransformer : IAsyncTransformer
         var newRoot = rewriter.Visit(root);
 
         if (!rewriter.AnyMethodTransformed)
+        {
             return null;
+        }
 
         newRoot = EnsureUsingDirective(newRoot, "System.Threading.Tasks");
 
@@ -405,17 +415,27 @@ public class AsyncTransformer : IAsyncTransformer
         foreach (var mapping in callGraph.InterfaceMappings)
         {
             if (mapping.MethodRenames.Count == 0)
+            {
                 continue;
+            }
 
             // Find implementing methods for this interface's methods
             foreach (var impl in callGraph.InterfaceImplementations)
             {
                 if (!callGraph.Methods.TryGetValue(impl.InterfaceMethodId, out var ifaceMethod))
+                {
                     continue;
+                }
+
                 if (ifaceMethod.ContainingType != mapping.SyncInterfaceName)
+                {
                     continue;
+                }
+
                 if (!mapping.MethodRenames.TryGetValue(ifaceMethod.Name, out var newName))
+                {
                     continue;
+                }
 
                 result[impl.ImplementingMethodId] = newName;
             }
@@ -433,10 +453,15 @@ public class AsyncTransformer : IAsyncTransformer
         foreach (var call in callGraph.Calls)
         {
             if (!outParamMethodsById.TryGetValue(call.CalleeId, out var outMethod))
+            {
                 continue;
+            }
+
             // Only transform call sites within flooded methods
             if (!floodedMethodIds.Contains(call.CallerId))
+            {
                 continue;
+            }
 
             if (!result.ContainsKey(call.LineNumber))
             {
@@ -465,14 +490,23 @@ public class AsyncTransformer : IAsyncTransformer
         // We detect methods that: (1) have out params, (2) have Task return types (flooded).
         var result = new Dictionary<string, OutParameterMethod>();
 
-        foreach (var (id, method) in callGraph.Methods)
+        foreach (var (id, m) in callGraph.Methods)
         {
+            var method = (MethodNode)m;
             if (!IsTaskReturnType(method.ReturnType))
+            {
                 continue;
+            }
+
             if (!method.HasOutParameters)
+            {
                 continue;
+            }
+
             if (string.IsNullOrEmpty(method.FilePath) || method.FilePath == "external")
+            {
                 continue;
+            }
 
             var refKinds = method.ParameterRefKinds!;
             var outIndices = new List<int>();
@@ -500,7 +534,9 @@ public class AsyncTransformer : IAsyncTransformer
             {
                 string innerType;
                 if (outTypes.Count == 1)
+                {
                     innerType = outTypes[0];
+                }
                 else
                 {
                     var tupleElements = outTypes.Zip(outNames, (t, n) => $"{t} {n}");
@@ -512,7 +548,10 @@ public class AsyncTransformer : IAsyncTransformer
             {
                 var elements = new List<string> { $"{originalReturnType} Result" };
                 for (int i = 0; i < outTypes.Count; i++)
+                {
                     elements.Add($"{outTypes[i]} {outNames[i]}");
+                }
+
                 newAsyncReturnType = $"Task<({string.Join(", ", elements)})>";
             }
 
@@ -533,9 +572,9 @@ public class AsyncTransformer : IAsyncTransformer
     }
 
     private static List<string> BuildDebugLines(
-        MethodNode method,
+        IMethodNode method,
         string originalReturnType,
-        List<MethodCall> callsToAwait,
+        List<IMethodCall> callsToAwait,
         CallGraph callGraph,
         HashSet<string> floodedMethodIds,
         Dictionary<string, List<string>> callersByMethod,
@@ -616,14 +655,18 @@ public class AsyncTransformer : IAsyncTransformer
     private static SyntaxNode EnsureUsingDirective(SyntaxNode root, string namespaceName)
     {
         if (root is not CompilationUnitSyntax compilationUnit)
+        {
             return root;
+        }
 
         // Check if using already exists
         var hasUsing = compilationUnit.Usings.Any(u =>
             u.Name?.ToString() == namespaceName);
 
         if (hasUsing)
+        {
             return root;
+        }
 
         var usingDirective = UsingDirective(ParseName(namespaceName).WithLeadingTrivia(Space))
             .WithTrailingTrivia(LineFeed);
@@ -684,9 +727,15 @@ public class AsyncTransformer : IAsyncTransformer
     private static string ReverseTaskReturnType(string taskReturnType)
     {
         if (taskReturnType == "Task")
+        {
             return "void";
+        }
+
         if (taskReturnType.StartsWith("Task<") && taskReturnType.EndsWith(">"))
+        {
             return taskReturnType.Substring(5, taskReturnType.Length - 6);
+        }
+
         return taskReturnType;
     }
 
@@ -706,7 +755,9 @@ public class AsyncTransformer : IAsyncTransformer
             {
                 var declReturnType = methodDecl.ReturnType.ToString().Trim();
                 if (declReturnType == info.OriginalReturnType)
+                {
                     return true;
+                }
             }
         }
         return false;
@@ -728,7 +779,9 @@ public class AsyncTransformer : IAsyncTransformer
             {
                 var declReturnType = localFunc.ReturnType.ToString().Trim();
                 if (declReturnType == info.OriginalReturnType)
+                {
                     return true;
+                }
             }
         }
         return false;
@@ -740,7 +793,10 @@ public class AsyncTransformer : IAsyncTransformer
         while (parent != null)
         {
             if (parent is TypeDeclarationSyntax typeDecl)
+            {
                 return typeDecl.Identifier.Text;
+            }
+
             parent = parent.Parent;
         }
         return string.Empty;
@@ -752,7 +808,10 @@ public class AsyncTransformer : IAsyncTransformer
         while (parent != null)
         {
             if (parent is TypeDeclarationSyntax typeDecl)
+            {
                 return typeDecl.Identifier.Text;
+            }
+
             parent = parent.Parent;
         }
         return string.Empty;
@@ -768,23 +827,30 @@ public class AsyncTransformer : IAsyncTransformer
     {
         // 1. Use explicit setting from call graph if available
         if (!string.IsNullOrEmpty(callGraph.AsyncOutResultNamespace))
+        {
             return callGraph.AsyncOutResultNamespace;
+        }
 
         // 2. Look for an existing AsyncOutResult class in the call graph's methods
         var asyncOutResultMethod = callGraph.Methods.Values
             .FirstOrDefault(m => m.ContainingType == AsyncOutResultGenerator.ClassName);
         if (asyncOutResultMethod != null && !string.IsNullOrEmpty(asyncOutResultMethod.ContainingNamespace))
+        {
             return asyncOutResultMethod.ContainingNamespace;
+        }
 
         // 3. Derive namespace from TryPattern methods (bool return + out params) in the call graph
         var tryPatternMethod = callGraph.Methods.Values
+            .OfType<MethodNode>()
             .FirstOrDefault(m =>
                 m.HasOutParameters
                 && m.ReturnType is "bool" or "Boolean" or "System.Boolean"
                 && !string.IsNullOrEmpty(m.ContainingNamespace)
                 && m.FilePath != "external");
         if (tryPatternMethod != null)
+        {
             return tryPatternMethod.ContainingNamespace;
+        }
 
         // 4. Fall back to default
         return AsyncOutResultGenerator.DefaultNamespace;
@@ -798,7 +864,9 @@ public class AsyncTransformer : IAsyncTransformer
     internal static string? ExtractMethodNameFromExpression(string? expression)
     {
         if (string.IsNullOrEmpty(expression))
+        {
             return null;
+        }
 
         // Find the last '(' that is the method's argument list opener.
         // We need to handle nested parens: e.g., "obj.Method(Foo(1))" → "Method"
@@ -808,7 +876,9 @@ public class AsyncTransformer : IAsyncTransformer
         for (var i = expression.Length - 1; i >= 0; i--)
         {
             if (expression[i] == ')')
+            {
                 depth++;
+            }
             else if (expression[i] == '(')
             {
                 depth--;
@@ -821,17 +891,24 @@ public class AsyncTransformer : IAsyncTransformer
         }
 
         if (parenIdx <= 0)
+        {
             return null;
+        }
 
         // Walk backwards from parenIdx to find the start of the method name
         var nameEnd = parenIdx;
         var nameStart = nameEnd - 1;
         while (nameStart >= 0 && (char.IsLetterOrDigit(expression[nameStart]) || expression[nameStart] == '_'))
+        {
             nameStart--;
+        }
+
         nameStart++;
 
         if (nameStart >= nameEnd)
+        {
             return null;
+        }
 
         return expression.Substring(nameStart, nameEnd - nameStart);
     }
@@ -843,24 +920,32 @@ public class AsyncTransformer : IAsyncTransformer
     internal static string? ExtractMethodNameFromMethodId(string? methodId)
     {
         if (string.IsNullOrEmpty(methodId))
+        {
             return null;
+        }
 
         var parenIdx = methodId.IndexOf('(');
         if (parenIdx < 0)
+        {
             parenIdx = methodId.Length;
+        }
 
         var lastDot = methodId.LastIndexOf('.', parenIdx - 1);
         var nameStart = lastDot >= 0 ? lastDot + 1 : 0;
 
         if (nameStart >= parenIdx)
+        {
             return null;
+        }
 
         var name = methodId.Substring(nameStart, parenIdx - nameStart);
 
         // Strip generic type arguments (e.g., "RunSync<int>" → "RunSync")
         var angleIdx = name.IndexOf('<');
         if (angleIdx >= 0)
+        {
             name = name.Substring(0, angleIdx);
+        }
 
         return name;
     }

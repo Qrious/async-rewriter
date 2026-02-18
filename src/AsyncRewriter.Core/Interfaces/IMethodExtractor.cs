@@ -21,9 +21,9 @@ public interface IMethodExtractor
         SyntaxNode root,
         SemanticModel semanticModel,
         string filePath,
-        ConcurrentDictionary<string, MethodNode> methods,
-        ConcurrentBag<InterfaceImplementation> interfaceImplementations,
-        ConcurrentBag<MethodOverride> methodOverrides,
+        ConcurrentDictionary<string, IMethodNode> methods,
+        ConcurrentBag<IInterfaceImplementation> interfaceImplementations,
+        ConcurrentBag<IMethodOverride> methodOverrides,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -34,9 +34,9 @@ public interface IMethodExtractor
         SyntaxNode root,
         SemanticModel semanticModel,
         string filePath,
-        ConcurrentDictionary<string, MethodNode> methods,
-        ConcurrentBag<InterfaceImplementation> interfaceImplementations,
-        ConcurrentBag<MethodOverride> methodOverrides,
-        ConcurrentBag<GenericInstantiation> genericInstantiations,
+        ConcurrentDictionary<string, IMethodNode> methods,
+        ConcurrentBag<IInterfaceImplementation> interfaceImplementations,
+        ConcurrentBag<IMethodOverride> methodOverrides,
+        ConcurrentBag<IGenericInstantiation> genericInstantiations,
         CancellationToken cancellationToken = default);
 }

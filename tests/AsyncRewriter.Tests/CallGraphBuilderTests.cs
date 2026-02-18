@@ -20,17 +20,18 @@ public class CallGraphBuilderTests
     private static string LoadTestSource([CallerMemberName] string testName = "")
         => File.ReadAllText(Path.Combine("TestData", $"{testName}.cs"));
 
-    private static async Task<(ConcurrentDictionary<string, MethodNode> Methods, ConcurrentBag<MethodCall> Calls, ConcurrentBag<InterfaceImplementation> InterfaceImplementations, ConcurrentBag<MethodOverride> MethodOverrides)> AnalyzeSource(string sourceCode)
+    private static async
+        Task<(ConcurrentDictionary<string, IMethodNode> Methods,
+            ConcurrentBag<IMethodCall> Calls,
+            ConcurrentBag<IInterfaceImplementation> InterfaceImplementations,
+            ConcurrentBag<IMethodOverride> MethodOverrides)> AnalyzeSource(string sourceCode)
     {
         var syntaxTree = CSharpSyntaxTree.ParseText(sourceCode);
         var references = new[]
         {
-            MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
-            MetadataReference.CreateFromFile(typeof(Task).Assembly.Location),
-            MetadataReference.CreateFromFile(typeof(Console).Assembly.Location),
-            MetadataReference.CreateFromFile(typeof(Enumerable).Assembly.Location),
-            MetadataReference.CreateFromFile(typeof(List<>).Assembly.Location),
-            MetadataReference.CreateFromFile(typeof(Expression<>).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(object).Assembly.Location), MetadataReference.CreateFromFile(typeof(Task).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(Console).Assembly.Location), MetadataReference.CreateFromFile(typeof(Enumerable).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(List<>).Assembly.Location), MetadataReference.CreateFromFile(typeof(Expression<>).Assembly.Location),
         };
 
         // Add runtime assembly references
@@ -38,23 +39,31 @@ public class CallGraphBuilderTests
         var runtimeRef = MetadataReference.CreateFromFile(Path.Combine(runtimeDir, "System.Runtime.dll"));
 
         var compilation = CSharpCompilation.Create("TestAssembly",
-            new[] { syntaxTree },
+            new[]
+            {
+                syntaxTree
+            },
             references.Append(runtimeRef),
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
         var semanticModel = compilation.GetSemanticModel(syntaxTree);
         var root = await syntaxTree.GetRootAsync();
 
-        var methods = new ConcurrentDictionary<string, MethodNode>();
-        var calls = new ConcurrentBag<MethodCall>();
-        var interfaceImplementations = new ConcurrentBag<InterfaceImplementation>();
-        var methodOverrides = new ConcurrentBag<MethodOverride>();
+        var methods = new ConcurrentDictionary<string, IMethodNode>();
+        var calls = new ConcurrentBag<IMethodCall>();
+        var interfaceImplementations = new ConcurrentBag<IInterfaceImplementation>();
+        var methodOverrides = new ConcurrentBag<IMethodOverride>();
+
+        ConcurrentDictionary<string, IMethodNode> methodsInterface = methods;
+        ConcurrentBag<IInterfaceImplementation> interfaceImplementationsInterface = new ConcurrentBag<IInterfaceImplementation>(interfaceImplementations);
+        ConcurrentBag<IMethodOverride> methodOverridesInterface = new ConcurrentBag<IMethodOverride>(methodOverrides);
 
         var methodExtractor = new MethodExtractor();
-        await methodExtractor.Extract(TestCallGraphId, root, semanticModel, "test.cs", methods, interfaceImplementations, methodOverrides);
+        await methodExtractor.Extract(TestCallGraphId, root, semanticModel, "test.cs", methodsInterface, interfaceImplementationsInterface, methodOverridesInterface);
 
+        ConcurrentBag<IMethodCall> callsInterface = new ConcurrentBag<IMethodCall>(calls);
         var callExtractor = new MethodCallExtractor();
-        await callExtractor.Extract(TestCallGraphId, root, semanticModel, "test.cs", methods, calls);
+        await callExtractor.Extract(TestCallGraphId, root, semanticModel, "test.cs", methodsInterface, callsInterface);
 
         return (methods, calls, interfaceImplementations, methodOverrides);
     }
@@ -330,7 +339,7 @@ public class CallGraphBuilderTests
         // OuterMethod calls the lambda (contains it)
         calls.Should().Contain(c =>
             c.CallerId.Contains("OuterMethod()") && !c.CallerId.Contains(">b__")
-            && c.CalleeId == lambdaMethod.Id);
+                                                 && c.CalleeId == lambdaMethod.Id);
 
         // Lambda calls InnerMethod
         calls.Should().Contain(c =>
@@ -350,12 +359,12 @@ public class CallGraphBuilderTests
         // OuterMethod calls Executor.Run (passing the lambda)
         calls.Should().Contain(c =>
             c.CallerId.Contains("OuterMethod()") && !c.CallerId.Contains(">b__")
-            && c.CalleeId.Contains("Run("));
+                                                 && c.CalleeId.Contains("Run("));
 
         // OuterMethod calls the lambda (contains it)
         calls.Should().Contain(c =>
             c.CallerId.Contains("OuterMethod()") && !c.CallerId.Contains(">b__")
-            && c.CalleeId == lambdaMethod.Id);
+                                                 && c.CalleeId == lambdaMethod.Id);
 
         // Lambda calls InnerMethod
         calls.Should().Contain(c =>
@@ -378,17 +387,17 @@ public class CallGraphBuilderTests
         // FilterAndProject calls Where and Select
         calls.Should().Contain(c =>
             c.CallerId.Contains("FilterAndProject(") && !c.CallerId.Contains(">b__")
-            && c.CalleeId.Contains("Where("));
+                                                     && c.CalleeId.Contains("Where("));
         calls.Should().Contain(c =>
             c.CallerId.Contains("FilterAndProject(") && !c.CallerId.Contains(">b__")
-            && c.CalleeId.Contains("Select("));
+                                                     && c.CalleeId.Contains("Select("));
 
         // FilterAndProject contains both lambdas
         foreach (var lambda in lambdas)
         {
             calls.Should().Contain(c =>
                 c.CallerId.Contains("FilterAndProject(") && !c.CallerId.Contains(">b__")
-                && c.CalleeId == lambda.Id);
+                                                         && c.CalleeId == lambda.Id);
         }
     }
 
@@ -406,7 +415,7 @@ public class CallGraphBuilderTests
         // FilterNumbers calls Where
         calls.Should().Contain(c =>
             c.CallerId.Contains("FilterNumbers(") && !c.CallerId.Contains(">b__")
-            && c.CalleeId.Contains("Where("));
+                                                  && c.CalleeId.Contains("Where("));
     }
 
     [Fact]
@@ -421,7 +430,7 @@ public class CallGraphBuilderTests
         // Setup contains the lambda
         calls.Should().Contain(c =>
             c.CallerId.Contains("Setup()") && !c.CallerId.Contains(">b__")
-            && c.CalleeId == lambda.Id);
+                                           && c.CalleeId == lambda.Id);
 
         // Lambda calls DoWork
         calls.Should().Contain(c =>
@@ -446,12 +455,12 @@ public class CallGraphBuilderTests
         // Test contains the lambda
         calls.Should().Contain(c =>
             c.CallerId.Contains("Test()") && !c.CallerId.Contains(">b__")
-            && c.CalleeId == lambda.Id);
+                                          && c.CalleeId == lambda.Id);
 
         // Test calls Execute
         calls.Should().Contain(c =>
             c.CallerId.Contains("Test()") && !c.CallerId.Contains(">b__")
-            && c.CalleeId.Contains("Execute()"));
+                                          && c.CalleeId.Contains("Execute()"));
 
         // Execute calls the lambda through the delegate field
         calls.Should().Contain(c =>
@@ -463,16 +472,14 @@ public class CallGraphBuilderTests
     /// Analyzes consumer source that references a separate library compilation,
     /// simulating a multi-project solution where types are defined in a different project.
     /// </summary>
-    private static async Task<(ConcurrentDictionary<string, MethodNode> Methods, ConcurrentBag<MethodCall> Calls)> AnalyzeSourceWithReference(string consumerSource, string librarySource)
+    private static async Task<(ConcurrentDictionary<string, IMethodNode> Methods, ConcurrentBag<IMethodCall> Calls)> AnalyzeSourceWithReference(string consumerSource,
+        string librarySource)
     {
         var references = new[]
         {
-            MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
-            MetadataReference.CreateFromFile(typeof(Task).Assembly.Location),
-            MetadataReference.CreateFromFile(typeof(Console).Assembly.Location),
-            MetadataReference.CreateFromFile(typeof(Enumerable).Assembly.Location),
-            MetadataReference.CreateFromFile(typeof(List<>).Assembly.Location),
-            MetadataReference.CreateFromFile(typeof(Expression<>).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(object).Assembly.Location), MetadataReference.CreateFromFile(typeof(Task).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(Console).Assembly.Location), MetadataReference.CreateFromFile(typeof(Enumerable).Assembly.Location),
+            MetadataReference.CreateFromFile(typeof(List<>).Assembly.Location), MetadataReference.CreateFromFile(typeof(Expression<>).Assembly.Location),
         };
         var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
         var runtimeRef = MetadataReference.CreateFromFile(Path.Combine(runtimeDir, "System.Runtime.dll"));
@@ -481,27 +488,36 @@ public class CallGraphBuilderTests
         // Build the library compilation
         var libTree = CSharpSyntaxTree.ParseText(librarySource, path: "library.cs");
         var libCompilation = CSharpCompilation.Create("LibraryAssembly",
-            new[] { libTree },
+            new[]
+            {
+                libTree
+            },
             allRefs,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
         // Build the consumer compilation referencing the library
         var consumerTree = CSharpSyntaxTree.ParseText(consumerSource, path: "consumer.cs");
         var consumerCompilation = CSharpCompilation.Create("ConsumerAssembly",
-            new[] { consumerTree },
+            new[]
+            {
+                consumerTree
+            },
             allRefs.Append(libCompilation.ToMetadataReference()),
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
-        var methods = new ConcurrentDictionary<string, MethodNode>();
-        var calls = new ConcurrentBag<MethodCall>();
-        var implementations = new ConcurrentBag<InterfaceImplementation>();
-        var overrides = new ConcurrentBag<MethodOverride>();
+        var methods = new ConcurrentDictionary<string, IMethodNode>();
+        var calls = new ConcurrentBag<IMethodCall>();
+        var implementations = new ConcurrentBag<IInterfaceImplementation>();
+        var overrides = new ConcurrentBag<IMethodOverride>();
 
         // Build a cross-compilation resolver
         var resolver = new MultiCompilationSemanticModelResolver(libCompilation, consumerCompilation);
 
         // Extract methods from both compilations
-        foreach (var (compilation, tree) in new[] { (libCompilation, libTree), (consumerCompilation, consumerTree) })
+        foreach (var (compilation, tree) in new[]
+                 {
+                     (libCompilation, libTree), (consumerCompilation, consumerTree)
+                 })
         {
             var model = compilation.GetSemanticModel(tree);
             var root = await tree.GetRootAsync();
@@ -509,7 +525,10 @@ public class CallGraphBuilderTests
         }
 
         // Extract calls from both compilations with the cross-compilation resolver
-        foreach (var (compilation, tree) in new[] { (libCompilation, libTree), (consumerCompilation, consumerTree) })
+        foreach (var (compilation, tree) in new[]
+                 {
+                     (libCompilation, libTree), (consumerCompilation, consumerTree)
+                 })
         {
             var model = compilation.GetSemanticModel(tree);
             var root = await tree.GetRootAsync();
@@ -532,12 +551,12 @@ public class CallGraphBuilderTests
         // Test contains the lambda
         calls.Should().Contain(c =>
             c.CallerId.Contains("Test()") && !c.CallerId.Contains(">b__")
-            && c.CalleeId == lambda.Id);
+                                          && c.CalleeId == lambda.Id);
 
         // Test calls Execute
         calls.Should().Contain(c =>
             c.CallerId.Contains("Test()") && !c.CallerId.Contains(">b__")
-            && c.CalleeId.Contains("Execute()"));
+                                          && c.CalleeId.Contains("Execute()"));
 
         // Execute calls the lambda through the delegate field (cross-project)
         calls.Should().Contain(c =>
@@ -576,11 +595,11 @@ public class CallGraphBuilderTests
 
         implementations.Should().Contain(i =>
             i.ImplementingMethodId.Contains("ServiceImpl") && i.ImplementingMethodId.Contains("DoWork")
-            && i.InterfaceMethodId.Contains("IService") && i.InterfaceMethodId.Contains("DoWork"));
+                                                           && i.InterfaceMethodId.Contains("IService") && i.InterfaceMethodId.Contains("DoWork"));
 
         implementations.Should().Contain(i =>
             i.ImplementingMethodId.Contains("ServiceImpl") && i.ImplementingMethodId.Contains("Calculate")
-            && i.InterfaceMethodId.Contains("IService") && i.InterfaceMethodId.Contains("Calculate"));
+                                                           && i.InterfaceMethodId.Contains("IService") && i.InterfaceMethodId.Contains("Calculate"));
     }
 
     [Fact]
@@ -596,7 +615,7 @@ public class CallGraphBuilderTests
         overrides.Should().ContainSingle();
         overrides.Should().Contain(o =>
             o.OverridingMethodId.Contains("DerivedClass") && o.OverridingMethodId.Contains("DoWork")
-            && o.BaseMethodId.Contains("BaseClass") && o.BaseMethodId.Contains("DoWork"));
+                                                          && o.BaseMethodId.Contains("BaseClass") && o.BaseMethodId.Contains("DoWork"));
     }
 
     [Fact]
@@ -612,7 +631,7 @@ public class CallGraphBuilderTests
         overrides.Should().ContainSingle();
         overrides.Should().Contain(o =>
             o.OverridingMethodId.Contains("ConcreteClass") && o.OverridingMethodId.Contains("Calculate")
-            && o.BaseMethodId.Contains("AbstractBase") && o.BaseMethodId.Contains("Calculate"));
+                                                           && o.BaseMethodId.Contains("AbstractBase") && o.BaseMethodId.Contains("Calculate"));
     }
 
     [Fact]
@@ -626,13 +645,13 @@ public class CallGraphBuilderTests
         // (simulates FakeItEasy A.CallTo, Moq Setup, etc.)
         calls.Should().NotContain(c =>
             c.CallerId.Contains("TestMethod") && c.CallerId.Contains(">b__")
-            && c.CalleeId.Contains("GetValue"));
+                                              && c.CalleeId.Contains("GetValue"));
 
         // The regular (non-expression) lambda SHOULD create a call edge to GetValue
         var regularLambda = methods.Values.FirstOrDefault(m =>
             m.Id.Contains(">b__") && calls.Any(c =>
                 c.CallerId.Contains("RegularLambdaMethod") && !c.CallerId.Contains(">b__")
-                && c.CalleeId == m.Id));
+                                                           && c.CalleeId == m.Id));
         regularLambda.Should().NotBeNull("regular lambda should be recorded");
         calls.Should().Contain(c =>
             c.CallerId == regularLambda!.Id && c.CalleeId.Contains("GetValue"));
@@ -675,8 +694,11 @@ file class MultiCompilationSemanticModelResolver : ISemanticModelResolver
         foreach (var compilation in _compilations)
         {
             if (compilation.ContainsSyntaxTree(syntaxTree))
+            {
                 return compilation.GetSemanticModel(syntaxTree);
+            }
         }
+
         return null;
     }
 }

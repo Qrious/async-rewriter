@@ -23,13 +23,15 @@ public class TaskWrapperExtractor : ITaskWrapperExtractor
         {
             var wrapper = TryMatchTaskWrapper(method);
             if (wrapper != null)
+            {
                 results.Add(wrapper);
+            }
         }
 
         return results;
     }
 
-    private static SyncWrapperMethod? TryMatchTaskWrapper(MethodNode method)
+    private static SyncWrapperMethod? TryMatchTaskWrapper(IMethodNode method)
     {
         foreach (var param in method.Parameters)
         {
@@ -54,7 +56,7 @@ public class TaskWrapperExtractor : ITaskWrapperExtractor
         return null;
     }
 
-    private static SyncWrapperMethod CreateWrapper(MethodNode method, string pattern)
+    private static SyncWrapperMethod CreateWrapper(IMethodNode method, string pattern)
     {
         return new SyncWrapperMethod
         {
