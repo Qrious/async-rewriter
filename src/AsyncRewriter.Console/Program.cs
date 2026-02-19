@@ -112,7 +112,7 @@ class Program
 
             logger.LogInformation("Storing call graph ({MethodsCount} methods, {CallsCount} calls)...", callGraph.Methods.Count, callGraph.Calls.Count);
 
-            await repository.StoreCallGraphAsync(callGraph);
+            await repository.Save(callGraph);
 
             logger.LogInformation("Call graph successfully stored in Neo4j!");
             System.Console.ResetColor();

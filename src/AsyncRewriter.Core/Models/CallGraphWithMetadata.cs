@@ -1,30 +1,37 @@
-using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using AsyncRewriter.Core.Interfaces;
 
 namespace AsyncRewriter.Core.Models;
 
-public class CallGraphWithMetadata<TMethodMetadata, TCallMetadata> : ICallGraphWithMetadata<TMethodMetadata, TCallMetadata>
+public class CallGraphWithMetadata<TMethodMetadata, TCallMetadata, TImplementsMetadata, TOverridesMetadata> : ICallGraphWithMetadata<TMethodMetadata, TCallMetadata, TImplementsMetadata, TOverridesMetadata>
     where TMethodMetadata : IGraphMetadata<TMethodMetadata>
     where TCallMetadata : IGraphMetadata<TCallMetadata>
+    where TImplementsMetadata : IGraphMetadata<TImplementsMetadata>
+    where TOverridesMetadata : IGraphMetadata<TOverridesMetadata>
 {
     private ICallGraph _callGraph;
 
     public CallGraphWithMetadata(
-        Guid id,
+        string id,
         ICallGraph callGraph,
         IReadOnlyDictionary<string, TMethodMetadata> methodMetadata,
-        IReadOnlyDictionary<string, TCallMetadata> callMetadata
+        IReadOnlyDictionary<string, TCallMetadata> callMetadata,
+        IReadOnlyDictionary<string, TImplementsMetadata> implementsMetadata,
+        IReadOnlyDictionary<string, TOverridesMetadata> overridesMetadata
     )
     {
         _callGraph = callGraph;
-        Id = id.ToString();
+        Id = id;
         MethodMetadata = methodMetadata;
         CallMetadata = callMetadata;
+        ImplementsMetadata = implementsMetadata;
+        OverridesMetadata = overridesMetadata;
     }
 
     public IReadOnlyDictionary<string, TCallMetadata> CallMetadata { get; }
+    public IReadOnlyDictionary<string, TOverridesMetadata> OverridesMetadata { get; }
+    public IReadOnlyDictionary<string, TImplementsMetadata> ImplementsMetadata { get; }
 
     public TMethodMetadata GetMethodMetadata(string methodId) => MethodMetadata[methodId];
 
@@ -33,6 +40,14 @@ public class CallGraphWithMetadata<TMethodMetadata, TCallMetadata> : ICallGraphW
     public TCallMetadata GetCallMetadata(string callId) => CallMetadata[callId];
 
     public bool TryGetCallMetadata(string callId, out TCallMetadata? metadata) => CallMetadata.TryGetValue(callId, out metadata);
+
+    public TOverridesMetadata GetOverridesMetadata(string overrideId) => OverridesMetadata[overrideId];
+
+    public bool TryGetOverridesMetadata(string overrideId, out TOverridesMetadata? metadata) => OverridesMetadata.TryGetValue(overrideId, out metadata);
+
+    public TImplementsMetadata GetImplementsMetadata(string implementsId) => ImplementsMetadata[implementsId];
+
+    public bool TryGetImplementsMetadata(string implementsId, out TImplementsMetadata? metadata) => ImplementsMetadata.TryGetValue(implementsId, out metadata);
 
     public IReadOnlyDictionary<string, TMethodMetadata> MethodMetadata { get; }
 

@@ -1,18 +1,14 @@
 using System;
+using System.Collections.Generic;
 
 namespace AsyncRewriter.Core.Interfaces;
 
-public interface IMethodCall : IEquatable<IMethodCall?>
+public interface IMethodCall : IEquatable<IMethodCall?>, IIdentifiable
 {
     /// <summary>
     /// The id of the call graph this method call belongs to. This is used to group method calls together that belong to the same call graph.
     /// </summary>
     public string CallGraphId { get; }
-
-    /// <summary>
-    /// The id of the method call. This is used to uniquely identify a method call in the call graph.
-    /// </summary>
-    public string Id { get; }
 
     /// <summary>
     /// The id of the caller method. This is used to identify the caller method in the call graph.
@@ -33,4 +29,6 @@ public interface IMethodCall : IEquatable<IMethodCall?>
     /// The file path of the method call.
     /// </summary>
     public string FilePath { get; }
+
+    public IDictionary<string, string> ToDictionary();
 }

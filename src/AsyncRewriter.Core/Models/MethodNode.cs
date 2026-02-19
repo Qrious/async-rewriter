@@ -22,39 +22,39 @@ public record MethodNode : IMethodNode
     public required int EndLine { get; init; }
     public bool IsReturnTypeParameter { get; init; }
 
-    public IReadOnlyDictionary<string, string> ToDictionary()
+    public IDictionary<string, string> ToDictionary()
     {
         return new Dictionary<string, string>
         {
-            { "CallGraphId", CallGraphId },
-            { "Id", Id },
-            { "Name", Name },
-            { "ContainingType", ContainingType },
-            { "ContainingNamespace", ContainingNamespace },
-            { "ReturnType", ReturnType },
-            { "Parameters", string.Join(", ", Parameters) },
-            { "FilePath", FilePath },
-            { "StartLine", StartLine.ToString() },
-            { "EndLine", EndLine.ToString() },
-            { "IsReturnTypeParameter", IsReturnTypeParameter.ToString() }
+            { nameof(CallGraphId), CallGraphId },
+            { nameof(Id), Id },
+            { nameof(Name).ToLower(), Name }, // To lower, so the db viewer shows it in the graph view
+            { nameof(ContainingType), ContainingType },
+            { nameof(ContainingNamespace), ContainingNamespace },
+            { nameof(ReturnType), ReturnType },
+            { nameof(Parameters), string.Join(", ", Parameters) },
+            { nameof(FilePath), FilePath },
+            { nameof(StartLine), StartLine.ToString() },
+            { nameof(EndLine), EndLine.ToString() },
+            { nameof(IsReturnTypeParameter), IsReturnTypeParameter.ToString() }
         };
     }
 
-    public static IMethodNode Create(IReadOnlyDictionary<string, string> data)
+    public static IMethodNode Create(IReadOnlyDictionary<string, object> data)
     {
         return new MethodNode
         {
-            CallGraphId = data["CallGraphId"],
-            Id = data["Id"],
-            Name = data["Name"],
-            ContainingType = data["ContainingType"],
-            ContainingNamespace = data["ContainingNamespace"],
-            ReturnType = data["ReturnType"],
-            Parameters = data["Parameters"].Split(',').Select(p => p.Trim()).ToList(),
-            FilePath = data["FilePath"],
-            StartLine = int.Parse(data["StartLine"]),
-            EndLine = int.Parse(data["EndLine"]),
-            IsReturnTypeParameter = bool.Parse(data["IsReturnTypeParameter"])
+            CallGraphId = data[nameof(CallGraphId)].ToString() ?? string.Empty,
+            Id = data[nameof(Id)].ToString(),
+            Name = data[nameof(Name).ToLower()].ToString(),
+            ContainingType = data[nameof(ContainingType)].ToString(),
+            ContainingNamespace = data[nameof(ContainingNamespace)].ToString(),
+            ReturnType = data[nameof(ReturnType)].ToString(),
+            Parameters = data[nameof(Parameters)].ToString().Split(", ").ToList(),
+            FilePath = data[nameof(FilePath)].ToString(),
+            StartLine = int.Parse(data[nameof(StartLine)]!.ToString()),
+            EndLine = int.Parse(data[nameof(EndLine)].ToString()),
+            IsReturnTypeParameter =  bool.Parse(data[nameof(IsReturnTypeParameter)].ToString()),
         };
     }
 
