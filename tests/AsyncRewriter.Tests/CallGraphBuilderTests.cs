@@ -50,20 +50,19 @@ public class CallGraphBuilderTests
         var root = await syntaxTree.GetRootAsync();
 
         var methods = new ConcurrentDictionary<string, IMethodNode>();
-        var calls = new ConcurrentBag<IMethodCall>();
-        var interfaceImplementations = new ConcurrentBag<IInterfaceImplementation>();
-        var methodOverrides = new ConcurrentBag<IMethodOverride>();
-
-        ConcurrentDictionary<string, IMethodNode> methodsInterface = methods;
-        ConcurrentBag<IInterfaceImplementation> interfaceImplementationsInterface = new ConcurrentBag<IInterfaceImplementation>(interfaceImplementations);
-        ConcurrentBag<IMethodOverride> methodOverridesInterface = new ConcurrentBag<IMethodOverride>(methodOverrides);
+        var interfaceImplementationsDict = new ConcurrentDictionary<string, IInterfaceImplementation>();
+        var methodOverridesDict = new ConcurrentDictionary<string, IMethodOverride>();
+        var callsDict = new ConcurrentDictionary<string, IMethodCall>();
 
         var methodExtractor = new MethodExtractor();
-        await methodExtractor.Extract(TestCallGraphId, root, semanticModel, "test.cs", methodsInterface, interfaceImplementationsInterface, methodOverridesInterface);
+        await methodExtractor.Extract(TestCallGraphId, root, semanticModel, "test.cs", methods, interfaceImplementationsDict, methodOverridesDict);
 
-        ConcurrentBag<IMethodCall> callsInterface = new ConcurrentBag<IMethodCall>(calls);
         var callExtractor = new MethodCallExtractor();
-        await callExtractor.Extract(TestCallGraphId, root, semanticModel, "test.cs", methodsInterface, callsInterface);
+        await callExtractor.Extract(TestCallGraphId, root, semanticModel, "test.cs", methods, callsDict);
+
+        var calls = new ConcurrentBag<IMethodCall>(callsDict.Values);
+        var interfaceImplementations = new ConcurrentBag<IInterfaceImplementation>(interfaceImplementationsDict.Values);
+        var methodOverrides = new ConcurrentBag<IMethodOverride>(methodOverridesDict.Values);
 
         return (methods, calls, interfaceImplementations, methodOverrides);
     }
@@ -506,9 +505,9 @@ public class CallGraphBuilderTests
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
         var methods = new ConcurrentDictionary<string, IMethodNode>();
-        var calls = new ConcurrentBag<IMethodCall>();
-        var implementations = new ConcurrentBag<IInterfaceImplementation>();
-        var overrides = new ConcurrentBag<IMethodOverride>();
+        var callsDict = new ConcurrentDictionary<string, IMethodCall>();
+        var implementationsDict = new ConcurrentDictionary<string, IInterfaceImplementation>();
+        var overridesDict = new ConcurrentDictionary<string, IMethodOverride>();
 
         // Build a cross-compilation resolver
         var resolver = new MultiCompilationSemanticModelResolver(libCompilation, consumerCompilation);
@@ -521,7 +520,7 @@ public class CallGraphBuilderTests
         {
             var model = compilation.GetSemanticModel(tree);
             var root = await tree.GetRootAsync();
-            await new MethodExtractor().Extract(TestCallGraphId, root, model, tree.FilePath, methods, implementations, overrides);
+            await new MethodExtractor().Extract(TestCallGraphId, root, model, tree.FilePath, methods, implementationsDict, overridesDict);
         }
 
         // Extract calls from both compilations with the cross-compilation resolver
@@ -532,9 +531,10 @@ public class CallGraphBuilderTests
         {
             var model = compilation.GetSemanticModel(tree);
             var root = await tree.GetRootAsync();
-            await new MethodCallExtractor().Extract(TestCallGraphId, root, model, tree.FilePath, methods, calls, resolver);
+            await new MethodCallExtractor().Extract(TestCallGraphId, root, model, tree.FilePath, methods, callsDict, resolver);
         }
 
+        var calls = new ConcurrentBag<IMethodCall>(callsDict.Values);
         return (methods, calls);
     }
 
