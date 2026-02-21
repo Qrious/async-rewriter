@@ -10,7 +10,9 @@ public class CallGraphWithMetadata<TMethodMetadata, TCallMetadata, TImplementsMe
     where TImplementsMetadata : IGraphMetadata<TImplementsMetadata>
     where TOverridesMetadata : IGraphMetadata<TOverridesMetadata>
 {
-    private ICallGraph _callGraph;
+    private readonly ICallGraph _callGraph;
+
+    public ICallGraph BaseGraph => _callGraph;
 
     public CallGraphWithMetadata(
         string id,

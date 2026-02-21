@@ -243,9 +243,12 @@ public class MapperScenarioIntegrationTests
             floodedMapperC.ReturnType.Should().Be("Task",
                 "MapperC.MapInto should be flooded (calls ValidateAsync)");
 
+            // Extract the underlying CallGraph for APIs that require the concrete type
+            var floodedCallGraph = (CallGraph)floodedGraph.BaseGraph;
+
             // === PHASE 4: Detect problematic interfaces ===
             var problematicInterfaces = ProblematicInterfaceAnalyzer.DetectProblematicInterfaces(
-                callGraph, floodedGraph);
+                callGraph, floodedCallGraph);
 
             // IMapInto instantiations should be problematic (external interface, return type changed)
             // Note: depending on how the interface file is classified (external or not),
@@ -254,14 +257,14 @@ public class MapperScenarioIntegrationTests
 
             // === PHASE 5: Set up interface mappings ===
             // In production this is done interactively. Here we set it directly.
-            floodedGraph.InterfaceMappings = new List<InterfaceMapping>
+            floodedCallGraph.InterfaceMappings = new List<InterfaceMapping>
             {
                 new() { SyncInterfaceName = "IMapInto", AsyncInterfaceName = "IMapIntoAsync" }
             };
 
             // === PHASE 6: Transform using TransformProjectAsync (production code path) ===
             var transformer = new AsyncTransformer();
-            var result = await transformer.TransformProjectAsync(tempDir, floodedGraph);
+            var result = await transformer.TransformProjectAsync(tempDir, floodedCallGraph);
 
             result.Success.Should().BeTrue("transformation should succeed");
             result.Errors.Should().BeEmpty();

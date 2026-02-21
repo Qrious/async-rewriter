@@ -8,6 +8,9 @@ public interface ICallGraphWithMetadata<TMethodMetadata, TCallMetadata, TImpleme
     where TOverridesMetadata : IGraphMetadata<TOverridesMetadata>
     where TImplementsMetadata : IGraphMetadata<TImplementsMetadata>
 {
+    /// <summary>The underlying call graph without metadata.</summary>
+    public ICallGraph BaseGraph { get; }
+
     public IReadOnlyDictionary<string, TMethodMetadata> MethodMetadata { get; }
 
     public IReadOnlyDictionary<string, TCallMetadata> CallMetadata { get; }

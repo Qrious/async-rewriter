@@ -426,7 +426,7 @@ public class AsyncCallGraphFlooderTests
         var cts = new CancellationTokenSource();
         cts.Cancel();
 
-        var act = () => _analyzer.Flood(graph, ["m1"], null, cts.Token);
+        var act = () => _analyzer.Flood(graph, ["m1"], cancellationToken: cts.Token);
 
         await act.Should().ThrowAsync<OperationCanceledException>();
     }
@@ -623,9 +623,8 @@ public class AsyncCallGraphFlooderTests
     }
 
     [Fact]
-    public async Task FloodFromRoot_BlockedGenericMethodIds_DebugVersion_PreventsInstantiationToGenericPropagation()
+    public async Task FloodFromRoot_BlockedGenericMethodIds_PreventsInstantiationToGenericPropagation()
     {
-        // Same test as above but using the debug (WithDebug) overload
         var methods = new Dictionary<string, IMethodNode>
         {
             ["m_iface_generic"] = MakeMethod("m_iface_generic", "Execute", "void") with { ContainingType = "IHandler<TRequest>" },
@@ -647,22 +646,22 @@ public class AsyncCallGraphFlooderTests
         var graph = CreateCallGraph(methods, interfaceImpls: impls, genericInstantiations: genericInstantiations);
 
         var blocked = new HashSet<string> { "m_iface_generic" };
-        var (result, floodingResult) = await _analyzer.AnalyzeFloodingWithDebugAsync(graph, ["m_impl_foo"], blocked);
+        var result = await _analyzer.Flood(graph, ["m_impl_foo"], blocked);
 
         result.Methods["m_impl_foo"].ReturnType.Should().Be("Task");
         result.Methods["m_iface_foo"].ReturnType.Should().Be("Task");
         result.Methods["m_iface_generic"].ReturnType.Should().Be("void",
-            "generic interface should NOT be flooded when blocked (debug version)");
+            "generic interface should NOT be flooded when blocked");
         result.Methods["m_iface_bar"].ReturnType.Should().Be("void",
-            "sibling instantiation should NOT be flooded when blocked (debug version)");
+            "sibling instantiation should NOT be flooded when blocked");
         result.Methods["m_impl_bar"].ReturnType.Should().Be("void",
-            "sibling implementation should NOT be flooded when blocked (debug version)");
+            "sibling implementation should NOT be flooded when blocked");
 
-        // Verify debug info doesn't include blocked methods
-        floodingResult.FloodedMethods.Should().ContainKey("m_impl_foo");
-        floodingResult.FloodedMethods.Should().ContainKey("m_iface_foo");
-        floodingResult.FloodedMethods.Should().NotContainKey("m_iface_generic");
-        floodingResult.FloodedMethods.Should().NotContainKey("m_iface_bar");
+        // Verify flooding metadata doesn't include blocked methods
+        result.MethodMetadata.Should().ContainKey("m_impl_foo");
+        result.MethodMetadata.Should().ContainKey("m_iface_foo");
+        result.MethodMetadata.Should().NotContainKey("m_iface_generic");
+        result.MethodMetadata.Should().NotContainKey("m_iface_bar");
     }
 
     [Fact]

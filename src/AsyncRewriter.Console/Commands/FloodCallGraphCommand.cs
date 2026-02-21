@@ -77,7 +77,7 @@ public class FloodCallGraphCommand : Command
             _logger.LogInformation("Dirty Task Method: {MethodId} ({MethodName})", dirtyTaskMethodInfo.MethodId, callGraph.Methods[dirtyTaskMethodInfo.MethodId].Name);
         }
 
-        var floodedGraph = await _flooder.Flood(callGraph, new HashSet<string>(dirtyTaskMethodInfos.Select(m => m.MethodId)), newGraphId);
+        var floodedGraph = await _flooder.Flood(callGraph, new HashSet<string>(dirtyTaskMethodInfos.Select(m => m.MethodId)), newCallGraphId: newGraphId);
 
         _logger.LogInformation("Storing call graph ({MethodsCount} methods, {CallsCount} calls)...", callGraph.Methods.Count, callGraph.Calls.Count);
 
