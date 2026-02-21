@@ -60,10 +60,10 @@ public class MapperScenarioIntegrationTests
 
         var callGraphId = "test";
         var methods = new ConcurrentDictionary<string, IMethodNode>();
-        var calls = new ConcurrentBag<IMethodCall>();
-        var interfaceImpls = new ConcurrentBag<IInterfaceImplementation>();
-        var overrides = new ConcurrentBag<IMethodOverride>();
-        var genericInstantiations = new ConcurrentBag<IGenericInstantiation>();
+        var callsDict = new ConcurrentDictionary<string, IMethodCall>();
+        var interfaceImplsDict = new ConcurrentDictionary<string, IInterfaceImplementation>();
+        var overridesDict = new ConcurrentDictionary<string, IMethodOverride>();
+        var genericInstantiationsDict = new ConcurrentDictionary<string, IGenericInstantiation>();
 
         // Phase 1: Extract method declarations (like production CallGraphBuilder first pass)
         var methodExtractor = new MethodExtractor();
@@ -72,7 +72,7 @@ public class MapperScenarioIntegrationTests
             var semanticModel = compilation.GetSemanticModel(tree);
             var root = await tree.GetRootAsync();
             await methodExtractor.Extract(callGraphId, root, semanticModel, filePath,
-                methods, interfaceImpls, overrides, genericInstantiations);
+                methods, interfaceImplsDict, overridesDict, genericInstantiationsDict);
         }
 
         // Phase 2: Extract method calls (like production CallGraphBuilder second pass)
@@ -82,10 +82,14 @@ public class MapperScenarioIntegrationTests
             var semanticModel = compilation.GetSemanticModel(tree);
             var root = await tree.GetRootAsync();
             await callExtractor.Extract(callGraphId, root, semanticModel, filePath,
-                methods, calls);
+                methods, callsDict);
         }
 
-        return new CallGraph(callGraphId.ToString(), methods, calls, interfaceImpls, overrides, genericInstantiations);
+        return new CallGraph(callGraphId.ToString(), methods,
+            new ConcurrentBag<IMethodCall>(callsDict.Values),
+            new ConcurrentBag<IInterfaceImplementation>(interfaceImplsDict.Values),
+            new ConcurrentBag<IMethodOverride>(overridesDict.Values),
+            new ConcurrentBag<IGenericInstantiation>(genericInstantiationsDict.Values));
     }
 
     /// <summary>
