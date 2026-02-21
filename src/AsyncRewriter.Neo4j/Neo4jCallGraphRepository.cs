@@ -52,7 +52,7 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
         Save(new CallGraphWithMetadata<EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata>(callGraph.Id, callGraph, new Dictionary<string, EmptyGraphMetadata>(),
             new Dictionary<string, EmptyGraphMetadata>(), new Dictionary<string,EmptyGraphMetadata>(), new Dictionary<string, EmptyGraphMetadata>()), cancellationToken);
 
-    public async Task<ICallGraph> Load(Guid id, CancellationToken cancellationToken = default)
+    public async Task<ICallGraph> Load(string id, CancellationToken cancellationToken = default)
     {
         return await Load<EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata>(id, cancellationToken);
     }
@@ -110,6 +110,9 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
 
         // 3. Create CALLS relationships in batches
         var calls = callGraphWithMetadata.Calls.ToList();
+        var debug = calls.ToArray().Where(c =>
+            c.CalleeId == "RoutIT.IRMA.Entities.CRM.Mappers.EditNPaasOrderTicketRequest2NPaasOrderTicketMapper.MapInto(NPaasOrderTicket, EditNPaasOrderTicketRequest?)" &&
+            c.CallerId == "RoutIT.IRMA.Model.NPaas.NPaasOrderTicketModel.RateTicket(EditNPaasOrderTicketRequest)").ToArray();
         await Batch<IMethodCall>(calls.Count, BatchSize, async (batchStart, batchEnd) =>
         {
             var batch = calls.Skip(batchStart).Take(batchEnd - batchStart).ToList();
@@ -173,9 +176,7 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
                     MATCH (impl:Method {Id: i.ImplementingMethodId, CallGraphId: i.CallGraphId})
                     MATCH (iface:Method {Id: i.InterfaceMethodId, CallGraphId: i.CallGraphId})
                     CREATE (impl)-[r:IMPLEMENTS]->(iface)
-                    CREATE (iface)-[r2:IMPLEMENTED_BY]->(impl)
-                    SET r = i
-                    SET r2 = i",
+                    SET r = i",
             new
             {
                 impls = batch.Select(m => AddMetadata(metadata, m, m.ToDictionary()))
@@ -217,7 +218,7 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
     }
 
     public async Task<ICallGraphWithMetadata<TMethodMetadata, TCallMetadata, TImplementsMetadata, TOverridesMetadata>> Load<TMethodMetadata, TCallMetadata, TImplementsMetadata,
-        TOverridesMetadata>(Guid id, CancellationToken cancellationToken)
+        TOverridesMetadata>(string id, CancellationToken cancellationToken)
         where TMethodMetadata : IGraphMetadata<TMethodMetadata>
         where TCallMetadata : IGraphMetadata<TCallMetadata>
         where TOverridesMetadata : IGraphMetadata<TOverridesMetadata>
@@ -243,7 +244,7 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
         _logger.LogInformation("Call graph with metadata loaded successfully");
 
         // Create the base call graph
-        var callGraph = new CallGraph(id.ToString(), methods, calls, interfaceImplementations, methodOverrides);
+        var callGraph = new CallGraph(id, methods, calls, interfaceImplementations, methodOverrides);
 
         // Cast metadata dictionaries to the generic types
         var typedMethodMetadata = methodsMetadata.ToDictionary(
@@ -276,7 +277,7 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
         );
     }
 
-    private static async Task<(ConcurrentBag<IMethodCall> Calls, ConcurrentDictionary<string, Dictionary<string, string>> Metadata)> LoadCallsWithMetadata<TCallMetadata>(Guid id,
+    private static async Task<(ConcurrentBag<IMethodCall> Calls, ConcurrentDictionary<string, Dictionary<string, string>> Metadata)> LoadCallsWithMetadata<TCallMetadata>(string id,
         IAsyncSession session)
         where TCallMetadata : IGraphMetadata<TCallMetadata>
     {
@@ -286,7 +287,7 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
               RETURN r",
             new
             {
-                callGraphId = id.ToString()
+                callGraphId = id
             });
 
         return await callsCursor
@@ -313,7 +314,7 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
     }
 
     private static async Task<(ConcurrentDictionary<string, IMethodNode> Methods, ConcurrentDictionary<string, Dictionary<string, string>> Metadata)>
-        LoadMethodsWithMetadata<TMethodMetadata>(Guid id, IAsyncSession session)
+        LoadMethodsWithMetadata<TMethodMetadata>(string id, IAsyncSession session)
         where TMethodMetadata : IGraphMetadata<TMethodMetadata>
     {
         var methodsCursor = await session.RunAsync(
@@ -322,7 +323,7 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
               RETURN m",
             new
             {
-                callGraphId = id.ToString()
+                callGraphId = id
             });
 
         return await methodsCursor
@@ -349,7 +350,7 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
     }
 
     private static async Task<(ConcurrentBag<IInterfaceImplementation> InterfaceImplementations, ConcurrentDictionary<string, Dictionary<string, string>> Metadata)>
-        LoadImplementsWithMetadata<TImplementationMetadata>(Guid id, IAsyncSession session)
+        LoadImplementsWithMetadata<TImplementationMetadata>(string id, IAsyncSession session)
         where TImplementationMetadata : IGraphMetadata<TImplementationMetadata>
     {
         var implementscursor = await session.RunAsync(
@@ -357,7 +358,7 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
             "RETURN r",
             new
             {
-                callGraphId = id.ToString()
+                callGraphId = id
             });
 
         return await implementscursor
@@ -384,7 +385,7 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
     }
 
     private static async Task<(ConcurrentBag<IMethodOverride> MethodOverrides, ConcurrentDictionary<string, Dictionary<string, string>> Metadata)>
-        LoadOverridesWithMetadata<TMethodOverrideMetadata>(Guid id, IAsyncSession session)
+        LoadOverridesWithMetadata<TMethodOverrideMetadata>(string id, IAsyncSession session)
         where TMethodOverrideMetadata : IGraphMetadata<TMethodOverrideMetadata>
     {
         var overridesCursor = await session.RunAsync(
@@ -392,7 +393,7 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
             "RETURN r",
             new
             {
-                callGraphId = id.ToString()
+                callGraphId = id
             });
 
         return await overridesCursor

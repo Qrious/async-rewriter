@@ -6,26 +6,23 @@ using System.Threading;
 using System.Threading.Tasks;
 using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
+using Microsoft.Extensions.Logging;
 
 namespace AsyncRewriter.Analyzer;
 
-public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
+public class AsyncCallGraphFlooder : IAsyncCallGraphFlooder
 {
-    public Task<CallGraph> AnalyzeFloodingAsync(CallGraph callGraph, HashSet<string> rootMethodIds, CancellationToken cancellationToken = default)
-        => AnalyzeFloodingAsync(callGraph, rootMethodIds, blockedGenericMethodIds: null, progressCallback: null, cancellationToken);
+    private readonly ILogger<AsyncCallGraphFlooder> _logger;
 
-    public Task<CallGraph> AnalyzeFloodingAsync(
-        CallGraph callGraph,
-        HashSet<string> rootMethodIds,
-        Action<string, int, int>? progressCallback,
-        CancellationToken cancellationToken = default)
-        => AnalyzeFloodingAsync(callGraph, rootMethodIds, blockedGenericMethodIds: null, progressCallback, cancellationToken);
+    public AsyncCallGraphFlooder(ILogger<AsyncCallGraphFlooder> logger)
+    {
+        _logger = logger;
+    }
 
-    public Task<CallGraph> AnalyzeFloodingAsync(
-        CallGraph callGraph,
+    public Task<CallGraph> Flood(
+        ICallGraph callGraph,
         HashSet<string> rootMethodIds,
-        HashSet<string>? blockedGenericMethodIds,
-        Action<string, int, int>? progressCallback = null,
+        string? newGraphId = null,
         CancellationToken cancellationToken = default)
     {
         var floodedIds = new HashSet<string>(rootMethodIds);
@@ -41,10 +38,7 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
 
             if (callGraph.Methods.TryGetValue(methodId, out var method))
             {
-                progressCallback?.Invoke(
-                    $"{method.ContainingType}.{method.Name}",
-                    processed,
-                    processed + queue.Count);
+                _logger.LogTrace("Processing method {MethodName} ({Processed}/{Total})", $"{method.ContainingType}.{method.Name}", processed, processed + queue.Count);
             }
 
             // Flood to callers
@@ -77,18 +71,14 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
             // Also skip if the generic method is in the blocked set.
             foreach (var gi in callGraph.GetGenericMethodsFor(methodId))
             {
-                if (!HasGenericReturnType(callGraph, gi.GenericMethodId)
-                    && blockedGenericMethodIds?.Contains(gi.GenericMethodId) != true
-                    && floodedIds.Add(gi.GenericMethodId))
+                if (!HasGenericReturnType(callGraph, gi.GenericMethodId) && floodedIds.Add(gi.GenericMethodId))
                 {
                     queue.Enqueue(gi.GenericMethodId);
                 }
             }
             foreach (var gi in callGraph.GetInstantiationsOf(methodId))
             {
-                if (!HasGenericReturnType(callGraph, methodId)
-                    && blockedGenericMethodIds?.Contains(methodId) != true
-                    && floodedIds.Add(gi.InstantiatedMethodId))
+                if (!HasGenericReturnType(callGraph, methodId) && floodedIds.Add(gi.InstantiatedMethodId))
                 {
                     queue.Enqueue(gi.InstantiatedMethodId);
                 }
@@ -111,32 +101,8 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
             }
         }
 
-        // Post-process: for lambdas that got flooded and have async overloads,
-        // add synthetic call edges so the parent invocation gets await
-        var syntheticCalls = new List<MethodCall>();
-        foreach (var lao in callGraph.LambdaAsyncOverloads)
-        {
-            if (floodedIds.Contains(lao.LambdaMethodId))
-            {
-                // The caller method is flooded (it's a caller of the lambda)
-                // Add an edge from the caller to the async overload so it gets await
-                syntheticCalls.Add(new MethodCall
-                {
-                    CallGraphId = callGraph.Id,
-                    Id = Guid.NewGuid().ToString(),
-                    CallerId = lao.CallerMethodId,
-                    CalleeId = lao.AsyncOverloadMethodId,
-                    LineNumber = lao.ParentCallLineNumber,
-                    FilePath = lao.FilePath
-                });
-
-                // Ensure the async overload is marked as flooded (it returns Task already)
-                floodedIds.Add(lao.AsyncOverloadMethodId);
-            }
-        }
-
         // Build new call graph with transformed return types
-        var newGraphId = Guid.NewGuid().ToString();
+        newGraphId ??= $"{callGraph.Id}_flooded";
         var newMethods = new ConcurrentDictionary<string, IMethodNode>();
 
         foreach (var (id, methodNode) in callGraph.Methods)
@@ -153,7 +119,7 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
             };
         }
 
-        var allCalls = callGraph.Calls.Concat(syntheticCalls);
+        var allCalls = callGraph.Calls;
         var newCalls = new ConcurrentBag<IMethodCall>(
             allCalls.Select(c => (MethodCall)c with { CallGraphId = newGraphId }));
 
@@ -181,9 +147,7 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                 GenericMethodId = gi.GenericMethodId
             }));
 
-        var newLambdaAsyncOverloads = new ConcurrentBag<LambdaAsyncOverload>(callGraph.LambdaAsyncOverloads);
-
-        var newGraph = new CallGraph(newGraphId, newMethods, newCalls, newImpls, newOverrides, newGenericInstantiations, newLambdaAsyncOverloads);
+        var newGraph = new CallGraph(newGraphId, newMethods, newCalls, newImpls, newOverrides, newGenericInstantiations);
 
         return Task.FromResult(newGraph);
     }
@@ -282,25 +246,6 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
             }
         }
 
-        // Post-process lambda async overloads (same as AnalyzeFloodingAsync)
-        var syntheticCalls = new List<MethodCall>();
-        foreach (var lao in callGraph.LambdaAsyncOverloads)
-        {
-            if (floodedIds.Contains(lao.LambdaMethodId))
-            {
-                syntheticCalls.Add(new MethodCall
-                {
-                    CallGraphId = callGraph.Id,
-                    Id = Guid.NewGuid().ToString(),
-                    CallerId = lao.CallerMethodId,
-                    CalleeId = lao.AsyncOverloadMethodId,
-                    LineNumber = lao.ParentCallLineNumber,
-                    FilePath = lao.FilePath
-                });
-                floodedIds.Add(lao.AsyncOverloadMethodId);
-            }
-        }
-
         // Build new call graph with transformed return types (same as AnalyzeFloodingAsync)
         var newGraphId = Guid.NewGuid().ToString();
         var newMethods = new ConcurrentDictionary<string, IMethodNode>();
@@ -319,7 +264,7 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
             };
         }
 
-        var allCalls = callGraph.Calls.Concat(syntheticCalls);
+        var allCalls = callGraph.Calls;
         var newCalls = new ConcurrentBag<IMethodCall>(
             allCalls.Select(c => (MethodCall)c with { CallGraphId = newGraphId }));
 
@@ -347,9 +292,7 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
                 GenericMethodId = gi.GenericMethodId
             }));
 
-        var newLambdaAsyncOverloads = new ConcurrentBag<LambdaAsyncOverload>(callGraph.LambdaAsyncOverloads);
-
-        var newGraph = new CallGraph(newGraphId, newMethods, newCalls, newImpls, newOverrides, newGenericInstantiations, newLambdaAsyncOverloads);
+        var newGraph = new CallGraph(newGraphId, newMethods, newCalls, newImpls, newOverrides, newGenericInstantiations);
 
         return Task.FromResult((newGraph, floodingResult));
     }
@@ -404,7 +347,7 @@ public class AsyncFloodingAnalyzer : IAsyncFloodingAnalyzer
     /// of the containing interface. E.g. IMapper&lt;TSource, TDestination&gt;.Map returns
     /// TDestination — the return type can be adjusted by changing the type argument.
     /// </summary>
-    private static bool HasGenericReturnType(CallGraph callGraph, string interfaceMethodId)
+    private static bool HasGenericReturnType(ICallGraph callGraph, string interfaceMethodId)
     {
         if (!callGraph.Methods.TryGetValue(interfaceMethodId, out var method))
         {

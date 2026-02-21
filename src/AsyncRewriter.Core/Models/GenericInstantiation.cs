@@ -3,11 +3,13 @@ using AsyncRewriter.Core.Interfaces;
 
 namespace AsyncRewriter.Core.Models;
 
-public record GenericInstantiation : IGenericInstantiation
+public record GenericInstantiation : IGenericInstantiation, IIdentifiable
 {
     public required string CallGraphId { get; init; }
     public required string InstantiatedMethodId { get; init; }
     public required string GenericMethodId { get; init; }
+
+    public string Id => $"{InstantiatedMethodId}_generic_{GenericMethodId}";
 
     public virtual bool Equals(IGenericInstantiation? other)
     {
@@ -28,4 +30,5 @@ public record GenericInstantiation : IGenericInstantiation
     {
         return HashCode.Combine(CallGraphId, InstantiatedMethodId, GenericMethodId);
     }
+
 }

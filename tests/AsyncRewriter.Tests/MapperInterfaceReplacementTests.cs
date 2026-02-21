@@ -6,6 +6,7 @@ using AsyncRewriter.Transformation;
 using FluentAssertions;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace AsyncRewriter.Tests;
@@ -17,7 +18,7 @@ namespace AsyncRewriter.Tests;
 /// </summary>
 public class MapperInterfaceReplacementTests
 {
-    private readonly AsyncFloodingAnalyzer _analyzer = new();
+    private readonly AsyncCallGraphFlooder _analyzer = new(NullLogger<AsyncCallGraphFlooder>.Instance);
     private readonly AsyncTransformer _transformer = new();
 
     /// <summary>
@@ -253,7 +254,7 @@ public class Validator
         var graph = CreateCallGraph(methods, calls, impls, genericInstantiations);
 
         // Flood from the two async roots
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["async_root", "another_async"]);
+        var result = await _analyzer.Flood(graph, ["async_root", "another_async"]);
 
         // MapperB: flooded because it calls async_root
         result.Methods["mapperB_mapinto"].ReturnType.Should().Be("Task",
@@ -296,93 +297,6 @@ public class Validator
             "Controller calls flooded interface methods and must become async");
     }
 
-    [Fact]
-    public async Task Flooding_WithBlockedGeneric_OnlyDirectlyConnectedMappersFlooded()
-    {
-        // Same scenario but with the generic method blocked — prevents cross-contamination.
-        // Only mappers A, B, C (which have direct async call chains) should be flooded.
-        // MapperD should stay sync because the generic interface can't propagate.
-
-        var methods = new Dictionary<string, IMethodNode>
-        {
-            ["imap_generic"] = MakeMethod("imap_generic", "MapInto", "void",
-                "IMapInto<TSource, TTarget>", "external"),
-            ["imap_int_string"] = MakeMethod("imap_int_string", "MapInto", "void",
-                "IMapInto<int, string>", "external"),
-            ["imap_bool_string"] = MakeMethod("imap_bool_string", "MapInto", "void",
-                "IMapInto<bool, string>", "external"),
-            ["imap_double_string"] = MakeMethod("imap_double_string", "MapInto", "void",
-                "IMapInto<double, string>", "external"),
-            ["imap_long_string"] = MakeMethod("imap_long_string", "MapInto", "void",
-                "IMapInto<long, string>", "external"),
-            ["mapperA_mapinto"] = MakeMethod("mapperA_mapinto", "MapInto", "void", "MapperA"),
-            ["mapperB_mapinto"] = MakeMethod("mapperB_mapinto", "MapInto", "void", "MapperB"),
-            ["mapperC_mapinto"] = MakeMethod("mapperC_mapinto", "MapInto", "void", "MapperC"),
-            ["mapperD_mapinto"] = MakeMethod("mapperD_mapinto", "MapInto", "void", "MapperD"),
-            ["async_root"] = MakeMethod("async_root", "SaveAsync", "void", "DbContext"),
-            ["another_async"] = MakeMethod("another_async", "ValidateAsync", "void", "Validator"),
-            ["controller_action"] = MakeMethod("controller_action", "HandleRequest", "void", "Controller"),
-        };
-
-        var calls = new List<MethodCall>
-        {
-            MakeCall("mapperA_mapinto", "mapperB_mapinto"),
-            MakeCall("mapperB_mapinto", "async_root"),
-            MakeCall("mapperC_mapinto", "another_async"),
-            MakeCall("controller_action", "imap_int_string"),
-            MakeCall("controller_action", "imap_bool_string"),
-            MakeCall("controller_action", "imap_double_string"),
-            MakeCall("controller_action", "imap_long_string"),
-        };
-
-        var impls = new List<InterfaceImplementation>
-        {
-            new() { CallGraphId = "g", ImplementingMethodId = "mapperA_mapinto", InterfaceMethodId = "imap_int_string" },
-            new() { CallGraphId = "g", ImplementingMethodId = "mapperB_mapinto", InterfaceMethodId = "imap_bool_string" },
-            new() { CallGraphId = "g", ImplementingMethodId = "mapperC_mapinto", InterfaceMethodId = "imap_double_string" },
-            new() { CallGraphId = "g", ImplementingMethodId = "mapperD_mapinto", InterfaceMethodId = "imap_long_string" },
-        };
-
-        var genericInstantiations = new List<GenericInstantiation>
-        {
-            new() { CallGraphId = "g", InstantiatedMethodId = "imap_int_string", GenericMethodId = "imap_generic" },
-            new() { CallGraphId = "g", InstantiatedMethodId = "imap_bool_string", GenericMethodId = "imap_generic" },
-            new() { CallGraphId = "g", InstantiatedMethodId = "imap_double_string", GenericMethodId = "imap_generic" },
-            new() { CallGraphId = "g", InstantiatedMethodId = "imap_long_string", GenericMethodId = "imap_generic" },
-        };
-
-        var graph = CreateCallGraph(methods, calls, impls, genericInstantiations);
-
-        // Block the generic method to prevent cross-contamination between instantiations
-        var blocked = new HashSet<string> { "imap_generic" };
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["async_root", "another_async"], blocked);
-
-        // Mappers A, B, C: flooded via direct call chains
-        result.Methods["mapperA_mapinto"].ReturnType.Should().Be("Task");
-        result.Methods["mapperB_mapinto"].ReturnType.Should().Be("Task");
-        result.Methods["mapperC_mapinto"].ReturnType.Should().Be("Task");
-
-        // MapperD: NOT flooded — blocked generic prevents propagation
-        result.Methods["mapperD_mapinto"].ReturnType.Should().Be("void",
-            "MapperD should stay sync when generic propagation is blocked");
-
-        // Instantiated interfaces for A, B, C: flooded via implementation
-        result.Methods["imap_int_string"].ReturnType.Should().Be("Task");
-        result.Methods["imap_bool_string"].ReturnType.Should().Be("Task");
-        result.Methods["imap_double_string"].ReturnType.Should().Be("Task");
-
-        // Instantiated interface for D: NOT flooded
-        result.Methods["imap_long_string"].ReturnType.Should().Be("void",
-            "IMapInto<long, string> should not be flooded when generic is blocked");
-
-        // Generic interface: NOT flooded (blocked)
-        result.Methods["imap_generic"].ReturnType.Should().Be("void",
-            "generic interface should not be flooded when blocked");
-
-        // Controller: still flooded because it calls flooded instantiated interfaces
-        result.Methods["controller_action"].ReturnType.Should().Be("Task",
-            "Controller calls flooded interface methods (A, B, C) and must become async");
-    }
 
     #endregion
 
@@ -568,113 +482,6 @@ public class MapperD : IMapInto<long, string>
 
     #endregion
 
-    #region Full Scenario: Flooding + Interface Replacement
-
-    [Fact]
-    public async Task FullScenario_FloodingAndReplacement_AllReferencesTransformedCorrectly()
-    {
-        var controllerSource = LoadTestData("MapperController");
-        var mapperASource = LoadTestData("MapperA");
-
-        // Step 1: Build call graph and flood with blocked generic
-        var methods = new Dictionary<string, IMethodNode>
-        {
-            ["imap_generic"] = MakeMethod("imap_generic", "MapInto", "void",
-                "IMapInto<TSource, TTarget>", "external"),
-            ["imap_int_string"] = MakeMethod("imap_int_string", "MapInto", "void",
-                "IMapInto<int, string>", "external"),
-            ["imap_bool_string"] = MakeMethod("imap_bool_string", "MapInto", "void",
-                "IMapInto<bool, string>", "external"),
-            ["imap_double_string"] = MakeMethod("imap_double_string", "MapInto", "void",
-                "IMapInto<double, string>", "external"),
-            ["imap_long_string"] = MakeMethod("imap_long_string", "MapInto", "void",
-                "IMapInto<long, string>", "external"),
-            ["mapperA_mapinto"] = MakeMethod("mapperA_mapinto", "MapInto", "void", "MapperA"),
-            ["mapperB_mapinto"] = MakeMethod("mapperB_mapinto", "MapInto", "void", "MapperB"),
-            ["mapperC_mapinto"] = MakeMethod("mapperC_mapinto", "MapInto", "void", "MapperC"),
-            ["mapperD_mapinto"] = MakeMethod("mapperD_mapinto", "MapInto", "void", "MapperD"),
-            ["async_root"] = MakeMethod("async_root", "SaveAsync", "void", "DbContext"),
-            ["another_async"] = MakeMethod("another_async", "ValidateAsync", "void", "Validator"),
-            ["controller_action"] = MakeMethod("controller_action", "HandleRequest", "void", "Controller"),
-        };
-
-        var calls = new List<MethodCall>
-        {
-            MakeCall("mapperA_mapinto", "mapperB_mapinto"),
-            MakeCall("mapperB_mapinto", "async_root"),
-            MakeCall("mapperC_mapinto", "another_async"),
-            MakeCall("controller_action", "imap_int_string"),
-            MakeCall("controller_action", "imap_bool_string"),
-            MakeCall("controller_action", "imap_double_string"),
-            MakeCall("controller_action", "imap_long_string"),
-        };
-
-        var impls = new List<InterfaceImplementation>
-        {
-            new() { CallGraphId = "g", ImplementingMethodId = "mapperA_mapinto", InterfaceMethodId = "imap_int_string" },
-            new() { CallGraphId = "g", ImplementingMethodId = "mapperB_mapinto", InterfaceMethodId = "imap_bool_string" },
-            new() { CallGraphId = "g", ImplementingMethodId = "mapperC_mapinto", InterfaceMethodId = "imap_double_string" },
-            new() { CallGraphId = "g", ImplementingMethodId = "mapperD_mapinto", InterfaceMethodId = "imap_long_string" },
-        };
-
-        var genericInstantiations = new List<GenericInstantiation>
-        {
-            new() { CallGraphId = "g", InstantiatedMethodId = "imap_int_string", GenericMethodId = "imap_generic" },
-            new() { CallGraphId = "g", InstantiatedMethodId = "imap_bool_string", GenericMethodId = "imap_generic" },
-            new() { CallGraphId = "g", InstantiatedMethodId = "imap_double_string", GenericMethodId = "imap_generic" },
-            new() { CallGraphId = "g", InstantiatedMethodId = "imap_long_string", GenericMethodId = "imap_generic" },
-        };
-
-        var graph = CreateCallGraph(methods, calls, impls, genericInstantiations);
-
-        // Use blocked generic to get scoped flooding (only directly affected mappers)
-        var blocked = new HashSet<string> { "imap_generic" };
-        var floodedGraph = await _analyzer.AnalyzeFloodingAsync(graph, ["async_root", "another_async"], blocked);
-
-        // Verify flooding results
-        floodedGraph.Methods["mapperA_mapinto"].ReturnType.Should().Be("Task");
-        floodedGraph.Methods["mapperB_mapinto"].ReturnType.Should().Be("Task");
-        floodedGraph.Methods["mapperC_mapinto"].ReturnType.Should().Be("Task");
-        floodedGraph.Methods["mapperD_mapinto"].ReturnType.Should().Be("void");
-
-        // Step 2: Detect problematic interfaces
-        var problematic = ProblematicInterfaceAnalyzer.DetectProblematicInterfaces(graph, floodedGraph);
-
-        problematic.Should().ContainKey("IMapInto<int, string>");
-        problematic.Should().ContainKey("IMapInto<bool, string>");
-        problematic.Should().ContainKey("IMapInto<double, string>");
-        problematic.Should().NotContainKey("IMapInto<long, string>",
-            "MapperD is not flooded, so its interface is not problematic");
-
-        // Step 3: Apply interface replacement on source files
-        var controllerResult = InterfaceReplacer.Transform(controllerSource, MapIntoMappings);
-
-        controllerResult.Should().NotBeNull();
-
-        // All 4 field types replaced
-        controllerResult.Should().Contain("IMapIntoAsync<int, string> _mapperA");
-        controllerResult.Should().Contain("IMapIntoAsync<bool, string> _mapperB");
-        controllerResult.Should().Contain("IMapIntoAsync<double, string> _mapperC");
-        controllerResult.Should().Contain("IMapIntoAsync<long, string> _mapperD");
-
-        // All 4 constructor parameter types replaced
-        controllerResult.Should().Contain("IMapIntoAsync<int, string> mapperA");
-        controllerResult.Should().Contain("IMapIntoAsync<bool, string> mapperB");
-        controllerResult.Should().Contain("IMapIntoAsync<double, string> mapperC");
-        controllerResult.Should().Contain("IMapIntoAsync<long, string> mapperD");
-
-        // No remaining sync interface references
-        controllerResult.Should().NotContain("IMapInto<");
-
-        // Mapper A source — verify base list and dependency replacement
-        var mapperAResult = InterfaceReplacer.Transform(mapperASource, MapIntoMappings);
-        mapperAResult.Should().NotBeNull();
-        mapperAResult.Should().Contain(": IMapIntoAsync<int, string>");
-        mapperAResult.Should().Contain("IMapIntoAsync<bool, string> _mapperB");
-        mapperAResult.Should().Contain("IMapIntoAsync<bool, string> mapperB");
-    }
-
-    #endregion
 
     #region Transformation with Compilation Verification
 

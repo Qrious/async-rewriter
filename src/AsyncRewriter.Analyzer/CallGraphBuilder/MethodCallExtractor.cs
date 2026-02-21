@@ -16,54 +16,38 @@ namespace AsyncRewriter.Analyzer;
 /// </summary>
 public class MethodCallExtractor : AsyncCSharpSyntaxWalker, IMethodCallExtractor
 {
-    private ConcurrentBag<IMethodCall> _calls = new();
-    private ConcurrentBag<LambdaAsyncOverload>? _lambdaAsyncOverloads;
+    private ConcurrentDictionary<string, IMethodCall> _calls = new();
     private SemanticModel _semanticModel = null!;
     private ISemanticModelResolver? _semanticModelResolver;
     private string _filePath = string.Empty;
     private IMethodSymbol? _currentMethodSymbol;
     private ConcurrentDictionary<string, IMethodNode> _methods;
-    private Guid _callGraphId;
+    private string _callGraphId;
 
     public Task Extract(
-        Guid callGraphId,
+        string callGraphId,
         SyntaxNode root,
         SemanticModel semanticModel,
         string filePath,
         ConcurrentDictionary<string, IMethodNode> methods,
-        ConcurrentBag<IMethodCall> calls,
+        ConcurrentDictionary<string, IMethodCall> calls,
         CancellationToken cancellationToken = default)
     {
         return Extract(callGraphId, root, semanticModel, filePath, methods, calls, null!, cancellationToken);
     }
 
     public async Task Extract(
-        Guid callGraphId,
+        string callGraphId,
         SyntaxNode root,
         SemanticModel semanticModel,
         string filePath,
         ConcurrentDictionary<string, IMethodNode> methods,
-        ConcurrentBag<IMethodCall> calls,
+        ConcurrentDictionary<string, IMethodCall> calls,
         ISemanticModelResolver semanticModelResolver,
-        CancellationToken cancellationToken = default)
-    {
-        await Extract(callGraphId, root, semanticModel, filePath, methods, calls, semanticModelResolver, null!, cancellationToken);
-    }
-
-    public async Task Extract(
-        Guid callGraphId,
-        SyntaxNode root,
-        SemanticModel semanticModel,
-        string filePath,
-        ConcurrentDictionary<string, IMethodNode> methods,
-        ConcurrentBag<IMethodCall> calls,
-        ISemanticModelResolver semanticModelResolver,
-        ConcurrentBag<LambdaAsyncOverload> lambdaAsyncOverloads,
         CancellationToken cancellationToken = default)
     {
         _callGraphId = callGraphId;
         _calls = calls;
-        _lambdaAsyncOverloads = lambdaAsyncOverloads;
         _methods = methods;
         _semanticModel = semanticModel;
         _semanticModelResolver = semanticModelResolver;
@@ -189,214 +173,17 @@ public class MethodCallExtractor : AsyncCSharpSyntaxWalker, IMethodCallExtractor
             _methods.TryAdd(calleeId, CreateMethodNodeFromSymbol(lambdaSymbol, _filePath));
         }
 
-        _calls.Add(new MethodCall
+        var id = CreateMethodCallId(callerId, calleeId, node.GetLocation().GetLineSpan());
+        _calls.TryAdd(id, new MethodCall
         {
-            CallGraphId = _callGraphId.ToString(),
-            Id = Guid.NewGuid().ToString(),
+            CallGraphId = _callGraphId,
+            Id = id,
             CallerId = callerId,
             CalleeId = calleeId,
             LineNumber = node.GetLocation().GetLineSpan().StartLinePosition.Line + 1,
             FilePath = _filePath
         });
-
-        // Check if the lambda is an argument to an invocation that has an async overload
-        if (_lambdaAsyncOverloads != null)
-        {
-            DetectAsyncOverloadForLambda(node, lambdaSymbol, callerId, calleeId);
         }
-    }
-
-    /// <summary>
-    /// When a lambda is passed as an argument to a method, checks if the containing type
-    /// has an overload where the corresponding Func parameter accepts Task-returning delegates
-    /// and the method itself returns Task. If so, records a LambdaAsyncOverload.
-    /// </summary>
-    private void DetectAsyncOverloadForLambda(SyntaxNode lambdaNode, IMethodSymbol lambdaSymbol, string callerId, string lambdaId)
-    {
-        // Walk up to find the ArgumentSyntax, then the InvocationExpressionSyntax
-        var argument = lambdaNode.FirstAncestorOrSelf<ArgumentSyntax>();
-        if (argument == null)
-        {
-            return;
-        }
-
-        var invocation = argument.FirstAncestorOrSelf<InvocationExpressionSyntax>();
-        if (invocation == null)
-        {
-            return;
-        }
-
-        var invokedSymbol = _semanticModel.GetSymbolInfo(invocation).Symbol as IMethodSymbol;
-        if (invokedSymbol == null)
-        {
-            return;
-        }
-
-        // Find which parameter index this lambda corresponds to
-        var argList = invocation.ArgumentList;
-        var argIndex = -1;
-        for (int i = 0; i < argList.Arguments.Count; i++)
-        {
-            if (argList.Arguments[i] == argument)
-            {
-                argIndex = i;
-                break;
-            }
-        }
-        if (argIndex < 0 || argIndex >= invokedSymbol.Parameters.Length)
-        {
-            return;
-        }
-
-        var param = invokedSymbol.Parameters[argIndex];
-        if (!IsFuncType(param.Type))
-        {
-            return;
-        }
-
-        // Look for an async overload in the same type
-        var containingType = invokedSymbol.ContainingType;
-        if (containingType == null)
-        {
-            return;
-        }
-
-        foreach (var member in containingType.GetMembers(invokedSymbol.Name).OfType<IMethodSymbol>())
-        {
-            if (SymbolEqualityComparer.Default.Equals(member, invokedSymbol))
-            {
-                continue;
-            }
-
-            if (member.Parameters.Length != invokedSymbol.Parameters.Length)
-            {
-                continue;
-            }
-
-            // Check if this overload has an async Func at the same parameter position
-            // and returns Task/Task<T>
-            if (!IsAsyncFuncCounterpart(invokedSymbol.Parameters[argIndex].Type, member.Parameters[argIndex].Type))
-            {
-                continue;
-            }
-
-            if (!IsTaskReturning(member.ReturnType))
-            {
-                continue;
-            }
-
-            // All other parameters should match
-            var allMatch = true;
-            for (int i = 0; i < member.Parameters.Length; i++)
-            {
-                if (i == argIndex)
-                {
-                    continue;
-                }
-
-                if (!SymbolEqualityComparer.Default.Equals(
-                        invokedSymbol.Parameters[i].Type, member.Parameters[i].Type))
-                {
-                    allMatch = false;
-                    break;
-                }
-            }
-            if (!allMatch)
-            {
-                continue;
-            }
-
-            var asyncOverloadId = MethodExtractor.GetMethodId(member);
-            if (!_methods.ContainsKey(asyncOverloadId))
-            {
-                _methods.TryAdd(asyncOverloadId, CreateMethodNodeFromSymbol(member, "external"));
-            }
-
-            _lambdaAsyncOverloads!.Add(new LambdaAsyncOverload
-            {
-                LambdaMethodId = lambdaId,
-                CallerMethodId = callerId,
-                ParentCalleeMethodId = MethodExtractor.GetMethodId(invokedSymbol),
-                AsyncOverloadMethodId = asyncOverloadId,
-                ParentCallLineNumber = invocation.GetLocation().GetLineSpan().StartLinePosition.Line + 1,
-                FilePath = _filePath
-            });
-            break; // Found one async overload, that's enough
-        }
-    }
-
-    private static bool IsFuncType(ITypeSymbol type)
-    {
-        if (type is not INamedTypeSymbol named)
-        {
-            return false;
-        }
-
-        return named.OriginalDefinition.ContainingNamespace?.ToDisplayString() == "System"
-               && named.OriginalDefinition.Name == "Func";
-    }
-
-    /// <summary>
-    /// Checks if asyncType is the async counterpart of syncType.
-    /// E.g. Func&lt;T, TResult&gt; → Func&lt;T, Task&lt;TResult&gt;&gt;
-    /// or Func&lt;T&gt; → Func&lt;T, Task&gt; (void-returning)
-    /// </summary>
-    private static bool IsAsyncFuncCounterpart(ITypeSymbol syncType, ITypeSymbol asyncType)
-    {
-        if (syncType is not INamedTypeSymbol syncFunc || asyncType is not INamedTypeSymbol asyncFunc)
-        {
-            return false;
-        }
-
-        if (!IsFuncType(syncType) || !IsFuncType(asyncType))
-        {
-            return false;
-        }
-
-        var syncArgs = syncFunc.TypeArguments;
-        var asyncArgs = asyncFunc.TypeArguments;
-
-        // The async Func should have the same number of type args
-        if (syncArgs.Length != asyncArgs.Length)
-        {
-            return false;
-        }
-
-        // All args except the last (return type) should match
-        for (int i = 0; i < syncArgs.Length - 1; i++)
-        {
-            if (!SymbolEqualityComparer.Default.Equals(syncArgs[i], asyncArgs[i]))
-            {
-                return false;
-            }
-        }
-
-        // The last type arg of the async version should be Task<syncReturnType>
-        var syncReturn = syncArgs[syncArgs.Length - 1];
-        var asyncReturn = asyncArgs[asyncArgs.Length - 1];
-
-        if (asyncReturn is INamedTypeSymbol asyncReturnNamed && IsTaskReturning(asyncReturnNamed))
-        {
-            if (asyncReturnNamed.TypeArguments.Length == 1)
-            {
-                return SymbolEqualityComparer.Default.Equals(syncReturn, asyncReturnNamed.TypeArguments[0]);
-            }
-            // Task (no type arg) — would need syncReturn to be void-like, but Func doesn't have void
-        }
-
-        return false;
-    }
-
-    private static bool IsTaskReturning(ITypeSymbol type)
-    {
-        if (type is not INamedTypeSymbol named)
-        {
-            return false;
-        }
-
-        var ns = named.ContainingNamespace?.ToDisplayString();
-        return ns == "System.Threading.Tasks" && (named.Name == "Task" || named.Name == "ValueTask");
-    }
 
     public override async Task VisitObjectCreationExpressionAsync(ObjectCreationExpressionSyntax node, CancellationToken cancellationToken = default)
     {
@@ -550,10 +337,11 @@ public class MethodCallExtractor : AsyncCSharpSyntaxWalker, IMethodCallExtractor
                     _methods.TryAdd(lambdaId, CreateMethodNodeFromSymbol(lambdaSymbol, _filePath));
                 }
 
-                _calls.Add(new MethodCall
+                var id = CreateMethodCallId(callerId, lambdaId, invocation.GetLocation().GetLineSpan());
+                _calls.TryAdd(id, new MethodCall
                 {
-                    CallGraphId = _callGraphId.ToString(),
-                    Id = Guid.NewGuid().ToString(),
+                    CallGraphId = _callGraphId,
+                    Id = id,
                     CallerId = callerId,
                     CalleeId = lambdaId,
                     LineNumber = invocation.GetLocation().GetLineSpan().StartLinePosition.Line + 1,
@@ -579,22 +367,29 @@ public class MethodCallExtractor : AsyncCSharpSyntaxWalker, IMethodCallExtractor
                     _methods.TryAdd(calleeId, CreateMethodNodeFromSymbol(invokedSymbol, "external"));
                 }
 
+                var lineSpan = node.GetLocation().GetLineSpan();
+
                 var methodCall = new MethodCall
                 {
-                    CallGraphId = _callGraphId.ToString(),
-                    Id = Guid.NewGuid().ToString(),
+                    CallGraphId = _callGraphId,
+                    Id = CreateMethodCallId(callerId, calleeId, lineSpan),
                     CallerId = callerId,
                     CalleeId = calleeId,
-                    LineNumber = node.GetLocation().GetLineSpan().StartLinePosition.Line + 1,
+                    LineNumber = lineSpan.StartLinePosition.Line + 1,
                     FilePath = _filePath
                 };
 
-                _calls.Add(methodCall);
+                _calls.TryAdd(methodCall.Id, methodCall);
             }
         }
 
         // Continue walking into children to find nested invocations (e.g., inside lambdas)
         await DefaultVisitAsync(node, cancellationToken);
+    }
+
+    private static string CreateMethodCallId(string callerId, string calleeId, FileLinePositionSpan lineSpan)
+    {
+        return $"{callerId}_calls_{calleeId}_{lineSpan.StartLinePosition.Line}:{lineSpan.StartLinePosition.Character}_{lineSpan.EndLinePosition.Line}:{lineSpan.EndLinePosition.Character}";
     }
 
     /// <summary>
@@ -619,7 +414,7 @@ public class MethodCallExtractor : AsyncCSharpSyntaxWalker, IMethodCallExtractor
         var original = methodSymbol.OriginalDefinition;
         return new MethodNode
         {
-            CallGraphId = _callGraphId.ToString(),
+            CallGraphId = _callGraphId,
             Id = MethodExtractor.GetMethodId(methodSymbol),
             Name = original.Name,
             ContainingType = original.ContainingType?.ToDisplayString() ?? "",

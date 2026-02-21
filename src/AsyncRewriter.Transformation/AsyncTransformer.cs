@@ -604,22 +604,13 @@ public class AsyncTransformer : IAsyncTransformer
             }
         }
 
-        // Build lookup for lambda async overload synthetic calls for this method
-        var lambdaOverloadCallees = new HashSet<string>(
-            callGraph.LambdaAsyncOverloads
-                .Where(lao => lao.CallerMethodId == method.Id)
-                .Select(lao => lao.AsyncOverloadMethodId));
-
         // Call sites that will get await added
         foreach (var call in callsToAwait.OrderBy(c => c.LineNumber))
         {
             var calleeName = callGraph.Methods.TryGetValue(call.CalleeId, out var callee)
                 ? callee.Id
                 : call.CalleeId;
-            var suffix = lambdaOverloadCallees.Contains(call.CalleeId)
-                ? " (lambda async overload)"
-                : "";
-            lines.Add($"Await at L{call.LineNumber}: {calleeName}{suffix}");
+            lines.Add($"Await at L{call.LineNumber}: {calleeName}");
         }
 
         // Interface implementations affected

@@ -3,13 +3,14 @@ using AsyncRewriter.Analyzer;
 using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
 using FluentAssertions;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace AsyncRewriter.Tests;
 
-public class AsyncFloodingAnalyzerTests
+public class AsyncCallGraphFlooderTests
 {
-    private readonly AsyncFloodingAnalyzer _analyzer = new();
+    private readonly AsyncCallGraphFlooder _analyzer = new(NullLogger<AsyncCallGraphFlooder>.Instance);
 
     private static CallGraph CreateCallGraph(
         Dictionary<string, IMethodNode> methods,
@@ -64,7 +65,7 @@ public class AsyncFloodingAnalyzerTests
         };
         var graph = CreateCallGraph(methods);
 
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m1"]);
+        var result = await _analyzer.Flood(graph, ["m1"]);
 
         result.Methods["m1"].ReturnType.Should().Be("Task");
     }
@@ -80,7 +81,7 @@ public class AsyncFloodingAnalyzerTests
         var calls = new List<IMethodCall> { MakeCall("m2", "m1") };
         var graph = CreateCallGraph(methods, calls);
 
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m1"]);
+        var result = await _analyzer.Flood(graph, ["m1"]);
 
         result.Methods["m1"].ReturnType.Should().Be("Task");
         result.Methods["m2"].ReturnType.Should().Be("Task");
@@ -97,7 +98,7 @@ public class AsyncFloodingAnalyzerTests
         var calls = new List<IMethodCall> { MakeCall("m2", "m1") };
         var graph = CreateCallGraph(methods, calls);
 
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m1"]);
+        var result = await _analyzer.Flood(graph, ["m1"]);
 
         result.Methods["m1"].ReturnType.Should().Be("Task<int>");
         result.Methods["m2"].ReturnType.Should().Be("Task<string>");
@@ -112,7 +113,7 @@ public class AsyncFloodingAnalyzerTests
         };
         var graph = CreateCallGraph(methods);
 
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m1"]);
+        var result = await _analyzer.Flood(graph, ["m1"]);
 
         result.Methods["m1"].ReturnType.Should().Be("Task<int>");
     }
@@ -126,7 +127,7 @@ public class AsyncFloodingAnalyzerTests
         };
         var graph = CreateCallGraph(methods);
 
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m1"]);
+        var result = await _analyzer.Flood(graph, ["m1"]);
 
         result.Methods["m1"].ReturnType.Should().Be("Task");
     }
@@ -142,7 +143,7 @@ public class AsyncFloodingAnalyzerTests
         // No calls between m1 and m2
         var graph = CreateCallGraph(methods);
 
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m1"]);
+        var result = await _analyzer.Flood(graph, ["m1"]);
 
         result.Methods["m1"].ReturnType.Should().Be("Task");
         result.Methods["m2"].ReturnType.Should().Be("int");
@@ -165,7 +166,7 @@ public class AsyncFloodingAnalyzerTests
         };
         var graph = CreateCallGraph(methods, calls);
 
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m1"]);
+        var result = await _analyzer.Flood(graph, ["m1"]);
 
         result.Methods["m1"].ReturnType.Should().Be("Task");
         result.Methods["m2"].ReturnType.Should().Be("Task<bool>");
@@ -191,7 +192,7 @@ public class AsyncFloodingAnalyzerTests
         };
         var graph = CreateCallGraph(methods, calls, impls);
 
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m1"]);
+        var result = await _analyzer.Flood(graph, ["m1"]);
 
         result.Methods["m1"].ReturnType.Should().Be("Task");
         result.Methods["m_iface"].ReturnType.Should().Be("Task", "non-generic interface method should be flooded");
@@ -216,7 +217,7 @@ public class AsyncFloodingAnalyzerTests
         };
         var graph = CreateCallGraph(methods, calls, overrides: overrides);
 
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m_override"]);
+        var result = await _analyzer.Flood(graph, ["m_override"]);
 
         result.Methods["m_override"].ReturnType.Should().Be("Task");
         result.Methods["m_base"].ReturnType.Should().Be("Task");
@@ -240,7 +241,7 @@ public class AsyncFloodingAnalyzerTests
         };
         var graph = CreateCallGraph(methods, interfaceImpls: impls);
 
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m_iface"]);
+        var result = await _analyzer.Flood(graph, ["m_iface"]);
 
         result.Methods["m_iface"].ReturnType.Should().Be("Task");
         result.Methods["m_impl1"].ReturnType.Should().Be("Task", "implementors of non-generic interface should be flooded");
@@ -272,7 +273,7 @@ public class AsyncFloodingAnalyzerTests
         };
         var graph = CreateCallGraph(methods, interfaceImpls: impls, genericInstantiations: genericInstantiations);
 
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m_iface_generic"]);
+        var result = await _analyzer.Flood(graph, ["m_iface_generic"]);
 
         result.Methods["m_iface_generic"].ReturnType.Should().Be("Task<TDestination?>",
             "the generic interface method itself is flooded since it was a root");
@@ -301,7 +302,7 @@ public class AsyncFloodingAnalyzerTests
         };
         var graph = CreateCallGraph(methods, overrides: overrides);
 
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m_base"]);
+        var result = await _analyzer.Flood(graph, ["m_base"]);
 
         result.Methods["m_base"].ReturnType.Should().Be("Task<int>");
         result.Methods["m_child"].ReturnType.Should().Be("Task<int>");
@@ -324,7 +325,7 @@ public class AsyncFloodingAnalyzerTests
         };
         var graph = CreateCallGraph(methods, calls);
 
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m1", "m2"]);
+        var result = await _analyzer.Flood(graph, ["m1", "m2"]);
 
         result.Methods["m1"].ReturnType.Should().Be("Task");
         result.Methods["m2"].ReturnType.Should().Be("Task<int>");
@@ -348,7 +349,7 @@ public class AsyncFloodingAnalyzerTests
         };
         var graph = CreateCallGraph(methods, calls);
 
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m1"]);
+        var result = await _analyzer.Flood(graph, ["m1"]);
 
         result.Methods["m1"].ReturnType.Should().Be("Task");
         result.Methods["m2"].ReturnType.Should().Be("Task");
@@ -363,7 +364,7 @@ public class AsyncFloodingAnalyzerTests
         };
         var graph = CreateCallGraph(methods);
 
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m1"]);
+        var result = await _analyzer.Flood(graph, ["m1"]);
 
         result.Id.Should().NotBe(graph.Id);
     }
@@ -379,7 +380,7 @@ public class AsyncFloodingAnalyzerTests
         var calls = new List<IMethodCall> { MakeCall("m2", "m1") };
         var graph = CreateCallGraph(methods, calls);
 
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m1"]);
+        var result = await _analyzer.Flood(graph, ["m1"]);
 
         result.Calls.Should().HaveCount(1);
         var call = result.Calls.First();
@@ -402,7 +403,7 @@ public class AsyncFloodingAnalyzerTests
         };
         var graph = CreateCallGraph(methods, interfaceImpls: impls);
 
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m1"]);
+        var result = await _analyzer.Flood(graph, ["m1"]);
 
         result.InterfaceImplementations.Should().HaveCount(1);
         var impl = result.InterfaceImplementations.First();
@@ -425,29 +426,9 @@ public class AsyncFloodingAnalyzerTests
         var cts = new CancellationTokenSource();
         cts.Cancel();
 
-        var act = () => _analyzer.AnalyzeFloodingAsync(graph, ["m1"], cts.Token);
+        var act = () => _analyzer.Flood(graph, ["m1"], null, cts.Token);
 
         await act.Should().ThrowAsync<OperationCanceledException>();
-    }
-
-    [Fact]
-    public async Task FloodFromRoot_ReportsProgress()
-    {
-        var methods = new Dictionary<string, IMethodNode>
-        {
-            ["m1"] = MakeMethod("m1", "Root", "void"),
-            ["m2"] = MakeMethod("m2", "Caller", "void")
-        };
-        var calls = new List<IMethodCall> { MakeCall("m2", "m1") };
-        var graph = CreateCallGraph(methods, calls);
-
-        var progressCalls = new List<(string method, int current, int total)>();
-        await _analyzer.AnalyzeFloodingAsync(graph, ["m1"], (method, current, total) =>
-        {
-            progressCalls.Add((method, current, total));
-        });
-
-        progressCalls.Should().NotBeEmpty();
     }
 
     [Theory]
@@ -461,7 +442,7 @@ public class AsyncFloodingAnalyzerTests
     [InlineData("ValueTask<bool>", "ValueTask<bool>")]
     public void TransformReturnType_TransformsCorrectly(string input, string expected)
     {
-        AsyncFloodingAnalyzer.TransformReturnType(input).Should().Be(expected);
+        AsyncCallGraphFlooder.TransformReturnType(input).Should().Be(expected);
     }
 
     [Fact]
@@ -475,7 +456,7 @@ public class AsyncFloodingAnalyzerTests
         var calls = new List<IMethodCall> { MakeCall("m2", "m1") };
         var graph = CreateCallGraph(methods, calls);
 
-        var asyncGraph = await _analyzer.AnalyzeFloodingAsync(graph, ["m1"]);
+        var asyncGraph = await _analyzer.Flood(graph, ["m1"]);
         var infos = await _analyzer.GetTransformationInfoAsync(asyncGraph);
 
         infos.Should().HaveCount(2);
@@ -497,7 +478,7 @@ public class AsyncFloodingAnalyzerTests
         };
         var graph = CreateCallGraph(methods, interfaceImpls: impls);
 
-        var asyncGraph = await _analyzer.AnalyzeFloodingAsync(graph, ["m1"]);
+        var asyncGraph = await _analyzer.Flood(graph, ["m1"]);
         var infos = await _analyzer.GetTransformationInfoAsync(asyncGraph);
 
         var implInfo = infos.Single(i => i.MethodId == "m1");
@@ -512,7 +493,7 @@ public class AsyncFloodingAnalyzerTests
     [InlineData("ISimple<T>", new[] { "T" })]
     public void ParseGenericTypeParameters_ExtractsCorrectly(string containingType, string[] expected)
     {
-        AsyncFloodingAnalyzer.ParseGenericTypeParameters(containingType).Should().BeEquivalentTo(expected);
+        AsyncCallGraphFlooder.ParseGenericTypeParameters(containingType).Should().BeEquivalentTo(expected);
     }
 
     [Fact]
@@ -572,7 +553,7 @@ public class AsyncFloodingAnalyzerTests
         var graph = CreateCallGraph(methods, calls, impls, genericInstantiations: genericInstantiations);
 
         // Flood from the task wrapper (the root async source)
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["task_wrapper"]);
+        var result = await _analyzer.Flood(graph, ["task_wrapper"]);
 
         // Task wrapper itself: already has a non-Task return type, so it gets wrapped
         result.Methods["task_wrapper"].ReturnType.Should().Be("Task<FooOutput>");
@@ -628,7 +609,7 @@ public class AsyncFloodingAnalyzerTests
         var graph = CreateCallGraph(methods, interfaceImpls: impls, genericInstantiations: genericInstantiations);
 
         // Flood from FooHandler implementation
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m_impl_foo"]);
+        var result = await _analyzer.Flood(graph, ["m_impl_foo"]);
 
         result.Methods["m_impl_foo"].ReturnType.Should().Be("Task");
         result.Methods["m_iface_foo"].ReturnType.Should().Be("Task",
@@ -639,47 +620,6 @@ public class AsyncFloodingAnalyzerTests
             "sibling instantiation should be flooded from generic → instantiated");
         result.Methods["m_impl_bar"].ReturnType.Should().Be("Task",
             "sibling implementation should be flooded from instantiated interface");
-    }
-
-    [Fact]
-    public async Task FloodFromRoot_BlockedGenericMethodIds_PreventsInstantiationToGenericPropagation()
-    {
-        // Same setup as FloodFromRoot_FloodsThroughGenericInstantiation_WhenReturnTypeIsNotTypeParameter
-        // but with the generic method ID blocked — flooding should NOT cross the instantiation↔generic boundary
-        var methods = new Dictionary<string, IMethodNode>
-        {
-            ["m_iface_generic"] = MakeMethod("m_iface_generic", "Execute", "void") with { ContainingType = "IHandler<TRequest>" },
-            ["m_iface_foo"] = MakeMethod("m_iface_foo", "Execute", "void") with { ContainingType = "IHandler<FooRequest>" },
-            ["m_iface_bar"] = MakeMethod("m_iface_bar", "Execute", "void") with { ContainingType = "IHandler<BarRequest>" },
-            ["m_impl_foo"] = MakeMethod("m_impl_foo", "Execute", "void") with { ContainingType = "FooHandler" },
-            ["m_impl_bar"] = MakeMethod("m_impl_bar", "Execute", "void") with { ContainingType = "BarHandler" },
-        };
-        var impls = new List<IInterfaceImplementation>
-        {
-            new InterfaceImplementation { CallGraphId = "g", ImplementingMethodId = "m_impl_foo", InterfaceMethodId = "m_iface_foo" },
-            new InterfaceImplementation { CallGraphId = "g", ImplementingMethodId = "m_impl_bar", InterfaceMethodId = "m_iface_bar" },
-        };
-        var genericInstantiations = new List<IGenericInstantiation>
-        {
-            new GenericInstantiation { CallGraphId = "g", InstantiatedMethodId = "m_iface_foo", GenericMethodId = "m_iface_generic" },
-            new GenericInstantiation { CallGraphId = "g", InstantiatedMethodId = "m_iface_bar", GenericMethodId = "m_iface_generic" },
-        };
-        var graph = CreateCallGraph(methods, interfaceImpls: impls, genericInstantiations: genericInstantiations);
-
-        // Block the generic method — prevents instantiation↔generic traversal
-        var blocked = new HashSet<string> { "m_iface_generic" };
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m_impl_foo"], blocked);
-
-        result.Methods["m_impl_foo"].ReturnType.Should().Be("Task",
-            "root method is flooded");
-        result.Methods["m_iface_foo"].ReturnType.Should().Be("Task",
-            "instantiated interface is flooded via InterfaceImplementation");
-        result.Methods["m_iface_generic"].ReturnType.Should().Be("void",
-            "generic interface should NOT be flooded when blocked");
-        result.Methods["m_iface_bar"].ReturnType.Should().Be("void",
-            "sibling instantiation should NOT be flooded when generic is blocked");
-        result.Methods["m_impl_bar"].ReturnType.Should().Be("void",
-            "sibling implementation should NOT be flooded when generic is blocked");
     }
 
     [Fact]
@@ -739,109 +679,12 @@ public class AsyncFloodingAnalyzerTests
         };
         var graph = CreateCallGraph(methods, genericInstantiations: genericInstantiations);
 
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["m_inst"]);
+        var result = await _analyzer.Flood(graph, ["m_inst"]);
 
         result.GenericInstantiations.Should().HaveCount(1);
         var gi = result.GenericInstantiations.First();
         gi.InstantiatedMethodId.Should().Be("m_inst");
         gi.GenericMethodId.Should().Be("m_generic");
         gi.CallGraphId.Should().Be(result.Id);
-    }
-
-    [Fact]
-    public async Task FloodWithLambdaAsyncOverload_AddsSyntheticCallEdge()
-    {
-        // Setup: GetName calls lambda, lambda calls session.GetName (root)
-        // Execute has async overload that returns Task<string>
-        var methods = new Dictionary<string, IMethodNode>
-        {
-            ["GetName"] = MakeMethod("GetName", "GetName", "string"),
-            ["lambda1"] = MakeMethod("lambda1", "<lambda>", "string"),
-            ["session.GetName"] = MakeMethod("session.GetName", "GetName", "void"),
-            ["Execute_async"] = MakeMethod("Execute_async", "Execute", "Task<string>"),
-        };
-
-        var calls = new List<IMethodCall>
-        {
-            MakeCall("GetName", "lambda1"),       // GetName -> lambda
-            MakeCall("lambda1", "session.GetName") // lambda -> session.GetName (root)
-        };
-
-        var lambdaOverloads = new ConcurrentBag<LambdaAsyncOverload>
-        {
-            new LambdaAsyncOverload
-            {
-                LambdaMethodId = "lambda1",
-                CallerMethodId = "GetName",
-                ParentCalleeMethodId = "Execute_sync",
-                AsyncOverloadMethodId = "Execute_async",
-                ParentCallLineNumber = 5,
-                FilePath = "test.cs"
-            }
-        };
-
-        var graphId = Guid.NewGuid().ToString();
-        var methodDict = new ConcurrentDictionary<string, IMethodNode>(methods.Select(kvp => new KeyValuePair<string, IMethodNode>(kvp.Key, kvp.Value)));
-        var callBag = new ConcurrentBag<IMethodCall>(calls.Cast<IMethodCall>());
-        var graph = new CallGraph(graphId, methodDict, callBag, lambdaAsyncOverloads: lambdaOverloads);
-
-        // Flood from session.GetName (the root async method)
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["session.GetName"]);
-
-        // The lambda should be flooded (it calls the root)
-        result.Methods["lambda1"].ReturnType.Should().StartWith("Task");
-
-        // GetName should be flooded (it calls the lambda)
-        result.Methods["GetName"].ReturnType.Should().Be("Task<string>");
-
-        // A synthetic call edge should exist from GetName -> Execute_async at line 5
-        result.Calls.Should().Contain(c =>
-            c.CallerId == "GetName"
-            && c.CalleeId == "Execute_async"
-            && c.LineNumber == 5);
-
-        // Execute_async should be marked as flooded (Task return type)
-        result.Methods["Execute_async"].ReturnType.Should().StartWith("Task");
-    }
-
-    [Fact]
-    public async Task FloodWithLambdaAsyncOverload_NoSyntheticEdge_WhenLambdaNotFlooded()
-    {
-        var methods = new Dictionary<string, IMethodNode>
-        {
-            ["GetName"] = MakeMethod("GetName", "GetName", "string"),
-            ["lambda1"] = MakeMethod("lambda1", "<lambda>", "string"),
-            ["Execute_async"] = MakeMethod("Execute_async", "Execute", "Task<string>"),
-        };
-
-        var calls = new List<IMethodCall>
-        {
-            MakeCall("GetName", "lambda1"),
-        };
-
-        var lambdaOverloads = new ConcurrentBag<LambdaAsyncOverload>
-        {
-            new LambdaAsyncOverload
-            {
-                LambdaMethodId = "lambda1",
-                CallerMethodId = "GetName",
-                ParentCalleeMethodId = "Execute_sync",
-                AsyncOverloadMethodId = "Execute_async",
-                ParentCallLineNumber = 5,
-                FilePath = "test.cs"
-            }
-        };
-
-        var graphId = Guid.NewGuid().ToString();
-        var methodDict = new ConcurrentDictionary<string, IMethodNode>(methods.Select(kvp => new KeyValuePair<string, IMethodNode>(kvp.Key, kvp.Value)));
-        var callBag = new ConcurrentBag<IMethodCall>(calls.Cast<IMethodCall>());
-        var graph = new CallGraph(graphId, methodDict, callBag, lambdaAsyncOverloads: lambdaOverloads);
-
-        // Flood from some unrelated method — lambda1 is NOT flooded
-        var result = await _analyzer.AnalyzeFloodingAsync(graph, ["Execute_async"]);
-
-        // No synthetic edge should be added
-        result.Calls.Should().NotContain(c =>
-            c.CallerId == "GetName" && c.CalleeId == "Execute_async");
     }
 }

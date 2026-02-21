@@ -19,33 +19,33 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
     private SemanticModel _semanticModel = null!;
     private string _filePath = string.Empty;
     private ConcurrentDictionary<string, IMethodNode> _methods = null!;
-    private ConcurrentBag<IInterfaceImplementation> _interfaceImplementations = null!;
-    private ConcurrentBag<IMethodOverride> _methodOverrides = null!;
-    private ConcurrentBag<IGenericInstantiation> _genericInstantiations = null!;
-    private Guid _callGraphId;
+    private ConcurrentDictionary<string, IInterfaceImplementation> _interfaceImplementations = null!;
+    private ConcurrentDictionary<string, IMethodOverride> _methodOverrides = null!;
+    private ConcurrentDictionary<string, IGenericInstantiation> _genericInstantiations = null!;
+    private string _callGraphId;
 
     public Task Extract(
-        Guid callGraphId,
+        string callGraphId,
         SyntaxNode root,
         SemanticModel semanticModel,
         string filePath,
         ConcurrentDictionary<string, IMethodNode> methods,
-        ConcurrentBag<IInterfaceImplementation> interfaceImplementations,
-        ConcurrentBag<IMethodOverride> methodOverrides,
+        ConcurrentDictionary<string, IInterfaceImplementation> interfaceImplementations,
+        ConcurrentDictionary<string, IMethodOverride> methodOverrides,
         CancellationToken cancellationToken = default)
     {
-        return Extract(callGraphId, root, semanticModel, filePath, methods, interfaceImplementations, methodOverrides, new ConcurrentBag<IGenericInstantiation>(), cancellationToken);
+        return Extract(callGraphId, root, semanticModel, filePath, methods, interfaceImplementations, methodOverrides, new ConcurrentDictionary<string, IGenericInstantiation>(), cancellationToken);
     }
 
     public async Task Extract(
-        Guid callGraphId,
+        string callGraphId,
         SyntaxNode root,
         SemanticModel semanticModel,
         string filePath,
         ConcurrentDictionary<string, IMethodNode> methods,
-        ConcurrentBag<IInterfaceImplementation> interfaceImplementations,
-        ConcurrentBag<IMethodOverride> methodOverrides,
-        ConcurrentBag<IGenericInstantiation> genericInstantiations,
+        ConcurrentDictionary<string, IInterfaceImplementation> interfaceImplementations,
+        ConcurrentDictionary<string, IMethodOverride> methodOverrides,
+        ConcurrentDictionary<string, IGenericInstantiation> genericInstantiations,
         CancellationToken cancellationToken = default)
     {
         _callGraphId = callGraphId;
@@ -155,27 +155,30 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
             {
                 var instantiatedId = GetInstantiatedMethodId(explicitImpl);
                 var genericId = GetMethodId(explicitImpl);
-                _interfaceImplementations.Add(new InterfaceImplementation
+                var implementation = new InterfaceImplementation
                 {
-                    CallGraphId = _callGraphId.ToString(),
+                    CallGraphId = _callGraphId,
                     ImplementingMethodId = methodId,
                     InterfaceMethodId = instantiatedId,
-                });
-                _genericInstantiations.Add(new GenericInstantiation
+                };
+                _interfaceImplementations.TryAdd(implementation.Id, implementation);
+                var genericInstantation = new GenericInstantiation
                 {
-                    CallGraphId = _callGraphId.ToString(),
+                    CallGraphId = _callGraphId,
                     InstantiatedMethodId = instantiatedId,
                     GenericMethodId = genericId,
-                });
+                };
+                _genericInstantiations.TryAdd(genericInstantation.Id, genericInstantation);
             }
             else
             {
-                _interfaceImplementations.Add(new InterfaceImplementation
+                var implementation = new InterfaceImplementation
                 {
-                    CallGraphId = _callGraphId.ToString(),
+                    CallGraphId = _callGraphId,
                     ImplementingMethodId = methodId,
                     InterfaceMethodId = GetMethodId(explicitImpl),
-                });
+                };
+                _interfaceImplementations.TryAdd(implementation.Id, implementation);
             }
         }
 
@@ -203,7 +206,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
 
                             _methods.TryAdd(instantiatedMethodId, new MethodNode
                             {
-                                CallGraphId = _callGraphId.ToString(),
+                                CallGraphId = _callGraphId,
                                 Id = instantiatedMethodId,
                                 Name = interfaceMember.Name,
                                 ContainingType = interfaceMember.ContainingType?.ToDisplayString() ?? "",
@@ -216,30 +219,33 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                             });
 
                             // InterfaceImplementation: implementing method → instantiated
-                            _interfaceImplementations.Add(new InterfaceImplementation
+                            var interfaceImplementation = new InterfaceImplementation
                             {
-                                CallGraphId = _callGraphId.ToString(),
+                                CallGraphId = _callGraphId,
                                 ImplementingMethodId = methodId,
                                 InterfaceMethodId = instantiatedMethodId,
-                            });
+                            };
+                            _interfaceImplementations.TryAdd(interfaceImplementation.Id, interfaceImplementation);
 
                             // GenericInstantiation: instantiated → generic
-                            _genericInstantiations.Add(new GenericInstantiation
+                            var genericInstantation = new GenericInstantiation
                             {
-                                CallGraphId = _callGraphId.ToString(),
+                                CallGraphId = _callGraphId,
                                 InstantiatedMethodId = instantiatedMethodId,
                                 GenericMethodId = genericMethodId,
-                            });
+                            };
+                            _genericInstantiations.TryAdd(genericInstantation.Id, genericInstantation);
                         }
                         else
                         {
                             // Non-generic interface: link directly
-                            _interfaceImplementations.Add(new InterfaceImplementation
+                            var directImplementation = new InterfaceImplementation
                             {
-                                CallGraphId = _callGraphId.ToString(),
+                                CallGraphId = _callGraphId,
                                 ImplementingMethodId = methodId,
                                 InterfaceMethodId = genericMethodId,
-                            });
+                            };
+                            _interfaceImplementations.TryAdd(directImplementation.Id, directImplementation);
                         }
 
                         // Ensure the generic interface method node exists
@@ -273,12 +279,13 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
             while (overridden != null)
             {
                 var baseMethodId = GetMethodId(overridden);
-                _methodOverrides.Add(new MethodOverride
+                var methodOverride = new MethodOverride
                 {
-                    CallGraphId = _callGraphId.ToString(),
+                    CallGraphId = _callGraphId,
                     OverridingMethodId = methodId,
                     BaseMethodId = baseMethodId,
-                });
+                };
+                _methodOverrides.TryAdd(methodOverride.Id, methodOverride);
 
                 // Ensure the base method node exists (use OriginalDefinition for consistent generic type display)
                 var overriddenOriginal = overridden.OriginalDefinition;

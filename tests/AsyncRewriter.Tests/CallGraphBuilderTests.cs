@@ -15,7 +15,7 @@ namespace AsyncRewriter.Tests;
 
 public class CallGraphBuilderTests
 {
-    private static readonly Guid TestCallGraphId = Guid.NewGuid();
+    private static readonly string TestCallGraphId = "Test";
 
     private static string LoadTestSource([CallerMemberName] string testName = "")
         => File.ReadAllText(Path.Combine("TestData", $"{testName}.cs"));

@@ -21,11 +21,10 @@ public class CallGraphBuilder : ICallGraphBuilder
     private readonly IMethodCallExtractorFactory _methodCallExtractorFactory;
     private readonly ILogger<CallGraphBuilder> _logger;
     private readonly ConcurrentDictionary<string, IMethodNode> _methods = new();
-    private readonly ConcurrentBag<IMethodCall> _calls = new();
-    private readonly ConcurrentBag<IInterfaceImplementation> _implementations = new();
-    private readonly ConcurrentBag<IMethodOverride> _overrides = new();
-    private readonly ConcurrentBag<IGenericInstantiation> _genericInstantiations = new();
-    private readonly ConcurrentBag<LambdaAsyncOverload> _lambdaAsyncOverloads = new();
+    private readonly ConcurrentDictionary<string, IMethodCall> _calls = new();
+    private readonly ConcurrentDictionary<string, IInterfaceImplementation> _implementations = new();
+    private readonly ConcurrentDictionary<string, IMethodOverride> _overrides = new();
+    private readonly ConcurrentDictionary<string, IGenericInstantiation> _genericInstantiations = new();
 
 
     public CallGraphBuilder(IMethodExtractorFactory methodExtractorFactory, IMethodCallExtractorFactory methodCallExtractorFactory, ILogger<CallGraphBuilder> logger)
@@ -37,9 +36,9 @@ public class CallGraphBuilder : ICallGraphBuilder
 
     public async Task<CallGraph> Build(
         string solutionPath,
+        string callGraphId,
         CancellationToken cancellationToken = default)
     {
-        var callGraphId = Guid.NewGuid();
         _logger.LogInformation("Creating MSBuild workspace...");
         var workspace = MSBuildWorkspace.Create();
 
@@ -52,10 +51,10 @@ public class CallGraphBuilder : ICallGraphBuilder
        // Build a resolver that can find SemanticModels across all projects in the solution
        var resolver = await SolutionSemanticModelResolver.CreateAsync(solution, cancellationToken);
 
-       await Build(solution, (Methods: _methods, Calls: _calls, LambdaOverloads: _lambdaAsyncOverloads), async (root, semanticModel, filePath, context, ct) =>
-           await (await _methodCallExtractorFactory.Create()).Extract(callGraphId, root, semanticModel, filePath, context.Methods, context.Calls, resolver, context.LambdaOverloads, ct), cancellationToken);
+       await Build(solution, (Methods: _methods, Calls: _calls), async (root, semanticModel, filePath, context, ct) =>
+           await (await _methodCallExtractorFactory.Create()).Extract(callGraphId, root, semanticModel, filePath, context.Methods, context.Calls, resolver, ct), cancellationToken);
 
-       return new CallGraph(callGraphId.ToString(), _methods, _calls, _implementations, _overrides, _genericInstantiations, _lambdaAsyncOverloads);
+       return new CallGraph(callGraphId, _methods, new ConcurrentBag<IMethodCall>(_calls.Values), new ConcurrentBag<IInterfaceImplementation>(_implementations.Values), new ConcurrentBag<IMethodOverride>(_overrides.Values), new ConcurrentBag<IGenericInstantiation>(_genericInstantiations.Values));
     }
 
     private async Task Build<T>(Solution solution, T context, Func<SyntaxNode, SemanticModel, string, T, CancellationToken , Task> builder, CancellationToken cancellationToken = default)
@@ -73,6 +72,7 @@ public class CallGraphBuilder : ICallGraphBuilder
             var compilation = await project.GetCompilationAsync(cancellationToken);
             if (compilation == null)
             {
+                _logger.LogWarning("Failed to compile project {ProjectName}. Skipping...", project.Name);
                 continue; // Skip projects that fail to compile
             }
 

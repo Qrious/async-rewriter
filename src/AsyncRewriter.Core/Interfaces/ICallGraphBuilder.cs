@@ -12,5 +12,5 @@ public interface ICallGraphBuilder
     /// <summary>
     /// Analyzes all projects in a solution and builds a combined call graph
     /// </summary>
-    Task<CallGraph> Build(string solutionPath, CancellationToken cancellationToken = default);
+    Task<CallGraph> Build(string solutionPath, string callGraphId, CancellationToken cancellationToken = default);
 }

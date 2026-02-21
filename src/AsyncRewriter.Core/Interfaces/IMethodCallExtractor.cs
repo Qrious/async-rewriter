@@ -16,32 +16,22 @@ public interface IMethodCallExtractor
     /// Extract all method calls in a syntax tree
     /// </summary>
     Task Extract(
-        Guid callGraphId,
+        string callGraphId,
         SyntaxNode root,
         SemanticModel semanticModel,
         string filePath,
         ConcurrentDictionary<string, IMethodNode> methods,
-        ConcurrentBag<IMethodCall> call,
+        ConcurrentDictionary<string, IMethodCall> calls,
         CancellationToken cancellationToken = default);
 
     Task Extract(
-        Guid callGraphId,
+        string callGraphId,
         SyntaxNode root,
         SemanticModel semanticModel,
         string filePath,
         ConcurrentDictionary<string, IMethodNode> methods,
-        ConcurrentBag<IMethodCall> call,
+        ConcurrentDictionary<string, IMethodCall> calls,
         ISemanticModelResolver semanticModelResolver,
         CancellationToken cancellationToken = default);
 
-    Task Extract(
-        Guid callGraphId,
-        SyntaxNode root,
-        SemanticModel semanticModel,
-        string filePath,
-        ConcurrentDictionary<string, IMethodNode> methods,
-        ConcurrentBag<IMethodCall> call,
-        ISemanticModelResolver semanticModelResolver,
-        ConcurrentBag<LambdaAsyncOverload> lambdaAsyncOverloads,
-        CancellationToken cancellationToken = default);
 }

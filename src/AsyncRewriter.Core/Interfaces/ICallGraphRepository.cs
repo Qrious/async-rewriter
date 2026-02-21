@@ -32,7 +32,7 @@ public interface ICallGraphRepository
     /// <param name="id">The id of the callgraph</param>
     /// <param name="cancellationToken"></param>
     /// <returns></returns>
-    public Task<ICallGraph> Load(Guid id, CancellationToken cancellationToken = default);
+    public Task<ICallGraph> Load(string id, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Stores a call graph with metadata in Neo4j.
@@ -60,7 +60,7 @@ public interface ICallGraphRepository
     /// <typeparam name="TOverridesMetadata"></typeparam>
     /// <returns></returns>
     Task<ICallGraphWithMetadata<TMethodMetadata, TCallMetadata, TImplementsMetadata, TOverridesMetadata>> Load<TMethodMetadata, TCallMetadata, TImplementsMetadata,
-        TOverridesMetadata>(Guid id, CancellationToken cancellationToken)
+        TOverridesMetadata>(string id, CancellationToken cancellationToken)
         where TMethodMetadata : IGraphMetadata<TMethodMetadata>
         where TCallMetadata : IGraphMetadata<TCallMetadata>
         where TImplementsMetadata : IGraphMetadata<TImplementsMetadata>

@@ -7,6 +7,7 @@ using AsyncRewriter.Transformation;
 using FluentAssertions;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace AsyncRewriter.Tests;
@@ -57,7 +58,7 @@ public class MapperScenarioIntegrationTests
             references,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
-        var callGraphId = Guid.NewGuid();
+        var callGraphId = "test";
         var methods = new ConcurrentDictionary<string, IMethodNode>();
         var calls = new ConcurrentBag<IMethodCall>();
         var interfaceImpls = new ConcurrentBag<IInterfaceImplementation>();
@@ -197,7 +198,7 @@ public class MapperScenarioIntegrationTests
             // In this scenario, SaveAsync and ValidateAsync are already async (return Task),
             // so they are the root methods for flooding (not sync wrappers, but direct async roots).
             // The production flow would find sync wrappers, but here we use the async methods directly.
-            var taskWrapperExtractor = new TaskWrapperExtractor();
+            var taskWrapperExtractor = new DirtyTaskMethodsExtractor();
             var syncWrappers = taskWrapperExtractor.Extract(callGraph);
 
             // Collect root method IDs: async methods that return Task and are called by our mappers
@@ -219,8 +220,8 @@ public class MapperScenarioIntegrationTests
             rootMethodIds.Should().NotBeEmpty("should have root async methods for flooding");
 
             // === PHASE 3: Run async flooding ===
-            var floodingAnalyzer = new AsyncFloodingAnalyzer();
-            var floodedGraph = await floodingAnalyzer.AnalyzeFloodingAsync(callGraph, rootMethodIds);
+            var floodingAnalyzer = new AsyncCallGraphFlooder(NullLogger<AsyncCallGraphFlooder>.Instance);
+            var floodedGraph = await floodingAnalyzer.Flood(callGraph, rootMethodIds);
 
             // Verify flooding results
             var floodedMapperB = floodedGraph.Methods.Values

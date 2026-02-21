@@ -3,7 +3,7 @@ using AsyncRewriter.Core.Models;
 
 namespace AsyncRewriter.Core.Interfaces;
 
-public interface ITaskWrapperExtractor
+public interface IDirtyTaskMethodsExtractor
 {
-    List<SyncWrapperMethod> Extract(CallGraph callGraph);
+    List<DirtyTaskMethodInfo> Extract(ICallGraph callGraph);
 }

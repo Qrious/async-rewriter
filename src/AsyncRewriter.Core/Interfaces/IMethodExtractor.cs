@@ -17,26 +17,26 @@ public interface IMethodExtractor
     /// Resolves all method declarations in a syntax tree, including interface methods
     /// </summary>
     Task Extract(
-        Guid callGraphId,
+        string callGraphId,
         SyntaxNode root,
         SemanticModel semanticModel,
         string filePath,
         ConcurrentDictionary<string, IMethodNode> methods,
-        ConcurrentBag<IInterfaceImplementation> interfaceImplementations,
-        ConcurrentBag<IMethodOverride> methodOverrides,
+        ConcurrentDictionary<string, IInterfaceImplementation> interfaceImplementations,
+        ConcurrentDictionary<string, IMethodOverride> methodOverrides,
         CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Resolves all method declarations in a syntax tree, including interface methods and generic instantiations
     /// </summary>
     Task Extract(
-        Guid callGraphId,
+        string callGraphId,
         SyntaxNode root,
         SemanticModel semanticModel,
         string filePath,
         ConcurrentDictionary<string, IMethodNode> methods,
-        ConcurrentBag<IInterfaceImplementation> interfaceImplementations,
-        ConcurrentBag<IMethodOverride> methodOverrides,
-        ConcurrentBag<IGenericInstantiation> genericInstantiations,
+        ConcurrentDictionary<string, IInterfaceImplementation> interfaceImplementations,
+        ConcurrentDictionary<string, IMethodOverride> methodOverrides,
+        ConcurrentDictionary<string, IGenericInstantiation> genericInstantiations,
         CancellationToken cancellationToken = default);
 }
