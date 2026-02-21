@@ -258,43 +258,43 @@ public class Validator
         var result = await _analyzer.AnalyzeFloodingAsync(graph, ["async_root", "another_async"]);
 
         // MapperB: flooded because it calls async_root
-        result.Methods["mapperB_mapinto"].ReturnType.Should().Be("Task",
+        result.CallGraph.Methods["mapperB_mapinto"].ReturnType.Should().Be("Task",
             "MapperB calls async_root and must become async");
 
         // MapperA: flooded because it calls MapperB
-        result.Methods["mapperA_mapinto"].ReturnType.Should().Be("Task",
+        result.CallGraph.Methods["mapperA_mapinto"].ReturnType.Should().Be("Task",
             "MapperA calls MapperB which is async, so MapperA must become async too");
 
         // MapperC: flooded because it calls another_async
-        result.Methods["mapperC_mapinto"].ReturnType.Should().Be("Task",
+        result.CallGraph.Methods["mapperC_mapinto"].ReturnType.Should().Be("Task",
             "MapperC calls another_async and must become async");
 
         // Instantiated interfaces for A, B, C: flooded via InterfaceImplementation
-        result.Methods["imap_int_string"].ReturnType.Should().Be("Task",
+        result.CallGraph.Methods["imap_int_string"].ReturnType.Should().Be("Task",
             "IMapInto<int, string> is flooded because MapperA (its impl) is flooded");
-        result.Methods["imap_bool_string"].ReturnType.Should().Be("Task",
+        result.CallGraph.Methods["imap_bool_string"].ReturnType.Should().Be("Task",
             "IMapInto<bool, string> is flooded because MapperB (its impl) is flooded");
-        result.Methods["imap_double_string"].ReturnType.Should().Be("Task",
+        result.CallGraph.Methods["imap_double_string"].ReturnType.Should().Be("Task",
             "IMapInto<double, string> is flooded because MapperC (its impl) is flooded");
 
         // Generic interface: flooded because return type is void (not a type parameter)
-        result.Methods["imap_generic"].ReturnType.Should().Be("Task",
+        result.CallGraph.Methods["imap_generic"].ReturnType.Should().Be("Task",
             "generic IMapInto<TSource, TTarget>.MapInto has void return type, so it gets flooded");
 
         // Instantiated interface for D: flooded because generic interface is flooded
         // (void return type allows generic → instantiation propagation)
-        result.Methods["imap_long_string"].ReturnType.Should().Be("Task",
+        result.CallGraph.Methods["imap_long_string"].ReturnType.Should().Be("Task",
             "IMapInto<long, string> is flooded via generic interface propagation (void return type)");
 
         // MapperD: flooded via generic → instantiation → implementation chain
         // Even though MapperD has no direct async calls, the void return type on the generic
         // interface allows flooding to propagate to ALL instantiations and their implementations
-        result.Methods["mapperD_mapinto"].ReturnType.Should().Be("Task",
+        result.CallGraph.Methods["mapperD_mapinto"].ReturnType.Should().Be("Task",
             "MapperD is flooded via generic interface propagation: " +
             "instantiated iface → generic iface → all instantiations → all implementations");
 
         // Controller: flooded because it calls the instantiated interfaces
-        result.Methods["controller_action"].ReturnType.Should().Be("Task",
+        result.CallGraph.Methods["controller_action"].ReturnType.Should().Be("Task",
             "Controller calls flooded interface methods and must become async");
     }
 
@@ -360,29 +360,29 @@ public class Validator
         var result = await _analyzer.AnalyzeFloodingAsync(graph, ["async_root", "another_async"], blocked);
 
         // Mappers A, B, C: flooded via direct call chains
-        result.Methods["mapperA_mapinto"].ReturnType.Should().Be("Task");
-        result.Methods["mapperB_mapinto"].ReturnType.Should().Be("Task");
-        result.Methods["mapperC_mapinto"].ReturnType.Should().Be("Task");
+        result.CallGraph.Methods["mapperA_mapinto"].ReturnType.Should().Be("Task");
+        result.CallGraph.Methods["mapperB_mapinto"].ReturnType.Should().Be("Task");
+        result.CallGraph.Methods["mapperC_mapinto"].ReturnType.Should().Be("Task");
 
         // MapperD: NOT flooded — blocked generic prevents propagation
-        result.Methods["mapperD_mapinto"].ReturnType.Should().Be("void",
+        result.CallGraph.Methods["mapperD_mapinto"].ReturnType.Should().Be("void",
             "MapperD should stay sync when generic propagation is blocked");
 
         // Instantiated interfaces for A, B, C: flooded via implementation
-        result.Methods["imap_int_string"].ReturnType.Should().Be("Task");
-        result.Methods["imap_bool_string"].ReturnType.Should().Be("Task");
-        result.Methods["imap_double_string"].ReturnType.Should().Be("Task");
+        result.CallGraph.Methods["imap_int_string"].ReturnType.Should().Be("Task");
+        result.CallGraph.Methods["imap_bool_string"].ReturnType.Should().Be("Task");
+        result.CallGraph.Methods["imap_double_string"].ReturnType.Should().Be("Task");
 
         // Instantiated interface for D: NOT flooded
-        result.Methods["imap_long_string"].ReturnType.Should().Be("void",
+        result.CallGraph.Methods["imap_long_string"].ReturnType.Should().Be("void",
             "IMapInto<long, string> should not be flooded when generic is blocked");
 
         // Generic interface: NOT flooded (blocked)
-        result.Methods["imap_generic"].ReturnType.Should().Be("void",
+        result.CallGraph.Methods["imap_generic"].ReturnType.Should().Be("void",
             "generic interface should not be flooded when blocked");
 
         // Controller: still flooded because it calls flooded instantiated interfaces
-        result.Methods["controller_action"].ReturnType.Should().Be("Task",
+        result.CallGraph.Methods["controller_action"].ReturnType.Should().Be("Task",
             "Controller calls flooded interface methods (A, B, C) and must become async");
     }
 
@@ -634,13 +634,13 @@ public class MapperD : IMapInto<long, string>
         var floodedGraph = await _analyzer.AnalyzeFloodingAsync(graph, ["async_root", "another_async"], blocked);
 
         // Verify flooding results
-        floodedGraph.Methods["mapperA_mapinto"].ReturnType.Should().Be("Task");
-        floodedGraph.Methods["mapperB_mapinto"].ReturnType.Should().Be("Task");
-        floodedGraph.Methods["mapperC_mapinto"].ReturnType.Should().Be("Task");
-        floodedGraph.Methods["mapperD_mapinto"].ReturnType.Should().Be("void");
+        floodedGraph.CallGraph.Methods["mapperA_mapinto"].ReturnType.Should().Be("Task");
+        floodedGraph.CallGraph.Methods["mapperB_mapinto"].ReturnType.Should().Be("Task");
+        floodedGraph.CallGraph.Methods["mapperC_mapinto"].ReturnType.Should().Be("Task");
+        floodedGraph.CallGraph.Methods["mapperD_mapinto"].ReturnType.Should().Be("void");
 
         // Step 2: Detect problematic interfaces
-        var problematic = ProblematicInterfaceAnalyzer.DetectProblematicInterfaces(graph, floodedGraph);
+        var problematic = ProblematicInterfaceAnalyzer.DetectProblematicInterfaces(graph, floodedGraph.CallGraph);
 
         problematic.Should().ContainKey("IMapInto<int, string>");
         problematic.Should().ContainKey("IMapInto<bool, string>");

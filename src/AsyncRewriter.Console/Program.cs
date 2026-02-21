@@ -361,12 +361,12 @@ class Program
                         var rootMethodIds = new HashSet<string>(wrappers.Select(w => w.MethodId));
                         System.Console.WriteLine("Running async flooding analysis...");
 
-                        CallGraph asyncGraph;
+                        var floodedResult = await floodingAnalyzer.AnalyzeFloodingAsync(callGraph, rootMethodIds);
+                        var asyncGraph = floodedResult.CallGraph;
+
                         if (debugGraph)
                         {
-                            var (graph, floodingResult) = await floodingAnalyzer.AnalyzeFloodingWithDebugAsync(callGraph, rootMethodIds);
-                            asyncGraph = graph;
-
+                            var floodingResult = floodedResult.Metadata.FloodingResult;
                             System.Console.WriteLine("Storing flooding debug graph in Neo4j...");
                             await using var debugRepo = new Neo4jFloodingDebugRepository(neo4jUri, neo4jUser, neo4jPassword);
                             await debugRepo.EnsureIndexesAsync();
@@ -377,10 +377,6 @@ class Program
                             System.Console.ForegroundColor = ConsoleColor.Green;
                             System.Console.WriteLine($"✓ Flooding debug graph stored (id: {floodingResult.Id})");
                             System.Console.ResetColor();
-                        }
-                        else
-                        {
-                            asyncGraph = await floodingAnalyzer.AnalyzeFloodingAsync(callGraph, rootMethodIds);
                         }
 
                         PrintFloodingStatistics(callGraph, asyncGraph);
@@ -587,15 +583,15 @@ class Program
             // Run flooding analysis
             System.Console.WriteLine("Running async flooding analysis...");
 
-            CallGraph asyncGraph;
+            var floodedResult = await floodingAnalyzer.AnalyzeFloodingAsync(callGraph, rootMethodIds, (method, current, total) =>
+            {
+                System.Console.WriteLine($"  Flooding: {method} ({current}/{total})");
+            });
+            var asyncGraph = floodedResult.CallGraph;
+
             if (debugGraph)
             {
-                var (graph, floodingResult) = await floodingAnalyzer.AnalyzeFloodingWithDebugAsync(callGraph, rootMethodIds, (method, current, total) =>
-                {
-                    System.Console.WriteLine($"  Flooding: {method} ({current}/{total})");
-                });
-                asyncGraph = graph;
-
+                var floodingResult = floodedResult.Metadata.FloodingResult;
                 System.Console.WriteLine("Storing flooding debug graph in Neo4j...");
                 await using var debugRepo = new Neo4jFloodingDebugRepository(neo4jUri, neo4jUser, neo4jPassword);
                 await debugRepo.EnsureIndexesAsync();
@@ -606,13 +602,6 @@ class Program
                 System.Console.ForegroundColor = ConsoleColor.Green;
                 System.Console.WriteLine($"✓ Flooding debug graph stored (id: {floodingResult.Id})");
                 System.Console.ResetColor();
-            }
-            else
-            {
-                asyncGraph = await floodingAnalyzer.AnalyzeFloodingAsync(callGraph, rootMethodIds, (method, current, total) =>
-                {
-                    System.Console.WriteLine($"  Flooding: {method} ({current}/{total})");
-                });
             }
 
             System.Console.WriteLine();
@@ -1047,12 +1036,13 @@ class Program
         {
             System.Console.WriteLine("Re-running flooding with scoped generic interfaces...");
 
+            var reFloodedResult = await floodingAnalyzer.AnalyzeFloodingAsync(
+                callGraph, rootMethodIds, blockedGenericMethodIds);
+            asyncGraph = reFloodedResult.CallGraph;
+
             if (debugGraph)
             {
-                var (graph, floodingResult) = await floodingAnalyzer.AnalyzeFloodingWithDebugAsync(
-                    callGraph, rootMethodIds, blockedGenericMethodIds);
-                asyncGraph = graph;
-
+                var floodingResult = reFloodedResult.Metadata.FloodingResult;
                 System.Console.WriteLine("Storing flooding debug graph in Neo4j...");
                 await using var debugRepo = new Neo4jFloodingDebugRepository(neo4jUri, neo4jUser, neo4jPassword);
                 await debugRepo.EnsureIndexesAsync();
@@ -1063,11 +1053,6 @@ class Program
                 System.Console.ForegroundColor = ConsoleColor.Green;
                 System.Console.WriteLine($"✓ Flooding debug graph stored (id: {floodingResult.Id})");
                 System.Console.ResetColor();
-            }
-            else
-            {
-                asyncGraph = await floodingAnalyzer.AnalyzeFloodingAsync(
-                    callGraph, rootMethodIds, blockedGenericMethodIds);
             }
 
             PrintFloodingStatistics(callGraph, asyncGraph);

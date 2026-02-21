@@ -17,8 +17,9 @@ public interface IAsyncFloodingAnalyzer
     /// </summary>
     /// <param name="callGraph">The call graph to analyze</param>
     /// <param name="rootMethodIds">Methods that should be converted to async (starting points)</param>
-    /// <returns>Updated call graph with flooding information</returns>
-    Task<CallGraph> AnalyzeFloodingAsync(CallGraph callGraph, HashSet<string> rootMethodIds, CancellationToken cancellationToken = default);
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>The flooded call graph with transformed return types and flooding metadata</returns>
+    Task<FloodedCallGraph> AnalyzeFloodingAsync(CallGraph callGraph, HashSet<string> rootMethodIds, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Determines which methods need to be async based on the root methods with progress reporting
@@ -27,8 +28,8 @@ public interface IAsyncFloodingAnalyzer
     /// <param name="rootMethodIds">Methods that should be converted to async (starting points)</param>
     /// <param name="progressCallback">Callback for progress updates (currentMethod, methodsProcessed, totalMethods)</param>
     /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>Updated call graph with flooding information</returns>
-    Task<CallGraph> AnalyzeFloodingAsync(
+    /// <returns>The flooded call graph with transformed return types and flooding metadata</returns>
+    Task<FloodedCallGraph> AnalyzeFloodingAsync(
         CallGraph callGraph,
         HashSet<string> rootMethodIds,
         Action<string, int, int>? progressCallback,
@@ -42,28 +43,8 @@ public interface IAsyncFloodingAnalyzer
     /// <param name="blockedGenericMethodIds">Generic method IDs that should not participate in instantiation↔generic propagation</param>
     /// <param name="progressCallback">Callback for progress updates</param>
     /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>Updated call graph with flooding information</returns>
-    Task<CallGraph> AnalyzeFloodingAsync(
-        CallGraph callGraph,
-        HashSet<string> rootMethodIds,
-        HashSet<string>? blockedGenericMethodIds,
-        Action<string, int, int>? progressCallback = null,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Determines which methods need to be async, also returning debug flooding information
-    /// </summary>
-    Task<(CallGraph, FloodingResult)> AnalyzeFloodingWithDebugAsync(
-        CallGraph callGraph,
-        HashSet<string> rootMethodIds,
-        Action<string, int, int>? progressCallback = null,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Determines which methods need to be async, also returning debug flooding information,
-    /// with optional blocking of generic method propagation
-    /// </summary>
-    Task<(CallGraph, FloodingResult)> AnalyzeFloodingWithDebugAsync(
+    /// <returns>The flooded call graph with transformed return types and flooding metadata</returns>
+    Task<FloodedCallGraph> AnalyzeFloodingAsync(
         CallGraph callGraph,
         HashSet<string> rootMethodIds,
         HashSet<string>? blockedGenericMethodIds,

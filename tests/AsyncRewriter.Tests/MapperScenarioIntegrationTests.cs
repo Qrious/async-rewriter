@@ -223,24 +223,24 @@ public class MapperScenarioIntegrationTests
             var floodedGraph = await floodingAnalyzer.AnalyzeFloodingAsync(callGraph, rootMethodIds);
 
             // Verify flooding results
-            var floodedMapperB = floodedGraph.Methods.Values
+            var floodedMapperB = floodedGraph.CallGraph.Methods.Values
                 .First(m => m.Name == "MapInto" && m.ContainingType == "MapperB");
             floodedMapperB.ReturnType.Should().Be("Task",
                 "MapperB.MapInto should be flooded (calls SaveAsync)");
 
-            var floodedMapperA = floodedGraph.Methods.Values
+            var floodedMapperA = floodedGraph.CallGraph.Methods.Values
                 .First(m => m.Name == "MapInto" && m.ContainingType == "MapperA");
             floodedMapperA.ReturnType.Should().Be("Task",
                 "MapperA.MapInto should be flooded (calls MapperB.MapInto via interface)");
 
-            var floodedMapperC = floodedGraph.Methods.Values
+            var floodedMapperC = floodedGraph.CallGraph.Methods.Values
                 .First(m => m.Name == "MapInto" && m.ContainingType == "MapperC");
             floodedMapperC.ReturnType.Should().Be("Task",
                 "MapperC.MapInto should be flooded (calls ValidateAsync)");
 
             // === PHASE 4: Detect problematic interfaces ===
             var problematicInterfaces = ProblematicInterfaceAnalyzer.DetectProblematicInterfaces(
-                callGraph, floodedGraph);
+                callGraph, floodedGraph.CallGraph);
 
             // IMapInto instantiations should be problematic (external interface, return type changed)
             // Note: depending on how the interface file is classified (external or not),
@@ -249,14 +249,14 @@ public class MapperScenarioIntegrationTests
 
             // === PHASE 5: Set up interface mappings ===
             // In production this is done interactively. Here we set it directly.
-            floodedGraph.InterfaceMappings = new List<InterfaceMapping>
+            floodedGraph.CallGraph.InterfaceMappings = new List<InterfaceMapping>
             {
                 new() { SyncInterfaceName = "IMapInto", AsyncInterfaceName = "IMapIntoAsync" }
             };
 
             // === PHASE 6: Transform using TransformProjectAsync (production code path) ===
             var transformer = new AsyncTransformer();
-            var result = await transformer.TransformProjectAsync(tempDir, floodedGraph);
+            var result = await transformer.TransformProjectAsync(tempDir, floodedGraph.CallGraph);
 
             result.Success.Should().BeTrue("transformation should succeed");
             result.Errors.Should().BeEmpty();
