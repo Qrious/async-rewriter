@@ -12,59 +12,27 @@ namespace AsyncRewriter.Analyzer.EntityFramework;
 /// </summary>
 public class EntityFrameworkSyncCallExtractor : IEntityFrameworkSyncCallExtractor
 {
-    // EF6 sync methods (from System.Data.Entity namespace) that have async equivalents (e.g., ToListAsync, SaveChangesAsync)
     private static readonly ImmutableHashSet<string> EfSyncMethodsWithAsyncOverloads = ImmutableHashSet.Create(
         StringComparer.OrdinalIgnoreCase,
-        "ToList",
-        "ToArray",
-        "ToDictionary",
-        "ToLookup",
-        "First",
-        "FirstOrDefault",
-        "Single",
-        "SingleOrDefault",
-        "Last",
-        "LastOrDefault",
-        "Count",
-        "LongCount",
-        "Any",
-        "All",
-        "Min",
-        "Max",
-        "Sum",
-        "Average",
-        "Contains",
-        "Find",
-        "SaveChanges",
-        "ExecuteSqlCommand",
-        "SqlQuery",
-        "Load",
-        "ForEachAsync"
-    );
+        "ToList", "ToArray", "ToDictionary", "ToLookup",
+        "First", "FirstOrDefault", "Single", "SingleOrDefault",
+        "Last", "LastOrDefault", "Count", "LongCount",
+        "Any", "All", "Min", "Max", "Sum", "Average", "Contains",
+        "Find", "SaveChanges", "ExecuteSqlCommand", "SqlQuery", "Load", "ForEachAsync");
 
-    // Known EF6 types that provide these methods
     private static readonly ImmutableHashSet<string> EfTypes = ImmutableHashSet.Create(
         StringComparer.OrdinalIgnoreCase,
-        "QueryableExtensions",
-        "DbContext",
-        "DbSet",
-        "DbQuery",
-        "Database",
-        "DbExtensions"
-    );
+        "QueryableExtensions", "DbContext", "DbSet", "DbQuery", "Database", "DbExtensions");
 
-    // Known EF6 namespaces
     private static readonly ImmutableHashSet<string> EfNamespaces = ImmutableHashSet.Create(
         StringComparer.OrdinalIgnoreCase,
         "System.Data.Entity",
         "System.Data.Entity.Infrastructure",
-        "System.Data.Entity.Utilities"
-    );
+        "System.Data.Entity.Utilities");
 
-    public List<DirtyTaskMethodInfo> Extract(ICallGraph callGraph)
+    public ICallGraphWithMetadata<EntityFrameworkMethodMetadata, EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata> Extract(ICallGraph callGraph)
     {
-        var callerIds = new HashSet<string>();
-        var results = new List<DirtyTaskMethodInfo>();
+        var metadata = new Dictionary<string, EntityFrameworkMethodMetadata>();
 
         foreach (var call in callGraph.Calls)
         {
@@ -77,15 +45,23 @@ public class EntityFrameworkSyncCallExtractor : IEntityFrameworkSyncCallExtracto
             if (!callGraph.Methods.TryGetValue(call.CallerId, out var caller))
                 continue;
 
-            if (callerIds.Add(caller.Id))
+            if (!metadata.ContainsKey(caller.Id))
             {
-                results.Add(new DirtyTaskMethodInfo(
-                    caller.Id,
-                    $"Calls Entity Framework sync method '{callee.Name}' which has an async overload"));
+                metadata[caller.Id] = new EntityFrameworkMethodMetadata
+                {
+                    IsEntityFrameworkCaller = true,
+                    Reason = $"Calls Entity Framework sync method '{callee.Name}' which has an async overload"
+                };
             }
         }
 
-        return results;
+        return new CallGraphWithMetadata<EntityFrameworkMethodMetadata, EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata>(
+            callGraph.Id,
+            callGraph,
+            metadata,
+            new Dictionary<string, EmptyGraphMetadata>(),
+            new Dictionary<string, EmptyGraphMetadata>(),
+            new Dictionary<string, EmptyGraphMetadata>());
     }
 
     private static bool IsEfSyncMethodWithAsyncOverload(IMethodNode method)

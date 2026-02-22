@@ -52,8 +52,10 @@ class Program
         serviceCollection.AddTransient<IEntityFrameworkSyncCallExtractor, EntityFrameworkSyncCallExtractor>();
         serviceCollection.AddTransient<IAsyncTransformer, AsyncTransformer>();
         serviceCollection.AddSingleton<ICallGraphRepository, Neo4jCallGraphRepository>();
+        serviceCollection.AddSingleton<FloodedCallGraphTransformer>();
         serviceCollection.AddSingleton<Command, BuildCallGraphCommand>();
         serviceCollection.AddSingleton<Command, FloodCallGraphCommand>();
+        serviceCollection.AddSingleton<Command, ModifyCommand>();
 
         serviceCollection.AddLogging(c => c.AddSimpleConsole());
     }

@@ -1,5 +1,5 @@
+using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
 using System.Text.RegularExpressions;
 using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
@@ -16,51 +16,50 @@ public class DirtyTaskMethodsExtractor : IDirtyTaskMethodsExtractor
         @"(?:System\.)?Func<(?:System\.Threading\.Tasks\.)?Task<(.+?)>>",
         RegexOptions.Compiled);
 
-    public List<DirtyTaskMethodInfo> Extract(ICallGraph callGraph)
+    public ICallGraphWithMetadata<SyncWrapperMethodMetadata, EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata> Extract(ICallGraph callGraph)
     {
-        var results = new List<DirtyTaskMethodInfo>();
+        var metadata = new Dictionary<string, SyncWrapperMethodMetadata>();
 
         foreach (var method in callGraph.Methods.Values)
         {
-            if (IsDirtyTaskMethod(method, out var dirtyTaskMethodInfo))
+            if (TryGetSyncWrapperReason(method, out var reason))
             {
-                results.Add(dirtyTaskMethodInfo);
+                metadata[method.Id] = new SyncWrapperMethodMetadata { IsSyncWrapper = true, Reason = reason };
             }
         }
 
-        return results;
+        return new CallGraphWithMetadata<SyncWrapperMethodMetadata, EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata>(
+            callGraph.Id,
+            callGraph,
+            metadata,
+            new Dictionary<string, EmptyGraphMetadata>(),
+            new Dictionary<string, EmptyGraphMetadata>(),
+            new Dictionary<string, EmptyGraphMetadata>());
     }
 
-    private static bool IsDirtyTaskMethod(IMethodNode method, [NotNullWhen(true)] out DirtyTaskMethodInfo? dirtyTaskMethodInfo)
+    private static bool TryGetSyncWrapperReason(IMethodNode method, out string reason)
     {
-        dirtyTaskMethodInfo = null;
-
         foreach (var param in method.Parameters)
         {
-            // Check Func<Task> with void return
             if (FuncTaskRegex.IsMatch(param) && method.ReturnType == "void")
             {
-                dirtyTaskMethodInfo = new DirtyTaskMethodInfo(method.Id, " Func<Task> parameter with void return");
-
+                reason = "Func<Task> parameter with void return";
                 return true;
             }
 
-            // Check Func<Task<T>> with T return
             var match = FuncTaskOfTRegex.Match(param);
-
             if (match.Success)
             {
                 var innerType = match.Groups[1].Value;
-
                 if (method.ReturnType == innerType)
                 {
-                    dirtyTaskMethodInfo = new DirtyTaskMethodInfo(method.Id, $" Func<Task<{innerType}>> parameter with {innerType} return");
-
+                    reason = $"Func<Task<{innerType}>> parameter with {innerType} return";
                     return true;
                 }
             }
         }
 
+        reason = null!;
         return false;
     }
 }

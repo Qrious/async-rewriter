@@ -18,20 +18,20 @@ public class AsyncTransformer : IAsyncTransformer
 
 
     public Task<TransformationResult> TransformProjectAsync(
-        string projectPath,
+        string solutionPath,
         CallGraph callGraph,
         CancellationToken cancellationToken = default)
-        => TransformProjectAsync(projectPath, callGraph, null, false, cancellationToken);
+        => TransformProjectAsync(solutionPath, callGraph, null, false, cancellationToken);
 
     public Task<TransformationResult> TransformProjectAsync(
-        string projectPath,
+        string solutionPath,
         CallGraph callGraph,
         Action<string, int, int>? progressCallback,
         CancellationToken cancellationToken = default)
-        => TransformProjectAsync(projectPath, callGraph, progressCallback, false, cancellationToken);
+        => TransformProjectAsync(solutionPath, callGraph, progressCallback, false, cancellationToken);
 
     public async Task<TransformationResult> TransformProjectAsync(
-        string projectPath,
+        string solutionPath,
         CallGraph callGraph,
         Action<string, int, int>? progressCallback,
         bool debug,
@@ -571,6 +571,9 @@ public class AsyncTransformer : IAsyncTransformer
         return result;
     }
     
+
+    internal static SyntaxNode EnsureUsingDirectiveInternal(SyntaxNode root, string namespaceName)
+        => EnsureUsingDirective(root, namespaceName);
 
     private static SyntaxNode EnsureUsingDirective(SyntaxNode root, string namespaceName)
     {

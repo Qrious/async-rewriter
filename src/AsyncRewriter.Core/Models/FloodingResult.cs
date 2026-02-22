@@ -35,7 +35,7 @@ public class FloodingMethodMetadata : IGraphMetadata<FloodingMethodMetadata>
         ["FloodedById"] = FloodedById ?? "",
         ["Depth"] = Depth.ToString(),
         ["Reason"] = Reason.ToString(),
-        ["OriginalReturnType"] = OriginalReturnType
+        ["OriginalReturnType"] = OriginalReturnType,
     };
 
     public static FloodingMethodMetadata FromDictionary(IReadOnlyDictionary<string, string> dictionary) => new()
