@@ -10,13 +10,15 @@ public class FloodCallGraphCommand : Command
     private readonly ILogger<FloodCallGraphCommand> _logger;
     private readonly IAsyncCallGraphFlooder _flooder;
     private readonly IDirtyTaskMethodsExtractor _dirtyTaskMethodsExtractor;
+    private readonly IEntityFrameworkSyncCallExtractor _efSyncCallExtractor;
 
-    public FloodCallGraphCommand(ILogger<FloodCallGraphCommand> logger, IAsyncCallGraphFlooder flooder, IDirtyTaskMethodsExtractor dirtyTaskMethodsExtractor) : base(
+    public FloodCallGraphCommand(ILogger<FloodCallGraphCommand> logger, IAsyncCallGraphFlooder flooder, IDirtyTaskMethodsExtractor dirtyTaskMethodsExtractor, IEntityFrameworkSyncCallExtractor efSyncCallExtractor) : base(
         "flood", "Flood a existing callgraph")
     {
         _logger = logger;
         _flooder = flooder;
         _dirtyTaskMethodsExtractor = dirtyTaskMethodsExtractor;
+        _efSyncCallExtractor = efSyncCallExtractor;
         var callGraphId = new Argument<string>("callgraph", "The id of the call graph to flood");
         var neo4jUriOption = new Option<string>(
             aliases: new[]
@@ -77,7 +79,19 @@ public class FloodCallGraphCommand : Command
             _logger.LogInformation("Dirty Task Method: {MethodId} ({MethodName})", dirtyTaskMethodInfo.MethodId, callGraph.Methods[dirtyTaskMethodInfo.MethodId].Name);
         }
 
-        var floodedGraph = await _flooder.Flood(callGraph, new HashSet<string>(dirtyTaskMethodInfos.Select(m => m.MethodId)), newCallGraphId: newGraphId);
+        _logger.LogInformation("Analyzing Entity Framework sync calls in call graph...");
+        var efSyncCallInfos = _efSyncCallExtractor.Extract(callGraph);
+        _logger.LogInformation("Found {EfSyncCallCount} methods calling Entity Framework sync methods!", efSyncCallInfos.Count);
+
+        foreach (var efSyncCallInfo in efSyncCallInfos)
+        {
+            _logger.LogInformation("EF Sync Caller: {MethodId} ({MethodName}) - {Reason}", efSyncCallInfo.MethodId, callGraph.Methods[efSyncCallInfo.MethodId].Name, efSyncCallInfo.Reason);
+        }
+
+        var rootMethodIds = new HashSet<string>(dirtyTaskMethodInfos.Select(m => m.MethodId));
+        rootMethodIds.UnionWith(efSyncCallInfos.Select(m => m.MethodId));
+
+        var floodedGraph = await _flooder.Flood(callGraph, rootMethodIds, newCallGraphId: newGraphId);
 
         _logger.LogInformation("Storing call graph ({MethodsCount} methods, {CallsCount} calls)...", callGraph.Methods.Count, callGraph.Calls.Count);
 
