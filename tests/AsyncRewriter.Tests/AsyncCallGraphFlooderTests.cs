@@ -598,8 +598,8 @@ public class AsyncCallGraphFlooderTests
         };
         var impls = new List<IInterfaceImplementation>
         {
-            new InterfaceImplementation { CallGraphId = "g", ImplementingMethodId = "m_impl1", InterfaceMethodId = "m_iface_foo" },
-            new InterfaceImplementation { CallGraphId = "g", ImplementingMethodId = "m_impl2", InterfaceMethodId = "m_iface_bar" }
+            new InterfaceImplementation { CallGraphId = "g", ImplementingMethodId = "m_impl_foo", InterfaceMethodId = "m_iface_foo" },
+            new InterfaceImplementation { CallGraphId = "g", ImplementingMethodId = "m_impl_bar", InterfaceMethodId = "m_iface_bar" }
         };
         var genericInstantiations = new List<IGenericInstantiation>
         {
@@ -646,7 +646,7 @@ public class AsyncCallGraphFlooderTests
         var graph = CreateCallGraph(methods, interfaceImpls: impls, genericInstantiations: genericInstantiations);
 
         var blocked = new HashSet<string> { "m_iface_generic" };
-        var result = await _analyzer.Flood(graph, ["m_impl_foo"]);
+        var result = await _analyzer.Flood(graph, ["m_impl_foo"], blockedGenericMethodIds: blocked);
 
         result.Methods["m_impl_foo"].ReturnType.Should().Be("Task");
         result.Methods["m_iface_foo"].ReturnType.Should().Be("Task");

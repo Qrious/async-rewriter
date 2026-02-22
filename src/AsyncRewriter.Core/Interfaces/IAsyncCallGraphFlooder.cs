@@ -17,11 +17,13 @@ public interface IAsyncCallGraphFlooder
     /// <param name="callGraph">The call graph to analyze</param>
     /// <param name="rootMethodIds">Methods that should be converted to async (starting points)</param>
     /// <param name="newCallGraphId">Optional ID for the resulting call graph</param>
+    /// <param name="blockedGenericMethodIds">Generic method IDs that should not be flooded through via generic instantiation traversal</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>Updated call graph with flooding metadata per method</returns>
     Task<ICallGraphWithMetadata<FloodingMethodMetadata, EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata>> Flood(
         ICallGraph callGraph,
         HashSet<string> rootMethodIds,
         string? newCallGraphId = null,
+        HashSet<string>? blockedGenericMethodIds = null,
         CancellationToken cancellationToken = default);
 }
