@@ -22,6 +22,7 @@ public class AsyncCallGraphFlooder : IAsyncCallGraphFlooder
         ICallGraph callGraph,
         HashSet<string> rootMethodIds,
         string? newGraphId = null,
+        HashSet<string>? blockedGenericMethodIds = null,
         CancellationToken cancellationToken = default)
     {
         var floodedMethodInfos = new Dictionary<string, FloodedMethodInfo>();
@@ -65,45 +66,47 @@ public class AsyncCallGraphFlooder : IAsyncCallGraphFlooder
                 TryEnqueue(caller.Id, FloodReason.Caller);
             }
 
-            // // Flood through interface implementations (both directions)
-            // foreach (var impl in callGraph.GetInterfaceMethodsFor(methodId))
-            // {
-            //     TryEnqueue(impl.InterfaceMethodId, FloodReason.InterfaceMethod);
-            // }
-            //
-            // foreach (var impl in callGraph.GetImplementationsOf(methodId))
-            // {
-            //     TryEnqueue(impl.ImplementingMethodId, FloodReason.InterfaceImpl);
-            // }
-            //
-            // // Flood through generic instantiations:
-            // // Only traverse when the return type on the generic node is NOT a type parameter.
-            // // Also skip if the generic method is in the blocked set.
-            // foreach (var gi in callGraph.GetGenericMethodsFor(methodId))
-            // {
-            //     if (!HasGenericReturnType(callGraph, gi.GenericMethodId))
-            //     {
-            //         TryEnqueue(gi.GenericMethodId, FloodReason.GenericInstantiation);
-            //     }
-            // }
-            // foreach (var gi in callGraph.GetInstantiationsOf(methodId))
-            // {
-            //     if (!HasGenericReturnType(callGraph, methodId))
-            //     {
-            //         TryEnqueue(gi.InstantiatedMethodId, FloodReason.GenericInstantiation);
-            //     }
-            // }
-            //
-            // // Flood through overrides (both directions)
-            // foreach (var ovr in callGraph.GetBaseMethodsFor(methodId))
-            // {
-            //     TryEnqueue(ovr.BaseMethodId, FloodReason.BaseMethod);
-            // }
-            //
-            // foreach (var ovr in callGraph.GetOverridesOf(methodId))
-            // {
-            //     TryEnqueue(ovr.OverridingMethodId, FloodReason.Override);
-            // }
+            // Flood through interface implementations (both directions)
+            foreach (var impl in callGraph.GetInterfaceMethodsFor(methodId))
+            {
+                TryEnqueue(impl.InterfaceMethodId, FloodReason.InterfaceMethod);
+            }
+
+            foreach (var impl in callGraph.GetImplementationsOf(methodId))
+            {
+                TryEnqueue(impl.ImplementingMethodId, FloodReason.InterfaceImpl);
+            }
+
+            // Flood through generic instantiations:
+            // Only traverse when the return type on the generic node is NOT a type parameter.
+            // Also skip if the generic method is in the blocked set.
+            foreach (var gi in callGraph.GetGenericMethodsFor(methodId))
+            {
+                if (!HasGenericReturnType(callGraph, gi.GenericMethodId)
+                    && (blockedGenericMethodIds == null || !blockedGenericMethodIds.Contains(gi.GenericMethodId)))
+                {
+                    TryEnqueue(gi.GenericMethodId, FloodReason.GenericInstantiation);
+                }
+            }
+
+            foreach (var gi in callGraph.GetInstantiationsOf(methodId))
+            {
+                if (!HasGenericReturnType(callGraph, methodId))
+                {
+                    TryEnqueue(gi.InstantiatedMethodId, FloodReason.GenericInstantiation);
+                }
+            }
+
+            // Flood through overrides (both directions)
+            foreach (var ovr in callGraph.GetBaseMethodsFor(methodId))
+            {
+                TryEnqueue(ovr.BaseMethodId, FloodReason.BaseMethod);
+            }
+
+            foreach (var ovr in callGraph.GetOverridesOf(methodId))
+            {
+                TryEnqueue(ovr.OverridingMethodId, FloodReason.Override);
+            }
         }
 
         // Build new call graph with transformed return types
