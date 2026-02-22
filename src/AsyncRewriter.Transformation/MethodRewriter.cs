@@ -43,8 +43,8 @@ public class AsyncTransformer : IAsyncTransformer
         {
             // Build transformation info from the flooded call graph
             var transformationsByFile = BuildTransformationsByFile(callGraph);
-            var methodRenames = BuildMethodRenamesByMethodId(callGraph);
-            var outParamMethodsById = BuildOutParameterMethodsById(callGraph);
+            var methodRenames = new Dictionary<string, string>();//BuildMethodRenamesByMethodId(callGraph);
+            var outParamMethodsById = new Dictionary<string, OutParameterMethod>(); //BuildOutParameterMethodsById(callGraph);
 
             var fileCount = 0;
             var totalFiles = transformationsByFile.Count;
@@ -570,78 +570,7 @@ public class AsyncTransformer : IAsyncTransformer
 
         return result;
     }
-
-    private static List<string> BuildDebugLines(
-        IMethodNode method,
-        string originalReturnType,
-        List<IMethodCall> callsToAwait,
-        CallGraph callGraph,
-        HashSet<string> floodedMethodIds,
-        Dictionary<string, List<string>> callersByMethod,
-        string? newMethodName = null)
-    {
-        var lines = new List<string>();
-
-        // Method ID
-        lines.Add($"Method: {method.Id}");
-
-        // Return type change
-        lines.Add($"Return: {originalReturnType} → {method.ReturnType}");
-
-        // Flooded-by: callers that are also flooded (why this method needs transformation)
-        if (callersByMethod.TryGetValue(method.Id, out var callerIds))
-        {
-            var floodedCallers = callerIds
-                .Where(id => floodedMethodIds.Contains(id))
-                .Distinct()
-                .ToList();
-            if (floodedCallers.Count > 0)
-            {
-                var callerNames = floodedCallers
-                    .Select(id => callGraph.Methods.TryGetValue(id, out var m) ? m.Id : id)
-                    .OrderBy(n => n);
-                lines.Add($"Flooded by: {string.Join(", ", callerNames)}");
-            }
-        }
-
-        // Call sites that will get await added
-        foreach (var call in callsToAwait.OrderBy(c => c.LineNumber))
-        {
-            var calleeName = callGraph.Methods.TryGetValue(call.CalleeId, out var callee)
-                ? callee.Id
-                : call.CalleeId;
-            lines.Add($"Await at L{call.LineNumber}: {calleeName}");
-        }
-
-        // Interface implementations affected
-        var implEntries = callGraph.InterfaceImplementations
-            .Where(impl => impl.ImplementingMethodId == method.Id)
-            .ToList();
-        foreach (var impl in implEntries)
-        {
-            if (callGraph.Methods.TryGetValue(impl.InterfaceMethodId, out var ifaceMethod))
-            {
-                var ifaceName = $"{ifaceMethod.ContainingType}.{ifaceMethod.Name}";
-                var isProblematic = ifaceMethod.FilePath == "external"
-                    && floodedMethodIds.Contains(impl.ImplementingMethodId);
-                lines.Add(isProblematic
-                    ? $"Implements: {ifaceName} (problematic — external interface)"
-                    : $"Implements: {ifaceName}");
-            }
-            else
-            {
-                lines.Add($"Implements: {impl.InterfaceMethodId}");
-            }
-        }
-
-        // Method rename
-        if (newMethodName != null)
-        {
-            lines.Add($"Renamed: {method.Name} → {newMethodName}");
-        }
-
-        return lines;
-    }
+    
 
     private static SyntaxNode EnsureUsingDirective(SyntaxNode root, string namespaceName)
     {

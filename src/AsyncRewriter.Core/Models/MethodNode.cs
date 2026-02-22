@@ -20,6 +20,8 @@ public record MethodNode : IMethodNode
     public required string FilePath { get; init; } = string.Empty;
     public required int StartLine { get; init; }
     public required int EndLine { get; init; }
+    public int StartCharacter { get; init; }
+    public int EndCharacter { get; init; }
     public bool IsReturnTypeParameter { get; init; }
 
     public IDictionary<string, string> ToDictionary()
@@ -36,6 +38,8 @@ public record MethodNode : IMethodNode
             { nameof(FilePath), FilePath },
             { nameof(StartLine), StartLine.ToString() },
             { nameof(EndLine), EndLine.ToString() },
+            { nameof(StartCharacter), StartCharacter.ToString() },
+            { nameof(EndCharacter), EndCharacter.ToString() },
             { nameof(IsReturnTypeParameter), IsReturnTypeParameter.ToString() }
         };
     }
@@ -54,6 +58,8 @@ public record MethodNode : IMethodNode
             FilePath = data[nameof(FilePath)].ToString(),
             StartLine = int.Parse(data[nameof(StartLine)]!.ToString()),
             EndLine = int.Parse(data[nameof(EndLine)].ToString()),
+            StartCharacter = data.TryGetValue(nameof(StartCharacter), out var sc) ? int.Parse(sc.ToString()) : 0,
+            EndCharacter = data.TryGetValue(nameof(EndCharacter), out var ec) ? int.Parse(ec.ToString()) : 0,
             IsReturnTypeParameter =  bool.Parse(data[nameof(IsReturnTypeParameter)].ToString()),
         };
     }

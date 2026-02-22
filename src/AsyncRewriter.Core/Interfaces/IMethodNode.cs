@@ -51,6 +51,16 @@ public interface IMethodNode : IEquatable<IMethodNode>, IIdentifiable
     public int EndLine { get; }
 
     /// <summary>
+    /// The starting character offset on the start line.
+    /// </summary>
+    public int StartCharacter { get; }
+
+    /// <summary>
+    /// The ending character offset on the end line.
+    /// </summary>
+    public int EndCharacter { get; }
+
+    /// <summary>
     /// Indicates whether the return type is a type parameter (generic type parameter).
     /// </summary>
     public bool IsReturnTypeParameter { get; }

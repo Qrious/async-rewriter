@@ -216,6 +216,8 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                                 FilePath = interfaceMember.Locations.FirstOrDefault()?.SourceTree?.FilePath ?? "external",
                                 StartLine = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Line + 1 ?? 0,
                                 EndLine = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Line + 1 ?? 0,
+                                StartCharacter = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Character ?? 0,
+                                EndCharacter = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Character ?? 0,
                             });
 
                             // InterfaceImplementation: implementing method → instantiated
@@ -266,6 +268,8 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                             FilePath = interfaceMember.Locations.FirstOrDefault()?.SourceTree?.FilePath ?? "external",
                             StartLine = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Line + 1 ?? 0,
                             EndLine = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Line + 1 ?? 0,
+                            StartCharacter = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Character ?? 0,
+                            EndCharacter = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Character ?? 0,
                             IsReturnTypeParameter = isReturnTypeParam,
                         });
                     }
@@ -301,6 +305,8 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                     FilePath = overridden.Locations.FirstOrDefault()?.SourceTree?.FilePath ?? "external",
                     StartLine = overridden.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Line + 1 ?? 0,
                     EndLine = overridden.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Line + 1 ?? 0,
+                    StartCharacter = overridden.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Character ?? 0,
+                    EndCharacter = overridden.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Character ?? 0,
                 });
 
                 overridden = overridden.OverriddenMethod;
@@ -320,6 +326,8 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
             FilePath = _filePath,
             StartLine = lineSpan.StartLinePosition.Line + 1,
             EndLine = lineSpan.EndLinePosition.Line + 1,
+            StartCharacter = lineSpan.StartLinePosition.Character,
+            EndCharacter = lineSpan.EndLinePosition.Character,
         };
     }
 
@@ -362,6 +370,8 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
             FilePath = _filePath,
             StartLine = lineSpan.StartLinePosition.Line + 1,
             EndLine = lineSpan.EndLinePosition.Line + 1,
+            StartCharacter = lineSpan.StartLinePosition.Character,
+            EndCharacter = lineSpan.EndLinePosition.Character,
             IsReturnTypeParameter = isReturnTypeParameter,
         };
     }
