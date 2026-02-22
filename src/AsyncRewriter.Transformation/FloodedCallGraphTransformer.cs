@@ -37,7 +37,12 @@ public class FloodedCallGraphTransformer
         IDocumentSemanticModelProvider documentProvider,
         CancellationToken cancellationToken = default)
     {
-        var floodedMethodIds = new HashSet<string>(callGraph.MethodMetadata.Keys);
+        // Only methods with actual flooding metadata are flooded; non-flooded methods loaded from
+        // Neo4j have empty metadata dictionaries that deserialize to default-valued objects.
+        var floodedMethodIds = new HashSet<string>(
+            callGraph.MethodMetadata
+                .Where(kvp => !string.IsNullOrEmpty(kvp.Value.First.OriginalReturnType))
+                .Select(kvp => kvp.Key));
 
         // Build: callerMethodId → set of callee method IDs that need await
         var awaitableCalleesByCallerId = BuildAwaitableCalleeMap(callGraph, floodedMethodIds);
@@ -182,6 +187,13 @@ public class FloodedCallGraphTransformer
 
         foreach (var (methodId, composite) in callGraph.MethodMetadata)
         {
+            // Skip methods that have no flooding metadata (empty/default — non-flooded methods
+            // loaded from Neo4j have empty metadata that deserializes to default-valued objects).
+            if (string.IsNullOrEmpty(composite.First.OriginalReturnType))
+            {
+                continue;
+            }
+
             if (!callGraph.Methods.TryGetValue(methodId, out var method))
             {
                 continue;
