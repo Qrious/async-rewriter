@@ -15,14 +15,10 @@ namespace AsyncRewriter.Transformation;
 
 /// <summary>
 /// Transforms C# source files based on a flooded call graph carrying composite metadata.
-/// For each method present in <see cref="ICallGraphWithMetadata{TM,TC,TI,TO}.MethodMetadata"/>
-/// the transformer:
-/// <list type="bullet">
-///   <item>Changes the return type (<c>void</c> → <c>Task</c>, <c>T</c> → <c>Task&lt;T&gt;</c>)</item>
-///   <item>Adds <c>async</c> and <c>await</c> where needed</item>
-///   <item>Skips <c>async</c>/<c>await</c> for sync wrapper methods (identified via
-///         <see cref="SyncWrapperMethodMetadata.IsSyncWrapper"/>)</item>
-/// </list>
+/// Uses a Roslyn <see cref="SemanticModel"/> (provided via <see cref="IDocumentSemanticModelProvider"/>)
+/// to identify methods by symbol rather than by source line, delegating the rewriting to
+/// <see cref="SemanticCallGraphRewriter"/>.
+/// <para>
 /// The composite metadata type is
 /// <c>CompositeMetadata&lt;FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata&gt;</c>:
 /// <list type="bullet">
@@ -30,45 +26,60 @@ namespace AsyncRewriter.Transformation;
 ///   <item><c>Second</c> — sync wrapper flag</item>
 ///   <item><c>Third</c> — Entity Framework caller flag</item>
 /// </list>
+/// </para>
 /// </summary>
 public class FloodedCallGraphTransformer
 {
-    private static readonly CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata> Empty =
-        new()
-        {
-            First = new FloodingMethodMetadata { OriginalReturnType = "" },
-            Second = SyncWrapperMethodMetadata.None,
-            Third = EntityFrameworkMethodMetadata.None,
-        };
-
     public async Task<IReadOnlyList<FileTransformation>> TransformAsync(
         ICallGraphWithMetadata<
             CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata>,
             EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata> callGraph,
+        IDocumentSemanticModelProvider documentProvider,
         CancellationToken cancellationToken = default)
     {
         var floodedMethodIds = new HashSet<string>(callGraph.MethodMetadata.Keys);
+
+        // Build: callerMethodId → set of callee method IDs that need await
+        var awaitableCalleesByCallerId = BuildAwaitableCalleeMap(callGraph, floodedMethodIds);
+
+        // Build: methodId → transform info (for all flooded methods)
+        var methodsById = BuildMethodTransformInfos(callGraph);
+
+        // Build: set of sync-wrapper method IDs
+        var syncWrapperMethodIds = new HashSet<string>(
+            callGraph.MethodMetadata
+                .Where(kvp => kvp.Value.Second.IsSyncWrapper)
+                .Select(kvp => kvp.Key));
+
+        // Group flooded methods by file
         var byFile = GroupFloodedMethodsByFile(callGraph, floodedMethodIds);
 
         var results = new List<FileTransformation>();
-        foreach (var (filePath, methodInfos) in byFile)
+        foreach (var (filePath, _) in byFile)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (!File.Exists(filePath))
+            var document = await documentProvider.GetForFileAsync(filePath, cancellationToken);
+            if (document == null)
             {
+                // Fall back to disk-based parsing when the file is not in the solution
+                // (e.g. generated files or out-of-solution paths).
+                await TransformFromDisk(
+                    filePath, methodsById, awaitableCalleesByCallerId,
+                    syncWrapperMethodIds, results, cancellationToken);
                 continue;
             }
 
-            var source = await File.ReadAllTextAsync(filePath, cancellationToken);
-            var transformed = TransformSource(source, methodInfos, floodedMethodIds, cancellationToken);
+            var (root, semanticModel) = document.Value;
+            var transformed = TransformWithSemanticModel(
+                root, semanticModel, methodsById, awaitableCalleesByCallerId, syncWrapperMethodIds);
 
-            if (transformed != source)
+            if (transformed != null)
             {
                 results.Add(new FileTransformation
                 {
                     FilePath = filePath,
-                    OriginalContent = source,
+                    OriginalContent = root.ToFullString(),
                     TransformedContent = transformed,
                     MethodTransformations = new List<MethodTransformation>()
                 });
@@ -78,15 +89,138 @@ public class FloodedCallGraphTransformer
         return results;
     }
 
-    private static Dictionary<string, List<MethodTransformEntry>> GroupFloodedMethodsByFile(
+    // ──────────────────────────────────────────────────────────────────────────
+    // Core rewriting helpers
+    // ──────────────────────────────────────────────────────────────────────────
+
+    private static string? TransformWithSemanticModel(
+        SyntaxNode root,
+        SemanticModel semanticModel,
+        IReadOnlyDictionary<string, MethodTransformInfo> methodsById,
+        IReadOnlyDictionary<string, IReadOnlySet<string>> awaitableCalleesByCallerId,
+        IReadOnlySet<string> syncWrapperMethodIds)
+    {
+        var rewriter = new SemanticCallGraphRewriter(
+            semanticModel, methodsById, awaitableCalleesByCallerId, syncWrapperMethodIds);
+
+        var newRoot = rewriter.Visit(root);
+
+        if (!rewriter.AnyMethodTransformed)
+        {
+            return null;
+        }
+
+        newRoot = EnsureUsingDirective(newRoot, "System.Threading.Tasks");
+        return newRoot.ToFullString();
+    }
+
+    private static async Task TransformFromDisk(
+        string filePath,
+        IReadOnlyDictionary<string, MethodTransformInfo> methodsById,
+        IReadOnlyDictionary<string, IReadOnlySet<string>> awaitableCalleesByCallerId,
+        IReadOnlySet<string> syncWrapperMethodIds,
+        List<FileTransformation> results,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(filePath))
+        {
+            return;
+        }
+
+        var source = await File.ReadAllTextAsync(filePath, cancellationToken);
+        var tree = CSharpSyntaxTree.ParseText(source, cancellationToken: cancellationToken);
+        var root = await tree.GetRootAsync(cancellationToken);
+
+        // Without a semantic model we cannot do symbol-based matching.
+        // Build a minimal compilation so we at least have type information.
+        var compilation = CSharpCompilation.Create(
+            assemblyName: "__fallback__",
+            syntaxTrees: new[] { tree },
+            references: new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) });
+
+        var semanticModel = compilation.GetSemanticModel(tree);
+
+        var transformed = TransformWithSemanticModel(
+            root, semanticModel, methodsById, awaitableCalleesByCallerId, syncWrapperMethodIds);
+
+        if (transformed != null)
+        {
+            results.Add(new FileTransformation
+            {
+                FilePath = filePath,
+                OriginalContent = source,
+                TransformedContent = transformed,
+                MethodTransformations = new List<MethodTransformation>()
+            });
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Data-preparation helpers
+    // ──────────────────────────────────────────────────────────────────────────
+
+    private static Dictionary<string, IReadOnlySet<string>> BuildAwaitableCalleeMap(
         ICallGraphWithMetadata<
             CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata>,
             EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata> callGraph,
         HashSet<string> floodedMethodIds)
     {
-        var byFile = new Dictionary<string, List<MethodTransformEntry>>(StringComparer.OrdinalIgnoreCase);
+        return callGraph.Calls
+            .Where(c => floodedMethodIds.Contains(c.CallerId) && floodedMethodIds.Contains(c.CalleeId))
+            .GroupBy(c => c.CallerId)
+            .ToDictionary(
+                g => g.Key,
+                g => (IReadOnlySet<string>)g.Select(c => c.CalleeId).ToHashSet());
+    }
+
+    private static Dictionary<string, MethodTransformInfo> BuildMethodTransformInfos(
+        ICallGraphWithMetadata<
+            CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata>,
+            EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata> callGraph)
+    {
+        var result = new Dictionary<string, MethodTransformInfo>(StringComparer.Ordinal);
 
         foreach (var (methodId, composite) in callGraph.MethodMetadata)
+        {
+            if (!callGraph.Methods.TryGetValue(methodId, out var method))
+            {
+                continue;
+            }
+
+            if (string.IsNullOrEmpty(method.FilePath) || method.FilePath == "external")
+            {
+                continue;
+            }
+
+            var originalReturnType = composite.First.OriginalReturnType;
+            var newReturnType = originalReturnType == "void"
+                ? "Task"
+                : $"Task<{originalReturnType}>";
+
+            result[methodId] = new MethodTransformInfo
+            {
+                MethodId = method.Id,
+                MethodName = method.Name,
+                ContainingType = method.ContainingType,
+                OriginalReturnType = originalReturnType,
+                NewReturnType = newReturnType,
+                StartLine = method.StartLine,
+                EndLine = method.EndLine,
+            };
+        }
+
+        return result;
+    }
+
+    private static Dictionary<string, List<string>> GroupFloodedMethodsByFile(
+        ICallGraphWithMetadata<
+            CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata>,
+            EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata> callGraph,
+        HashSet<string> floodedMethodIds)
+    {
+        var byFile = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var methodId in floodedMethodIds)
         {
             if (!callGraph.Methods.TryGetValue(methodId, out var method))
             {
@@ -99,85 +233,21 @@ public class FloodedCallGraphTransformer
                 continue;
             }
 
-            var callsToAwait = callGraph.Calls
-                .Where(c => c.CallerId == methodId && floodedMethodIds.Contains(c.CalleeId))
-                .ToList();
-
-            if (!byFile.TryGetValue(filePath, out var list))
+            if (!byFile.TryGetValue(filePath, out var ids))
             {
-                list = new List<MethodTransformEntry>();
-                byFile[filePath] = list;
+                ids = new List<string>();
+                byFile[filePath] = ids;
             }
 
-            list.Add(new MethodTransformEntry(method, composite, callsToAwait));
+            ids.Add(methodId);
         }
 
         return byFile;
     }
 
-    private static string TransformSource(
-        string sourceCode,
-        List<MethodTransformEntry> entries,
-        HashSet<string> floodedMethodIds,
-        CancellationToken cancellationToken)
-    {
-        var tree = CSharpSyntaxTree.ParseText(sourceCode);
-        var root = tree.GetRoot(cancellationToken);
-
-        var methodsByStartLine = new Dictionary<int, MethodTransformInfo>();
-        var callSitesByLine = new Dictionary<int, CallSiteInfo>();
-        var syncWrapperMethodIds = new HashSet<string>();
-
-        foreach (var entry in entries)
-        {
-            var method = entry.Method;
-            var floodingMeta = entry.Composite.First;
-            var syncMeta = entry.Composite.Second;
-
-            var originalReturnType = floodingMeta.OriginalReturnType;
-            var newReturnType = originalReturnType == "void" ? "Task" : $"Task<{originalReturnType}>";
-
-            methodsByStartLine[method.StartLine] = new MethodTransformInfo
-            {
-                MethodId = method.Id,
-                MethodName = method.Name,
-                ContainingType = method.ContainingType,
-                OriginalReturnType = originalReturnType,
-                NewReturnType = newReturnType,
-                StartLine = method.StartLine,
-                EndLine = method.EndLine,
-            };
-
-            if (syncMeta.IsSyncWrapper)
-            {
-                syncWrapperMethodIds.Add(method.Id);
-            }
-
-            foreach (var call in entry.CallsToAwait)
-            {
-                if (!callSitesByLine.ContainsKey(call.LineNumber))
-                {
-                    callSitesByLine[call.LineNumber] = new CallSiteInfo
-                    {
-                        CalleeMethodId = call.CalleeId,
-                        LineNumber = call.LineNumber,
-                        CalleeMethodName = ExtractMethodNameFromMethodId(call.CalleeId),
-                    };
-                }
-            }
-        }
-
-        var rewriter = new AsyncMethodRewriter(methodsByStartLine, callSitesByLine, syncWrapperMethodIds);
-        var newRoot = rewriter.Visit(root);
-
-        if (!rewriter.AnyMethodTransformed)
-        {
-            return sourceCode;
-        }
-
-        newRoot = EnsureUsingDirective(newRoot, "System.Threading.Tasks");
-        return newRoot.ToFullString();
-    }
+    // ──────────────────────────────────────────────────────────────────────────
+    // Using-directive helper
+    // ──────────────────────────────────────────────────────────────────────────
 
     private static SyntaxNode EnsureUsingDirective(SyntaxNode root, string namespaceName)
     {
@@ -196,35 +266,4 @@ public class FloodedCallGraphTransformer
 
         return compilationUnit.AddUsings(usingDirective);
     }
-
-    private static string? ExtractMethodNameFromMethodId(string? methodId)
-    {
-        if (string.IsNullOrEmpty(methodId))
-        {
-            return null;
-        }
-
-        var parenIdx = methodId.IndexOf('(');
-        if (parenIdx < 0)
-        {
-            parenIdx = methodId.Length;
-        }
-
-        var lastDot = methodId.LastIndexOf('.', parenIdx - 1);
-        var nameStart = lastDot >= 0 ? lastDot + 1 : 0;
-
-        if (nameStart >= parenIdx)
-        {
-            return null;
-        }
-
-        var name = methodId.Substring(nameStart, parenIdx - nameStart);
-        var angleIdx = name.IndexOf('<');
-        return angleIdx >= 0 ? name.Substring(0, angleIdx) : name;
-    }
-
-    private record MethodTransformEntry(
-        IMethodNode Method,
-        CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata> Composite,
-        List<IMethodCall> CallsToAwait);
 }

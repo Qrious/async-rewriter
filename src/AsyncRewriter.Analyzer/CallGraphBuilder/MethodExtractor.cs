@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using AsyncRewriter.Core;
 using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
 using Microsoft.CodeAnalysis;
@@ -404,52 +405,10 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
         return $"{containingType}.{methodSymbol.Name}({parameters})";
     }
 
-    internal static string GetMethodId(IMethodSymbol methodSymbol)
-    {
-        var originalMethod = methodSymbol.OriginalDefinition;
+    // Delegate to shared MethodIdFactory in Core so the ID format stays in sync
+    internal static string GetMethodId(IMethodSymbol methodSymbol) =>
+        MethodIdFactory.GetMethodId(methodSymbol);
 
-        // For local functions and lambdas, build the full chain: Type.ParentMethod(params).LocalFunc(params)
-        if (originalMethod.MethodKind == MethodKind.LocalFunction || originalMethod.MethodKind == MethodKind.AnonymousFunction)
-        {
-            var parts = new List<string>();
-            var current = originalMethod;
-            while (current != null && (current.MethodKind == MethodKind.LocalFunction || current.MethodKind == MethodKind.AnonymousFunction))
-            {
-                if (current.MethodKind == MethodKind.AnonymousFunction)
-                {
-                    // Synthesize IL-style name: <ContainingMethod>b__<line>
-                    var containingName = (current.ContainingSymbol as IMethodSymbol)?.Name ?? "";
-                    var location = current.Locations.FirstOrDefault();
-                    var line = location?.GetLineSpan().StartLinePosition.Line ?? 0;
-                    var lambdaName = $"<{containingName}>b__{line}";
-                    var parameters = string.Join(", ", current.Parameters.Select(p => p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)));
-                    parts.Add($"{lambdaName}({parameters})");
-                }
-                else
-                {
-                    parts.Add(GetMethodSignature(current));
-                }
-                current = current.ContainingSymbol as IMethodSymbol;
-            }
-
-            // current is now the outermost non-local method (or null)
-            if (current != null)
-            {
-                parts.Add(GetMethodSignature(current));
-            }
-
-            parts.Reverse();
-            var containingType = originalMethod.ContainingType?.ToDisplayString() ?? "";
-            return $"{containingType}.{string.Join(".", parts)}";
-        }
-
-        return $"{originalMethod.ContainingType?.ToDisplayString()}.{GetMethodSignature(originalMethod)}";
-    }
-
-    internal static string GetMethodSignature(IMethodSymbol methodSymbol)
-    {
-        var originalMethod = methodSymbol.OriginalDefinition;
-        var parameters = string.Join(", ", originalMethod.Parameters.Select(p => p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)));
-        return $"{originalMethod.Name}({parameters})";
-    }
+    internal static string GetMethodSignature(IMethodSymbol methodSymbol) =>
+        MethodIdFactory.GetMethodSignature(methodSymbol);
 }

@@ -309,10 +309,7 @@ public class AsyncTransformer : IAsyncTransformer
             methodRenamesByMethodId.TryGetValue(method.Id, out var newMethodName);
 
             List<string>? debugLines = null;
-            if (debug)
-            {
-                debugLines = BuildDebugLines(method, originalReturnType, callsToAwait, callGraph, floodedMethodIds, callersByMethod!, newMethodName);
-            }
+            // Note: debug-line generation was removed; retained as null placeholder.
 
             OutParameterTransformInfo? outParamInfo = null;
             if (outParamMethodsById.TryGetValue(method.Id, out var outMethod))

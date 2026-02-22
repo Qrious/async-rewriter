@@ -18,8 +18,4 @@
     <ProjectReference Include="..\AsyncRewriter.Core\AsyncRewriter.Core.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Folder Include="Flooding\" />
-  </ItemGroup>
-
 </Project>

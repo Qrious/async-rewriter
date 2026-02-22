@@ -1,8 +1,14 @@
+using System;
 using System.CommandLine;
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
+using AsyncRewriter.Analyzer;
 using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
 using AsyncRewriter.Neo4j;
 using AsyncRewriter.Transformation;
+using Microsoft.CodeAnalysis.MSBuild;
 using Microsoft.Extensions.Logging;
 
 namespace AsyncRewriter.Console.Commands;
@@ -19,6 +25,10 @@ public class ModifyCommand : Command
         _transformer = transformer;
 
         var callGraphId = new Argument<string>("callgraph", "The id of the flooded call graph to transform");
+        var solutionOption = new Option<string>(
+            aliases: ["--solution", "-s"],
+            description: "Path to the .sln file. When provided the transformer uses a full Roslyn " +
+                         "semantic model for accurate symbol-based method matching.");
         var neo4jUriOption = new Option<string>(
             aliases: ["--uri", "-u"],
             description: "Neo4j Bolt URI",
@@ -37,15 +47,24 @@ public class ModifyCommand : Command
             getDefaultValue: () => false);
 
         AddArgument(callGraphId);
+        AddOption(solutionOption);
         AddOption(neo4jUriOption);
         AddOption(neo4jUserOption);
         AddOption(neo4jPasswordOption);
         AddOption(dryRunOption);
 
-        this.SetHandler(ExecuteAsync, callGraphId, neo4jUriOption, neo4jUserOption, neo4jPasswordOption, dryRunOption);
+        this.SetHandler(ExecuteAsync,
+            callGraphId, solutionOption,
+            neo4jUriOption, neo4jUserOption, neo4jPasswordOption, dryRunOption);
     }
 
-    private async Task ExecuteAsync(string callGraphId, string neo4jUri, string neo4jUser, string neo4jPassword, bool dryRun)
+    private async Task ExecuteAsync(
+        string callGraphId,
+        string? solutionPath,
+        string neo4jUri,
+        string neo4jUser,
+        string neo4jPassword,
+        bool dryRun)
     {
         var neo4jCredentials = new Neo4JCredentials(new Uri(neo4jUri), neo4jUser, neo4jPassword);
         _logger.LogInformation("Connecting to Neo4j at {Neo4JUri}...", neo4jCredentials.Url);
@@ -56,7 +75,7 @@ public class ModifyCommand : Command
         var callGraph = await repository.Load<
             CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata>,
             EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata>(
-            callGraphId, CancellationToken.None);
+            callGraphId, default);
 
         _logger.LogInformation(
             "Call graph loaded: {MethodCount} methods ({FloodedCount} flooded), {CallCount} calls",
@@ -64,8 +83,10 @@ public class ModifyCommand : Command
             callGraph.MethodMetadata.Count,
             callGraph.Calls.Count);
 
+        var documentProvider = await BuildDocumentProviderAsync(solutionPath);
+
         _logger.LogInformation("Running transformation{DryRun}...", dryRun ? " (dry run)" : "");
-        var transformations = await _transformer.TransformAsync(callGraph);
+        var transformations = await _transformer.TransformAsync(callGraph, documentProvider);
 
         if (transformations.Count == 0)
         {
@@ -90,5 +111,30 @@ public class ModifyCommand : Command
             "{Action} {FileCount} file(s).",
             dryRun ? "Would modify" : "Modified",
             transformations.Count);
+    }
+
+    private async Task<IDocumentSemanticModelProvider> BuildDocumentProviderAsync(string? solutionPath)
+    {
+        if (string.IsNullOrWhiteSpace(solutionPath))
+        {
+            _logger.LogWarning(
+                "No --solution path provided. Transformation will use a minimal fallback compilation " +
+                "instead of a full semantic model. Provide --solution for best results.");
+            return NullDocumentSemanticModelProvider.Instance;
+        }
+
+        if (!File.Exists(solutionPath))
+        {
+            _logger.LogWarning(
+                "Solution file not found at {SolutionPath}. Falling back to minimal compilation.",
+                solutionPath);
+            return NullDocumentSemanticModelProvider.Instance;
+        }
+
+        _logger.LogInformation("Loading solution {SolutionPath} for semantic model...", solutionPath);
+        var workspace = MSBuildWorkspace.Create();
+        var solution = await workspace.OpenSolutionAsync(solutionPath);
+        _logger.LogInformation("Solution loaded ({ProjectCount} projects).", solution.Projects.Count());
+        return SolutionDocumentSemanticModelProvider.Create(solution);
     }
 }
