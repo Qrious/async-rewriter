@@ -105,15 +105,12 @@ public class Neo4jCallGraphRepository : ICallGraphRepository, IAsyncDisposable, 
         await Batch<IMethodNode>(totalMethods, BatchSize, async (batchStart, batchEnd) =>
         {
             var batch = methods.Skip(batchStart).Take(batchEnd - batchStart).ToList();
-            await session.ExecuteWriteAsync(async tx => await WriteMethodBatch(tx, batch, new Dictionary<string, TMethodMetadata>()));
+            await session.ExecuteWriteAsync(async tx => await WriteMethodBatch(tx, batch, callGraphWithMetadata.MethodMetadata));
         }, cancellationToken);
 
         // 3. Create CALLS relationships in batches
         var calls = callGraphWithMetadata.Calls.ToList();
-        var debug = calls.ToArray().Where(c =>
-            c.CalleeId == "RoutIT.IRMA.Entities.CRM.Mappers.EditNPaasOrderTicketRequest2NPaasOrderTicketMapper.MapInto(NPaasOrderTicket, EditNPaasOrderTicketRequest?)" &&
-            c.CallerId == "RoutIT.IRMA.Model.NPaas.NPaasOrderTicketModel.RateTicket(EditNPaasOrderTicketRequest)").ToArray();
-        await Batch<IMethodCall>(calls.Count, BatchSize, async (batchStart, batchEnd) =>
+await Batch<IMethodCall>(calls.Count, BatchSize, async (batchStart, batchEnd) =>
         {
             var batch = calls.Skip(batchStart).Take(batchEnd - batchStart).ToList();
             await session.ExecuteWriteAsync(async tx => await WriteCallBatch(tx, batch, new Dictionary<string, TCallMetadata>()));
