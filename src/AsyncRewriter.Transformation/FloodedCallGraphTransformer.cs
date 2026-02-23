@@ -1,9 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
 using Microsoft.CodeAnalysis;
@@ -145,7 +139,7 @@ public class FloodedCallGraphTransformer
             newRoot = outCallSiteRewriter.Visit(newRoot);
 
             // Add using directive for AsyncOutResult<T> when BoolTryPattern call sites were rewritten.
-            if ((outCallSiteRewriter.UsedBoolTryPattern && !string.IsNullOrEmpty(asyncOutResultNamespace)) || IsInterfaceDeclaration(root, semanticModel) )
+            if (!string.IsNullOrEmpty(asyncOutResultNamespace) && (outCallSiteRewriter.AnyTransformed || IsInterfaceDeclaration(root, semanticModel)))
             {
                 newRoot = EnsureUsingDirective(newRoot, asyncOutResultNamespace);
             }
