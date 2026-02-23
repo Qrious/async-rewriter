@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Linq;
+using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
 
 namespace AsyncRewriter.Analyzer;
@@ -7,14 +8,15 @@ namespace AsyncRewriter.Analyzer;
 /// <summary>
 /// Detects flooded methods that have out parameters and classifies their transformation strategy.
 /// </summary>
-public static class OutParameterAnalyzer
+public class OutParameterAnalyzer : IOutParameterAnalyzer
 {
     /// <summary>
     /// Finds all methods in the async (flooded) call graph that have out parameters and need transformation.
     /// </summary>
-    public static List<OutParameterMethod> DetectOutParameterMethods(CallGraph originalGraph, CallGraph asyncGraph)
+    public ICallGraphWithMetadata<OutParameterMetadata, EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata> DetectOutParameterMethods(
+        ICallGraph originalGraph, ICallGraphWithMetadata<FloodingMethodMetadata, EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata> asyncGraph)
     {
-        var results = new List<OutParameterMethod>();
+        var results = new Dictionary<string, OutParameterMetadata>();
 
         foreach (var (id, asyncMethod) in asyncGraph.Methods)
         {
@@ -61,10 +63,8 @@ public static class OutParameterAnalyzer
             var kind = isBoolReturn ? OutParameterTransformKind.BoolTryPattern : OutParameterTransformKind.TuplePattern;
             var newAsyncReturnType = ComputeNewReturnType(kind, originalReturnType, outTypes, outNames);
 
-            results.Add(new OutParameterMethod
+            results.Add(id, new OutParameterMetadata
             {
-                MethodId = id,
-                Method = originalMethod,
                 OriginalReturnType = originalReturnType,
                 TransformKind = kind,
                 OutParameterIndices = outIndices,
@@ -74,7 +74,8 @@ public static class OutParameterAnalyzer
             });
         }
 
-        return results;
+        return new CallGraphWithMetadata<OutParameterMetadata, EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata>(asyncGraph.Id, originalGraph, results,
+            new Dictionary<string, EmptyGraphMetadata>(), new Dictionary<string, EmptyGraphMetadata>(), new Dictionary<string, EmptyGraphMetadata>());
     }
 
     private static string ComputeNewReturnType(
@@ -86,6 +87,7 @@ public static class OutParameterAnalyzer
         if (kind == OutParameterTransformKind.BoolTryPattern)
         {
             string innerType;
+
             if (outTypes.Count == 1)
             {
                 innerType = outTypes[0];
@@ -95,11 +97,16 @@ public static class OutParameterAnalyzer
                 var tupleElements = outTypes.Zip(outNames, (t, n) => $"{t} {n}");
                 innerType = $"({string.Join(", ", tupleElements)})";
             }
+
             return $"Task<AsyncOutResult<{innerType}>>";
         }
         else
         {
-            var elements = new List<string> { $"{originalReturnType} Result" };
+            var elements = new List<string>
+            {
+                $"{originalReturnType} Result"
+            };
+
             for (int i = 0; i < outTypes.Count; i++)
             {
                 elements.Add($"{outTypes[i]} {outNames[i]}");

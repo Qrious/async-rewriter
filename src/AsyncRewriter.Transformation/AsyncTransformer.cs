@@ -44,7 +44,7 @@ public class AsyncTransformer : IAsyncTransformer
             // Build transformation info from the flooded call graph
             var transformationsByFile = BuildTransformationsByFile(callGraph);
             var methodRenames = new Dictionary<string, string>();//BuildMethodRenamesByMethodId(callGraph);
-            var outParamMethodsById = new Dictionary<string, OutParameterMethod>(); //BuildOutParameterMethodsById(callGraph);
+            var outParamMethodsById = new Dictionary<string, OutParameterMetadata>(); //BuildOutParameterMethodsById(callGraph);
 
             var fileCount = 0;
             var totalFiles = transformationsByFile.Count;
@@ -267,7 +267,7 @@ public class AsyncTransformer : IAsyncTransformer
         List<(IMethodNode Method, string OriginalReturnType, List<IMethodCall> CallsToAwait)> methodInfos,
         CallGraph callGraph,
         Dictionary<string, string> methodRenamesByMethodId,
-        Dictionary<string, OutParameterMethod> outParamMethodsById,
+        Dictionary<string, OutParameterMetadata> outParamMethodsById,
         bool debug,
         CancellationToken cancellationToken)
     {
@@ -442,7 +442,7 @@ public class AsyncTransformer : IAsyncTransformer
 
     private static Dictionary<int, OutParameterCallSiteInfo> BuildOutParameterCallSites(
         CallGraph callGraph,
-        Dictionary<string, OutParameterMethod> outParamMethodsById,
+        Dictionary<string, OutParameterMetadata> outParamMethodsById,
         HashSet<string> floodedMethodIds)
     {
         var result = new Dictionary<int, OutParameterCallSiteInfo>();
@@ -480,12 +480,12 @@ public class AsyncTransformer : IAsyncTransformer
     /// Builds a lookup of out-parameter methods that need special transformation.
     /// Uses the original call graph stored alongside the async graph to detect out params.
     /// </summary>
-    private static Dictionary<string, OutParameterMethod> BuildOutParameterMethodsById(CallGraph callGraph)
+    private static Dictionary<string, OutParameterMetadata> BuildOutParameterMethodsById(CallGraph callGraph)
     {
         // We need the original graph to detect out params, but the flooded graph has Task return types.
         // The MethodNode in callGraph already has ParameterRefKinds from extraction.
         // We detect methods that: (1) have out params, (2) have Task return types (flooded).
-        var result = new Dictionary<string, OutParameterMethod>();
+        var result = new Dictionary<string, OutParameterMetadata>();
 
         foreach (var (id, m) in callGraph.Methods)
         {
@@ -552,7 +552,7 @@ public class AsyncTransformer : IAsyncTransformer
                 newAsyncReturnType = $"Task<({string.Join(", ", elements)})>";
             }
 
-            result[id] = new OutParameterMethod
+            result[id] = new OutParameterMetadata
             {
                 MethodId = id,
                 Method = method,

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.CommandLine;
 using System.Linq;
 using System.Threading.Tasks;
+using AsyncRewriter.Analyzer;
 using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
 using AsyncRewriter.Neo4j;
@@ -16,18 +17,21 @@ public class FloodCallGraphCommand : Command
     private readonly IAsyncCallGraphFlooder _flooder;
     private readonly IDirtyTaskMethodsExtractor _dirtyTaskMethodsExtractor;
     private readonly IEntityFrameworkSyncCallExtractor _efSyncCallExtractor;
+    private readonly IOutParameterAnalyzer _outParameterAnalyzer;
 
     public FloodCallGraphCommand(
         ILogger<FloodCallGraphCommand> logger,
         IAsyncCallGraphFlooder flooder,
         IDirtyTaskMethodsExtractor dirtyTaskMethodsExtractor,
-        IEntityFrameworkSyncCallExtractor efSyncCallExtractor)
+        IEntityFrameworkSyncCallExtractor efSyncCallExtractor,
+        IOutParameterAnalyzer outParameterAnalyzer)
         : base("flood", "Flood a existing callgraph")
     {
         _logger = logger;
         _flooder = flooder;
         _dirtyTaskMethodsExtractor = dirtyTaskMethodsExtractor;
         _efSyncCallExtractor = efSyncCallExtractor;
+        _outParameterAnalyzer = outParameterAnalyzer;
 
         var callGraphId = new Argument<string>("callgraph", "The id of the call graph to flood");
         var neo4jUriOption = new Option<string>(
@@ -76,7 +80,7 @@ public class FloodCallGraphCommand : Command
 
         foreach (var (id, meta) in syncWrapperGraph.MethodMetadata)
         {
-            _logger.LogInformation("Sync wrapper: {MethodId} ({MethodName}) - {Reason}", id, callGraph.Methods[id].Name, meta.Reason);
+            _logger.LogTrace("Sync wrapper: {MethodId} ({MethodName}) - {Reason}", id, callGraph.Methods[id].Name, meta.Reason);
         }
 
         _logger.LogInformation("Analyzing Entity Framework sync calls in call graph...");
@@ -85,7 +89,7 @@ public class FloodCallGraphCommand : Command
 
         foreach (var (id, meta) in efGraph.MethodMetadata)
         {
-            _logger.LogInformation("EF Sync Caller: {MethodId} ({MethodName}) - {Reason}", id, callGraph.Methods[id].Name, meta.Reason);
+            _logger.LogTrace("EF Sync Caller: {MethodId} ({MethodName}) - {Reason}", id, callGraph.Methods[id].Name, meta.Reason);
         }
 
         var rootMethodIds = new HashSet<string>(syncWrapperGraph.MethodMetadata.Keys);
@@ -93,22 +97,30 @@ public class FloodCallGraphCommand : Command
 
         var floodedGraph = await _flooder.Flood(callGraph, rootMethodIds, newCallGraphId: newGraphId);
 
+        _logger.LogInformation("Analyzing out parameter methods in flooded call graph...");
+        var outParameterCallGraph = _outParameterAnalyzer.DetectOutParameterMethods(callGraph, floodedGraph);
+        _logger.LogInformation("Found {Count} out-parameter methods!", outParameterCallGraph.MethodMetadata.Count);
+
+
+
         // Combine flooding metadata with sync wrapper and EF metadata into a composite graph
-        var compositeMetadata = new Dictionary<string, CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata>>();
+        var compositeMetadata = new Dictionary<string, CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata, OutParameterMetadata>>();
         foreach (var (id, floodingMeta) in floodedGraph.MethodMetadata)
         {
             syncWrapperGraph.TryGetMethodMetadata(id, out var syncMeta);
             efGraph.TryGetMethodMetadata(id, out var efMeta);
-            compositeMetadata[id] = new CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata>
+            outParameterCallGraph.TryGetMethodMetadata(id, out var outParameterMeta);
+            compositeMetadata[id] = new CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata, OutParameterMetadata>
             {
                 First = floodingMeta,
                 Second = syncMeta ?? SyncWrapperMethodMetadata.None,
                 Third = efMeta ?? EntityFrameworkMethodMetadata.None,
+                Fourth = outParameterMeta ?? OutParameterMetadata.None
             };
         }
 
         var combinedGraph = new CallGraphWithMetadata<
-            CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata>,
+            CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata, OutParameterMetadata>,
             EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata>(
             floodedGraph.Id,
             floodedGraph.BaseGraph,
@@ -120,7 +132,7 @@ public class FloodCallGraphCommand : Command
         _logger.LogInformation("Storing call graph ({MethodsCount} methods, {CallsCount} calls)...",
             combinedGraph.Methods.Count, combinedGraph.Calls.Count);
 
-        await repository.Save(combinedGraph, System.Threading.CancellationToken.None);
+        await repository.Save(combinedGraph, CancellationToken.None);
 
         _logger.LogInformation("Call graph successfully stored in Neo4j!");
     }
