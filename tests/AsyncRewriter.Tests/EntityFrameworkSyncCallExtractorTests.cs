@@ -33,7 +33,8 @@ public class EntityFrameworkSyncCallExtractorTests
             Parameters = [],
             FilePath = "test.cs",
             StartLine = 1,
-            EndLine = 10
+            EndLine = 10,
+            IsReturnTypeParameter = false
         };
 
     private static MethodCall MakeCall(string callerId, string calleeId, string graphId = "g")

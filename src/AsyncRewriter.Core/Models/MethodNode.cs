@@ -22,7 +22,7 @@ public record MethodNode : IMethodNode
     public required int EndLine { get; init; }
     public int StartCharacter { get; init; }
     public int EndCharacter { get; init; }
-    public bool IsReturnTypeParameter { get; init; }
+    public required bool IsReturnTypeParameter { get; init; }
 
     public IDictionary<string, string> ToDictionary()
     {

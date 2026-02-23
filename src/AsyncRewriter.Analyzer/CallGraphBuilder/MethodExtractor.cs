@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -134,6 +135,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
     private MethodNode CreateMethodNode(SyntaxNode methodDecl, IMethodSymbol methodSymbol)
     {
         var lineSpan = methodDecl.GetLocation().GetLineSpan();
+        bool isReturnTypeParam = false;
 
         var name = methodSymbol.Name;
         if (methodSymbol.MethodKind == MethodKind.AnonymousFunction)
@@ -205,6 +207,12 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                             // Create instantiated node: IMapper<Foo, Bar>.Map(Foo)
                             var instantiatedMethodId = GetInstantiatedMethodId(interfaceMember);
 
+                            isReturnTypeParam = originalMember.ReturnType is ITypeParameterSymbol tp2
+                                                && originalMember.ContainingType is { } ci2
+                                                && ci2.IsGenericType
+                                                && ci2.TypeParameters.Any(p =>
+                                                    SymbolEqualityComparer.Default.Equals(p, tp2) && p.Variance == VarianceKind.Out);
+
                             _methods.TryAdd(instantiatedMethodId, new MethodNode
                             {
                                 CallGraphId = _callGraphId,
@@ -219,6 +227,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                                 EndLine = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Line + 1 ?? 0,
                                 StartCharacter = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Character ?? 0,
                                 EndCharacter = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Character ?? 0,
+                                IsReturnTypeParameter = isReturnTypeParam
                             });
 
                             // InterfaceImplementation: implementing method → instantiated
@@ -252,14 +261,15 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                         }
 
                         // Ensure the generic interface method node exists
-                        var isReturnTypeParam = originalMember.ReturnType is ITypeParameterSymbol tp
-                            && originalMember.ContainingType is INamedTypeSymbol ci
-                            && ci.IsGenericType
-                            && ci.TypeParameters.Any(p =>
-                                SymbolEqualityComparer.Default.Equals(p, tp) && p.Variance == VarianceKind.Out);
+                        isReturnTypeParam = originalMember.ReturnType is ITypeParameterSymbol tp
+                                            && originalMember.ContainingType is INamedTypeSymbol ci
+                                            && ci.IsGenericType
+                                            && ci.TypeParameters.Any(p =>
+                                                SymbolEqualityComparer.Default.Equals(p, tp) && p.Variance == VarianceKind.Out);
+
                         _methods.TryAdd(genericMethodId, new MethodNode
                         {
-                            CallGraphId = _callGraphId.ToString(),
+                            CallGraphId = _callGraphId,
                             Id = genericMethodId,
                             Name = originalMember.Name,
                             ContainingType = originalMember.ContainingType?.ToDisplayString() ?? "",
@@ -294,9 +304,14 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
 
                 // Ensure the base method node exists (use OriginalDefinition for consistent generic type display)
                 var overriddenOriginal = overridden.OriginalDefinition;
+                isReturnTypeParam = overriddenOriginal.ReturnType is ITypeParameterSymbol tp
+                                        && overriddenOriginal.ContainingType is INamedTypeSymbol ci
+                                        && ci.IsGenericType
+                                        && ci.TypeParameters.Any(p =>
+                                            SymbolEqualityComparer.Default.Equals(p, tp) && p.Variance == VarianceKind.Out);
                 _methods.TryAdd(baseMethodId, new MethodNode
                 {
-                    CallGraphId = _callGraphId.ToString(),
+                    CallGraphId = _callGraphId,
                     Id = baseMethodId,
                     Name = overriddenOriginal.Name,
                     ContainingType = overriddenOriginal.ContainingType?.ToDisplayString() ?? "",
@@ -308,15 +323,17 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                     EndLine = overridden.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Line + 1 ?? 0,
                     StartCharacter = overridden.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Character ?? 0,
                     EndCharacter = overridden.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Character ?? 0,
+                    IsReturnTypeParameter = isReturnTypeParam
                 });
 
                 overridden = overridden.OverriddenMethod;
             }
         }
 
+
         return new MethodNode
         {
-            CallGraphId = _callGraphId.ToString(),
+            CallGraphId = _callGraphId,
             Id = GetMethodId(methodSymbol),
             Name = name,
             ContainingType = methodSymbol.ContainingType?.ToDisplayString() ?? "",
@@ -328,6 +345,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
             EndLine = lineSpan.EndLinePosition.Line + 1,
             StartCharacter = lineSpan.StartLinePosition.Character,
             EndCharacter = lineSpan.EndLinePosition.Character,
+            IsReturnTypeParameter = isReturnTypeParam
         };
     }
 
@@ -359,7 +377,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
 
         return new MethodNode
         {
-            CallGraphId = _callGraphId.ToString(),
+            CallGraphId = _callGraphId,
             Id = GetMethodId(methodSymbol),
             Name = methodSymbol.Name,
             ContainingType = methodSymbol.ContainingType?.ToDisplayString() ?? "",

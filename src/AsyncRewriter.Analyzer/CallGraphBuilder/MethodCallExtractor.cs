@@ -412,6 +412,11 @@ public class MethodCallExtractor : AsyncCSharpSyntaxWalker, IMethodCallExtractor
     private MethodNode CreateMethodNodeFromSymbol(IMethodSymbol methodSymbol, string filePath)
     {
         var original = methodSymbol.OriginalDefinition;
+        var isReturnTypeParam = original.ReturnType is ITypeParameterSymbol tp
+                                && original.ContainingType is INamedTypeSymbol ci
+                                && ci.IsGenericType
+                                && ci.TypeParameters.Any(p =>
+                                    SymbolEqualityComparer.Default.Equals(p, tp) && p.Variance == VarianceKind.Out);
         return new MethodNode
         {
             CallGraphId = _callGraphId,
@@ -424,6 +429,7 @@ public class MethodCallExtractor : AsyncCSharpSyntaxWalker, IMethodCallExtractor
             FilePath = filePath,
             StartLine = methodSymbol.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Line + 1 ?? 0,
             EndLine = methodSymbol.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Line + 1 ?? 0,
+            IsReturnTypeParameter = isReturnTypeParam
         };
     }
 }

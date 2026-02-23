@@ -692,4 +692,38 @@ internal static class AsyncTransformHelpers
                 .WithArgumentList(ArgumentList(SingletonSeparatedList(Argument(expr))));
         }
     }
+
+    /// <summary>
+    /// Recursively walks <paramref name="type"/> and replaces every generic type argument
+    /// whose string representation matches <paramref name="originalReturnType"/> with a
+    /// freshly-parsed <paramref name="newReturnType"/> node.
+    /// Non-generic types that match directly are also replaced.
+    /// </summary>
+    public static TypeSyntax TransformTypeSyntax(TypeSyntax type, string originalReturnType, string newReturnType)
+    {
+        // Direct match (e.g. the whole type is the one we want to replace)
+        if (type.ToString().Trim() == originalReturnType.Trim())
+        {
+            return ParseTypeName(newReturnType).WithTriviaFrom(type);
+        }
+
+        // Recurse into generic type arguments, e.g. IMapper<TSource, TDestination>
+        if (type is GenericNameSyntax genericName)
+        {
+            var args = genericName.TypeArgumentList.Arguments;
+            var newArgs = args.Select(arg => TransformTypeSyntax(arg, originalReturnType, newReturnType));
+            var newTypeArgList = genericName.TypeArgumentList.WithArguments(
+                SeparatedList(newArgs, args.GetSeparators()));
+            return genericName.WithTypeArgumentList(newTypeArgList);
+        }
+
+        // Recurse into qualified names, e.g. System.Collections.Generic.IEnumerable<T>
+        if (type is QualifiedNameSyntax qualifiedName)
+        {
+            var newRight = (SimpleNameSyntax)TransformTypeSyntax(qualifiedName.Right, originalReturnType, newReturnType);
+            return qualifiedName.WithRight(newRight);
+        }
+
+        return type;
+    }
 }

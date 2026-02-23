@@ -38,5 +38,7 @@ public class MethodTransformation
     public int EndLine { get; init; }
     public string OriginalReturnType { get; init; } = string.Empty;
     public string NewReturnType { get; init; } = string.Empty;
+
+    public required bool IsReturnTypeParameter { get; init; }
     public List<int> AwaitAddedAtLines { get; init; } = new();
 }

@@ -280,6 +280,7 @@ public class FloodedCallGraphTransformer
                 StartLine = method.StartLine,
                 EndLine = method.EndLine,
                 OutParameterInfo = outParamInfo,
+                IsReturnTypeParameter = method.IsReturnTypeParameter
             };
         }
 

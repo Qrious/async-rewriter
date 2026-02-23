@@ -13,6 +13,9 @@ public class MethodTransformInfo
     public required int EndLine { get; init; }
     public List<string>? DebugLines { get; init; }
     public string? NewMethodName { get; init; }
+
+    public required bool IsReturnTypeParameter { get; init; }
+
     /// <summary>Out-parameter transformation info. Null if method has no out parameters.</summary>
     public OutParameterTransformInfo? OutParameterInfo { get; init; }
 }

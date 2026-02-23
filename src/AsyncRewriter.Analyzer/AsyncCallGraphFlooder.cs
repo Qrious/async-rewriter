@@ -122,6 +122,7 @@ public class AsyncCallGraphFlooder : IAsyncCallGraphFlooder
                 ? TransformReturnType(originalReturnType)
                 : originalReturnType;
 
+
             newMethods[id] = m with { CallGraphId = newGraphId, ReturnType = newReturnType };
 
             if (floodedMethodInfos.TryGetValue(id, out var info))
@@ -138,7 +139,7 @@ public class AsyncCallGraphFlooder : IAsyncCallGraphFlooder
 
         var newCalls = new ConcurrentBag<IMethodCall>(
             callGraph.Calls.Select(c => (MethodCall)c with { CallGraphId = newGraphId }));
-        
+
         var newImpls = new ConcurrentBag<IInterfaceImplementation>(
             callGraph.InterfaceImplementations.Select(i => new InterfaceImplementation
             {

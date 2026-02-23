@@ -61,6 +61,35 @@ public sealed class SemanticCallGraphRewriter : CSharpSyntaxRewriter
     // Method declarations
     // ──────────────────────────────────────────────────────────────────────────
 
+    public override SyntaxNode? VisitClassDeclaration(ClassDeclarationSyntax node)
+    {
+        var result = (ClassDeclarationSyntax?)base.VisitClassDeclaration(node);
+        // We need to update the baselist of classes, to modify any potential external interface implementations to their new async versions.
+        // We only do this for classes that contain transformed methods.
+        // Examples of such cases are IMapper<TSource, TDestination> to IMapper<Tsource, Task<TDestination>>. In this case there should be a method that has IsReturnType
+        if (result is not null && _transformations.Any(t => t.IsReturnTypeParameter))
+        {
+            foreach (var _transformation in _transformations.Where(t => t.IsReturnTypeParameter))
+            {
+                // Update the baselist of the class declaration, replace any generic parameter matching the transformations original return type with the new async return type.
+                var originalReturnType = _transformation.OriginalReturnType;
+                var newReturnType = _transformation.NewReturnType;
+                var newBaseList = node.BaseList?.WithTypes(SeparatedList(
+                    node.BaseList.Types.Select(bt => bt is SimpleBaseTypeSyntax sbt
+                        ? sbt.WithType(AsyncTransformHelpers.TransformTypeSyntax(sbt.Type, originalReturnType, newReturnType))
+                        : bt)));
+
+                if (newBaseList != null)
+                {
+                    result = result.WithBaseList(newBaseList);
+
+                }
+            }
+        }
+
+        return result;
+    }
+
     public override SyntaxNode? VisitMethodDeclaration(MethodDeclarationSyntax node)
     {
         var methodId = ResolveMethodId(node);
@@ -401,6 +430,7 @@ public sealed class SemanticCallGraphRewriter : CSharpSyntaxRewriter
             StartLine = info.StartLine,
             EndLine = info.EndLine,
             OriginalReturnType = originalReturnType,
+            IsReturnTypeParameter = info.IsReturnTypeParameter,
             NewReturnType = newReturnType,
             AwaitAddedAtLines = awaitLines
         });
