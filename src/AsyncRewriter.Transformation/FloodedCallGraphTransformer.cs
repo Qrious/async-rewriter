@@ -145,13 +145,18 @@ public class FloodedCallGraphTransformer
             newRoot = outCallSiteRewriter.Visit(newRoot);
 
             // Add using directive for AsyncOutResult<T> when BoolTryPattern call sites were rewritten.
-            if (outCallSiteRewriter.UsedBoolTryPattern && !string.IsNullOrEmpty(asyncOutResultNamespace))
+            if ((outCallSiteRewriter.UsedBoolTryPattern && !string.IsNullOrEmpty(asyncOutResultNamespace)) || IsInterfaceDeclaration(root, semanticModel) )
             {
                 newRoot = EnsureUsingDirective(newRoot, asyncOutResultNamespace);
             }
         }
 
         return newRoot.ToFullString();
+    }
+
+    private static bool IsInterfaceDeclaration(SyntaxNode root, SemanticModel semanticModel)
+    {
+        return root.DescendantNodes().OfType<InterfaceDeclarationSyntax>().Any();
     }
 
     private static async Task TransformFromDisk(

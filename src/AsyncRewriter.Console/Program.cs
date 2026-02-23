@@ -50,7 +50,6 @@ class Program
         serviceCollection.AddTransient<IDirtyTaskMethodsExtractor, DirtyTaskMethodsExtractor>();
         serviceCollection.AddTransient<IAsyncCallGraphFlooder, AsyncCallGraphFlooder>();
         serviceCollection.AddTransient<IEntityFrameworkSyncCallExtractor, EntityFrameworkSyncCallExtractor>();
-        serviceCollection.AddTransient<IAsyncTransformer, AsyncTransformer>();
         serviceCollection.AddSingleton<ICallGraphRepository, Neo4jCallGraphRepository>();
         serviceCollection.AddSingleton<IOutParameterAnalyzer, OutParameterAnalyzer>();
         serviceCollection.AddSingleton<FloodedCallGraphTransformer>();
