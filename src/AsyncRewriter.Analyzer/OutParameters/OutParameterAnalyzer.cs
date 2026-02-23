@@ -41,20 +41,18 @@ public class OutParameterAnalyzer : IOutParameterAnalyzer
                 continue;
             }
 
-            var refKinds = originalMethod.ParameterRefKinds!;
             var outIndices = new List<int>();
             var outTypes = new List<string>();
             var outNames = new List<string>();
 
-            for (int i = 0; i < refKinds.Count; i++)
+            for (int i = 0; i < originalMethod.Parameters.Count; i++)
             {
-                if (refKinds[i] == "out")
+                var param = originalMethod.Parameters[i];
+                if (param.RefKind == "out")
                 {
                     outIndices.Add(i);
-                    var param = originalMethod.Parameters[i];
-                    var spaceIdx = param.LastIndexOf(' ');
-                    outTypes.Add(spaceIdx >= 0 ? param.Substring(0, spaceIdx) : param);
-                    outNames.Add(spaceIdx >= 0 ? param.Substring(spaceIdx + 1) : $"out{i}");
+                    outTypes.Add(param.Type);
+                    outNames.Add(string.IsNullOrEmpty(param.Name) ? $"out{i}" : param.Name);
                 }
             }
 

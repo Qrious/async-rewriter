@@ -420,7 +420,7 @@ public class MethodCallExtractor : AsyncCSharpSyntaxWalker, IMethodCallExtractor
             ContainingType = original.ContainingType?.ToDisplayString() ?? "",
             ContainingNamespace = original.ContainingNamespace?.ToDisplayString() ?? "",
             ReturnType = original.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-            Parameters = original.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
+            Parameters = original.Parameters.Select(p => new MethodParameter { Type = p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat), Name = p.Name, RefKind = MethodExtractor.ToRefKindString(p.RefKind) }).ToList(),
             FilePath = filePath,
             StartLine = methodSymbol.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Line + 1 ?? 0,
             EndLine = methodSymbol.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Line + 1 ?? 0,

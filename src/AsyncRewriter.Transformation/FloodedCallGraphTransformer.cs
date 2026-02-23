@@ -20,11 +20,12 @@ namespace AsyncRewriter.Transformation;
 /// <see cref="SemanticCallGraphRewriter"/>.
 /// <para>
 /// The composite metadata type is
-/// <c>CompositeMetadata&lt;FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata&gt;</c>:
+/// <c>CompositeMetadata&lt;FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata, OutParameterMetadata&gt;</c>:
 /// <list type="bullet">
 ///   <item><c>First</c> — flooding info (original return type, depth, reason)</item>
 ///   <item><c>Second</c> — sync wrapper flag</item>
 ///   <item><c>Third</c> — Entity Framework caller flag</item>
+///   <item><c>Fourth</c> — out-parameter transformation info</item>
 /// </list>
 /// </para>
 /// </summary>
@@ -32,9 +33,10 @@ public class FloodedCallGraphTransformer
 {
     public async Task<IReadOnlyList<FileTransformation>> TransformAsync(
         ICallGraphWithMetadata<
-            CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata>,
+            CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata, OutParameterMetadata>,
             EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata> callGraph,
         IDocumentSemanticModelProvider documentProvider,
+        string? asyncOutResultNamespace = null,
         CancellationToken cancellationToken = default)
     {
         // Only methods with actual flooding metadata are flooded; non-flooded methods loaded from
@@ -56,6 +58,10 @@ public class FloodedCallGraphTransformer
                 .Where(kvp => kvp.Value.Second.IsSyncWrapper)
                 .Select(kvp => kvp.Key));
 
+        // Check if any out-parameter methods exist
+        var hasOutParamMethods = callGraph.MethodMetadata
+            .Any(kvp => kvp.Value.Fourth.TransformKind != OutParameterTransformKind.None);
+
         // Group flooded methods by file
         var byFile = GroupFloodedMethodsByFile(callGraph, floodedMethodIds);
 
@@ -71,13 +77,15 @@ public class FloodedCallGraphTransformer
                 // (e.g. generated files or out-of-solution paths).
                 await TransformFromDisk(
                     filePath, methodsById, awaitableCalleesByCallerId,
-                    syncWrapperMethodIds, results, cancellationToken);
+                    syncWrapperMethodIds, hasOutParamMethods, callGraph, asyncOutResultNamespace,
+                    results, cancellationToken);
                 continue;
             }
 
             var (root, semanticModel) = document.Value;
             var transformed = TransformWithSemanticModel(
-                root, semanticModel, methodsById, awaitableCalleesByCallerId, syncWrapperMethodIds);
+                root, semanticModel, methodsById, awaitableCalleesByCallerId,
+                syncWrapperMethodIds, hasOutParamMethods, callGraph, asyncOutResultNamespace);
 
             if (transformed != null)
             {
@@ -103,7 +111,12 @@ public class FloodedCallGraphTransformer
         SemanticModel semanticModel,
         IReadOnlyDictionary<string, MethodTransformInfo> methodsById,
         IReadOnlyDictionary<string, IReadOnlySet<string>> awaitableCalleesByCallerId,
-        IReadOnlySet<string> syncWrapperMethodIds)
+        IReadOnlySet<string> syncWrapperMethodIds,
+        bool hasOutParamMethods,
+        ICallGraphWithMetadata<
+            CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata, OutParameterMetadata>,
+            EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata> callGraph,
+        string? asyncOutResultNamespace)
     {
         var rewriter = new SemanticCallGraphRewriter(
             semanticModel, methodsById, awaitableCalleesByCallerId, syncWrapperMethodIds);
@@ -116,6 +129,28 @@ public class FloodedCallGraphTransformer
         }
 
         newRoot = EnsureUsingDirective(newRoot, "System.Threading.Tasks");
+
+        // Apply out-parameter call site rewriting if any out-param methods exist.
+        // The semantic model is bound to the original syntax tree; after SemanticCallGraphRewriter
+        // has produced a new root we must give OutParameterCallSiteRewriter a model that matches
+        // the rewritten tree, otherwise Roslyn throws because nodes are not in the same tree.
+        if (hasOutParamMethods)
+        {
+            var oldTree = semanticModel.SyntaxTree;
+            var newTree = newRoot.SyntaxTree;
+            var updatedCompilation = semanticModel.Compilation.ReplaceSyntaxTree(oldTree, newTree);
+            var updatedSemanticModel = updatedCompilation.GetSemanticModel(newTree);
+
+            var outCallSiteRewriter = new OutParameterCallSiteRewriter(updatedSemanticModel, callGraph);
+            newRoot = outCallSiteRewriter.Visit(newRoot);
+
+            // Add using directive for AsyncOutResult<T> when BoolTryPattern call sites were rewritten.
+            if (outCallSiteRewriter.UsedBoolTryPattern && !string.IsNullOrEmpty(asyncOutResultNamespace))
+            {
+                newRoot = EnsureUsingDirective(newRoot, asyncOutResultNamespace);
+            }
+        }
+
         return newRoot.ToFullString();
     }
 
@@ -124,6 +159,11 @@ public class FloodedCallGraphTransformer
         IReadOnlyDictionary<string, MethodTransformInfo> methodsById,
         IReadOnlyDictionary<string, IReadOnlySet<string>> awaitableCalleesByCallerId,
         IReadOnlySet<string> syncWrapperMethodIds,
+        bool hasOutParamMethods,
+        ICallGraphWithMetadata<
+            CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata, OutParameterMetadata>,
+            EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata> callGraph,
+        string? asyncOutResultNamespace,
         List<FileTransformation> results,
         CancellationToken cancellationToken)
     {
@@ -146,7 +186,8 @@ public class FloodedCallGraphTransformer
         var semanticModel = compilation.GetSemanticModel(tree);
 
         var transformed = TransformWithSemanticModel(
-            root, semanticModel, methodsById, awaitableCalleesByCallerId, syncWrapperMethodIds);
+            root, semanticModel, methodsById, awaitableCalleesByCallerId,
+            syncWrapperMethodIds, hasOutParamMethods, callGraph, asyncOutResultNamespace);
 
         if (transformed != null)
         {
@@ -166,7 +207,7 @@ public class FloodedCallGraphTransformer
 
     private static Dictionary<string, IReadOnlySet<string>> BuildAwaitableCalleeMap(
         ICallGraphWithMetadata<
-            CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata>,
+            CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata, OutParameterMetadata>,
             EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata> callGraph,
         HashSet<string> floodedMethodIds)
     {
@@ -180,7 +221,7 @@ public class FloodedCallGraphTransformer
 
     private static Dictionary<string, MethodTransformInfo> BuildMethodTransformInfos(
         ICallGraphWithMetadata<
-            CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata>,
+            CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata, OutParameterMetadata>,
             EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata> callGraph)
     {
         var result = new Dictionary<string, MethodTransformInfo>(StringComparer.Ordinal);
@@ -205,9 +246,30 @@ public class FloodedCallGraphTransformer
             }
 
             var originalReturnType = composite.First.OriginalReturnType;
-            var newReturnType = originalReturnType == "void"
-                ? "Task"
-                : $"Task<{originalReturnType}>";
+
+            // Check if this method has out-parameter transformation
+            var outParamMeta = composite.Fourth;
+            OutParameterTransformInfo? outParamInfo = null;
+            string newReturnType;
+
+            if (outParamMeta.TransformKind != OutParameterTransformKind.None)
+            {
+                newReturnType = outParamMeta.NewAsyncReturnType;
+                outParamInfo = new OutParameterTransformInfo
+                {
+                    IsTryPattern = outParamMeta.TransformKind == OutParameterTransformKind.BoolTryPattern,
+                    OutParameterIndices = outParamMeta.OutParameterIndices,
+                    OutParameterTypes = outParamMeta.OutParameterTypes,
+                    OutParameterNames = outParamMeta.OutParameterNames,
+                    NewAsyncReturnType = outParamMeta.NewAsyncReturnType
+                };
+            }
+            else
+            {
+                newReturnType = originalReturnType == "void"
+                    ? "Task"
+                    : $"Task<{originalReturnType}>";
+            }
 
             result[methodId] = new MethodTransformInfo
             {
@@ -218,6 +280,7 @@ public class FloodedCallGraphTransformer
                 NewReturnType = newReturnType,
                 StartLine = method.StartLine,
                 EndLine = method.EndLine,
+                OutParameterInfo = outParamInfo,
             };
         }
 
@@ -226,7 +289,7 @@ public class FloodedCallGraphTransformer
 
     private static Dictionary<string, List<string>> GroupFloodedMethodsByFile(
         ICallGraphWithMetadata<
-            CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata>,
+            CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata, OutParameterMetadata>,
             EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata> callGraph,
         HashSet<string> floodedMethodIds)
     {

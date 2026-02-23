@@ -1,4 +1,6 @@
+using System.Linq;
 using AsyncRewriter.Core.Models;
+
 
 namespace AsyncRewriter.Transformation;
 
@@ -27,7 +29,7 @@ public static class AsyncInterfaceGenerator
             var name = m.InterfaceMethod?.Name ?? m.OriginalImpl.Name;
             var returnType = m.AsyncImpl.ReturnType;
             var parameters = m.InterfaceMethod?.Parameters ?? m.OriginalImpl.Parameters;
-            var paramStr = string.Join(", ", parameters);
+            var paramStr = string.Join(", ", parameters.Select(p => p.ToString()));
             lines.Add($"    {returnType} {name}({paramStr});");
         }
 

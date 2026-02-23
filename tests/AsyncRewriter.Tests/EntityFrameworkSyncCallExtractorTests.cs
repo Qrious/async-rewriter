@@ -54,7 +54,7 @@ public class EntityFrameworkSyncCallExtractorTests
 
         var result = _extractor.Extract(graph);
 
-        result.Should().BeEmpty();
+        result.MethodMetadata.Should().BeEmpty();
     }
 
     [Fact]
@@ -69,8 +69,8 @@ public class EntityFrameworkSyncCallExtractorTests
 
         var result = _extractor.Extract(graph);
 
-        result.Should().ContainSingle()
-            .Which.MethodId.Should().Be(caller.Id);
+        result.MethodMetadata.Should().ContainSingle()
+            .Which.Key.Should().Be(caller.Id);
     }
 
     [Fact]
@@ -85,8 +85,8 @@ public class EntityFrameworkSyncCallExtractorTests
 
         var result = _extractor.Extract(graph);
 
-        result.Should().ContainSingle()
-            .Which.MethodId.Should().Be(caller.Id);
+        result.MethodMetadata.Should().ContainSingle()
+            .Which.Key.Should().Be(caller.Id);
     }
 
     [Theory]
@@ -117,8 +117,8 @@ public class EntityFrameworkSyncCallExtractorTests
 
         var result = _extractor.Extract(graph);
 
-        result.Should().ContainSingle()
-            .Which.MethodId.Should().Be(caller.Id);
+        result.MethodMetadata.Should().ContainSingle()
+            .Which.Key.Should().Be(caller.Id);
     }
 
     [Fact]
@@ -133,7 +133,7 @@ public class EntityFrameworkSyncCallExtractorTests
 
         var result = _extractor.Extract(graph);
 
-        result.Should().BeEmpty();
+        result.MethodMetadata.Should().BeEmpty();
     }
 
     [Fact]
@@ -148,7 +148,7 @@ public class EntityFrameworkSyncCallExtractorTests
 
         var result = _extractor.Extract(graph);
 
-        result.Should().BeEmpty();
+        result.MethodMetadata.Should().BeEmpty();
     }
 
     [Fact]
@@ -164,8 +164,8 @@ public class EntityFrameworkSyncCallExtractorTests
 
         var result = _extractor.Extract(graph);
 
-        result.Should().ContainSingle()
-            .Which.MethodId.Should().Be(caller.Id);
+        result.MethodMetadata.Should().ContainSingle()
+            .Which.Key.Should().Be(caller.Id);
     }
 
     [Fact]
@@ -181,8 +181,8 @@ public class EntityFrameworkSyncCallExtractorTests
 
         var result = _extractor.Extract(graph);
 
-        result.Should().HaveCount(2);
-        result.Select(r => r.MethodId).Should().BeEquivalentTo([callerA.Id, callerB.Id]);
+        result.MethodMetadata.Should().HaveCount(2);
+        result.MethodMetadata.Keys.Should().BeEquivalentTo([callerA.Id, callerB.Id]);
     }
 
     [Fact]
@@ -197,7 +197,7 @@ public class EntityFrameworkSyncCallExtractorTests
 
         var result = _extractor.Extract(graph);
 
-        result.Single().Reason.Should().Contain("SaveChanges");
+        result.MethodMetadata.Values.Single().Reason.Should().Contain("SaveChanges");
     }
 
     [Fact]
@@ -212,6 +212,6 @@ public class EntityFrameworkSyncCallExtractorTests
 
         var result = _extractor.Extract(graph);
 
-        result.Should().BeEmpty();
+        result.MethodMetadata.Should().BeEmpty();
     }
 }

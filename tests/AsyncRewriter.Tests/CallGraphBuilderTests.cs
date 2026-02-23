@@ -90,8 +90,8 @@ public class CallGraphBuilderTests
 
         var method = methods.Values.First();
         method.Parameters.Should().HaveCount(2);
-        method.Parameters.Should().Contain("int x");
-        method.Parameters.Should().Contain("string name");
+        method.Parameters.Should().Contain(p => p.Type == "int" && p.Name == "x");
+        method.Parameters.Should().Contain(p => p.Type == "string" && p.Name == "name");
         method.ReturnType.Should().Be("int");
     }
 
@@ -275,8 +275,8 @@ public class CallGraphBuilderTests
 
         var localFunc = methods.Values.First(m => m.Name == "Add");
         localFunc.Parameters.Should().HaveCount(2);
-        localFunc.Parameters.Should().Contain("int a");
-        localFunc.Parameters.Should().Contain("int b");
+        localFunc.Parameters.Should().Contain(p => p.Type == "int" && p.Name == "a");
+        localFunc.Parameters.Should().Contain(p => p.Type == "int" && p.Name == "b");
         localFunc.ReturnType.Should().Be("int");
     }
 
@@ -306,8 +306,8 @@ public class CallGraphBuilderTests
 
         var lambdaMethod = methods.Values.First(m => m.Id.Contains(">b__") && m.Id.Contains("<"));
         lambdaMethod.Parameters.Should().HaveCount(2);
-        lambdaMethod.Parameters.Should().Contain("int a");
-        lambdaMethod.Parameters.Should().Contain("int b");
+        lambdaMethod.Parameters.Should().Contain(p => p.Type == "int" && p.Name == "a");
+        lambdaMethod.Parameters.Should().Contain(p => p.Type == "int" && p.Name == "b");
     }
 
     [Fact]

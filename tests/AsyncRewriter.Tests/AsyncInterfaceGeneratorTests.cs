@@ -7,7 +7,7 @@ namespace AsyncRewriter.Tests;
 
 public class AsyncInterfaceGeneratorTests
 {
-    private static MethodNode MakeMethod(string id, string name, string returnType, List<string>? parameters = null)
+    private static MethodNode MakeMethod(string id, string name, string returnType, List<MethodParameter>? parameters = null)
         => new()
         {
             CallGraphId = "g",
@@ -16,7 +16,7 @@ public class AsyncInterfaceGeneratorTests
             ContainingType = "TestClass",
             ContainingNamespace = "TestNamespace",
             ReturnType = returnType,
-            Parameters = parameters ?? new List<string>(),
+            Parameters = parameters ?? new List<MethodParameter>(),
             FilePath = "Test.cs",
             StartLine = 1,
             EndLine = 10,
@@ -32,9 +32,9 @@ public class AsyncInterfaceGeneratorTests
                 MakeMethod("Repo.Get", "Get", "string"),
                 MakeMethod("Repo.Get", "Get", "Task<string>")),
             new("IRepo.Save",
-                MakeMethod("IRepo.Save", "Save", "void", new List<string> { "string item" }),
-                MakeMethod("Repo.Save", "Save", "void", new List<string> { "string item" }),
-                MakeMethod("Repo.Save", "Save", "Task", new List<string> { "string item" })),
+                MakeMethod("IRepo.Save", "Save", "void", [new MethodParameter { Type = "string", Name = "item" }]),
+                MakeMethod("Repo.Save", "Save", "void", [new MethodParameter { Type = "string", Name = "item" }]),
+                MakeMethod("Repo.Save", "Save", "Task", [new MethodParameter { Type = "string", Name = "item" }])),
         };
 
         var result = AsyncInterfaceGenerator.GenerateAsyncInterface("IRepoAsync", "MyApp.Interfaces", methods);

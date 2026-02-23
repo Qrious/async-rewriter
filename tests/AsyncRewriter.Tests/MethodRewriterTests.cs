@@ -1318,12 +1318,36 @@ class MyService
             Name = "Fetch",
             ContainingType = "TestService",
             ContainingNamespace = "",
-            ReturnType = "Task<int>", // flooded
-            Parameters = new List<string>(),
-            FilePath = tempFile,
-            StartLine = 4,
-            EndLine = 7
-        };
+                ReturnType = "Task<int>", // flooded
+                Parameters = new List<MethodParameter>(),
+                FilePath = tempFile, StartLine = 4, EndLine = 7
+            };
+            methods["SyncHelper.RunSync<int>(Func<Task<int>>)"] = new MethodNode
+            {
+                CallGraphId = "test",
+                Id = "SyncHelper.RunSync<int>(Func<Task<int>>)",
+                Name = "RunSync",
+                ContainingType = "SyncHelper",
+                ContainingNamespace = "",
+                ReturnType = "Task<int>", // flooded (it was originally int with Func<Task<int>> param)
+                Parameters = new List<MethodParameter> { new() { Type = "Func<Task<int>>", Name = "func" } },
+                FilePath = "external",
+                StartLine = 0,
+                EndLine = 0
+            };
+            methods["IRepo.GetValue()"] = new MethodNode
+            {
+                CallGraphId = "test",
+                Id = "IRepo.GetValue()",
+                Name = "GetValue",
+                ContainingType = "IRepo",
+                ContainingNamespace = "",
+                ReturnType = "Task<int>",
+                Parameters = new List<MethodParameter>(),
+                FilePath = "external",
+                StartLine = 0,
+                EndLine = 0
+            };
         methods["SyncHelper.RunSync<int>(Func<Task<int>>)"] = new MethodNode
         {
             CallGraphId = "test",
@@ -1332,7 +1356,7 @@ class MyService
             ContainingType = "SyncHelper",
             ContainingNamespace = "",
             ReturnType = "Task<int>", // flooded (it was originally int with Func<Task<int>> param)
-            Parameters = new List<string> { "Func<Task<int>> func" },
+            Parameters = new List<MethodParameter> { new() { Type = "Func<Task<int>>", Name = "func" } },
             FilePath = "external",
             StartLine = 0,
             EndLine = 0
@@ -1345,7 +1369,7 @@ class MyService
             ContainingType = "IRepo",
             ContainingNamespace = "",
             ReturnType = "Task<int>",
-            Parameters = new List<string>(),
+            Parameters = new List<MethodParameter>(),
             FilePath = "external",
             StartLine = 0,
             EndLine = 0
@@ -1393,14 +1417,14 @@ class MyService
             {
                 CallGraphId = "test", Id = "TestService.Fetch()", Name = "Fetch",
                 ContainingType = "TestService", ContainingNamespace = "",
-                ReturnType = "Task<int>", Parameters = new List<string>(),
+                ReturnType = "Task<int>", Parameters = new List<MethodParameter>(),
                 FilePath = tempFile, StartLine = 4, EndLine = 8
             };
             methods["SyncHelper.RunSync<int>(Func<Task<int>>)"] = new MethodNode
             {
                 CallGraphId = "test", Id = "SyncHelper.RunSync<int>(Func<Task<int>>)",
                 Name = "RunSync", ContainingType = "SyncHelper", ContainingNamespace = "",
-                ReturnType = "Task<int>", Parameters = new List<string> { "Func<Task<int>> func" },
+                ReturnType = "Task<int>", Parameters = new List<MethodParameter> { new() { Type = "Func<Task<int>>", Name = "func" } },
                 FilePath = "external", StartLine = 0, EndLine = 0
             };
             // Lambda method (flooded)
@@ -1408,14 +1432,14 @@ class MyService
             {
                 CallGraphId = "test", Id = "TestService.Fetch().lambda()",
                 Name = "lambda", ContainingType = "TestService", ContainingNamespace = "",
-                ReturnType = "Task<int>", Parameters = new List<string>(),
+                ReturnType = "Task<int>", Parameters = new List<MethodParameter>(),
                 FilePath = tempFile, StartLine = 6, EndLine = 7
             };
             methods["IRepo.GetValue()"] = new MethodNode
             {
                 CallGraphId = "test", Id = "IRepo.GetValue()",
                 Name = "GetValue", ContainingType = "IRepo", ContainingNamespace = "",
-                ReturnType = "Task<int>", Parameters = new List<string>(),
+                ReturnType = "Task<int>", Parameters = new List<MethodParameter>(),
                 FilePath = "external", StartLine = 0, EndLine = 0
             };
 
@@ -1463,7 +1487,7 @@ class MyService
             ContainingType = "RepoImpl",
             ContainingNamespace = "",
             ReturnType = "Task<string>", // flooded
-            Parameters = new List<string>(),
+            Parameters = new List<MethodParameter>(),
             FilePath = tempFile,
             StartLine = 4,
             EndLine = 7
@@ -1476,7 +1500,7 @@ class MyService
             ContainingType = "IRepository",
             ContainingNamespace = "",
             ReturnType = "Task<string>", // flooded
-            Parameters = new List<string>(),
+            Parameters = new List<MethodParameter>(),
             FilePath = "external",
             StartLine = 0,
             EndLine = 0
@@ -1589,7 +1613,7 @@ class MyService
             ContainingType = "TestService",
             ContainingNamespace = "",
             ReturnType = "Task", // flooded
-            Parameters = new List<string>(),
+            Parameters = new List<MethodParameter>(),
             FilePath = tempFile,
             StartLine = 4,
             EndLine = 7
@@ -1602,7 +1626,7 @@ class MyService
             ContainingType = "IRepo",
             ContainingNamespace = "",
             ReturnType = "Task", // flooded
-            Parameters = new List<string>(),
+            Parameters = new List<MethodParameter>(),
             FilePath = "external",
             StartLine = 0,
             EndLine = 0

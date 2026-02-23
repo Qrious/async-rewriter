@@ -1,3 +1,8 @@
+using System.Collections.Generic;
+using System.Linq;
+using AsyncRewriter.Core;
+using AsyncRewriter.Core.Interfaces;
+using AsyncRewriter.Core.Models;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -7,6 +12,8 @@ namespace AsyncRewriter.Transformation;
 
 /// <summary>
 /// Rewrites call sites of methods whose out parameters have been removed during async transformation.
+/// Uses a <see cref="SemanticModel"/> and the flooded call graph (with <see cref="OutParameterMetadata"/>)
+/// to identify call sites by symbol rather than by source line.
 ///
 /// For Try* pattern (bool return + out params):
 ///   Before: if (obj.TryGetValue(key, out var x)) { Use(x); }
@@ -20,15 +27,98 @@ namespace AsyncRewriter.Transformation;
 /// </summary>
 public class OutParameterCallSiteRewriter : CSharpSyntaxRewriter
 {
-    private readonly Dictionary<int, OutParameterCallSiteInfo> _callSitesByLine;
-    private readonly List<(StatementSyntax Original, List<StatementSyntax> Replacements)> _replacements = new();
+    private readonly SemanticModel _semanticModel;
 
-    public OutParameterCallSiteRewriter(Dictionary<int, OutParameterCallSiteInfo> callSitesByLine)
+    /// <summary>
+    /// Out-parameter metadata keyed by call-graph method ID (callee).
+    /// Only contains entries for methods with <see cref="OutParameterTransformKind"/> != None.
+    /// </summary>
+    private readonly IReadOnlyDictionary<string, OutParameterMetadata> _outParamMethodsById;
+
+    /// <summary>
+    /// Set of flooded method IDs.  We only transform call sites that reside
+    /// inside a flooded method (the caller must itself be async-transformed).
+    /// </summary>
+    private readonly IReadOnlySet<string> _floodedMethodIds;
+
+    /// <summary>
+    /// Scope stack tracking the current enclosing method / local function.
+    /// Each frame holds the method ID when inside a flooded method, or <c>null</c>
+    /// when inside a non-flooded method.  Lambdas do not push a frame.
+    /// </summary>
+    private readonly Stack<string?> _scopeStack = new();
+
+    private readonly List<(StatementSyntax Original, List<StatementSyntax> Replacements)> _replacements = new();
+    private bool _usedBoolTryPattern;
+
+    public OutParameterCallSiteRewriter(
+        SemanticModel semanticModel,
+        ICallGraphWithMetadata<
+            CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata, OutParameterMetadata>,
+            EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata> callGraph)
     {
-        _callSitesByLine = callSitesByLine;
+        _semanticModel = semanticModel;
+
+        // Build out-param method lookup: method ID → OutParameterMetadata
+        // (only entries where the method actually has out-parameter transformation)
+        var outParamMethods = new Dictionary<string, OutParameterMetadata>();
+        foreach (var (methodId, composite) in callGraph.MethodMetadata)
+        {
+            var outMeta = composite.Fourth;
+            if (outMeta.TransformKind != OutParameterTransformKind.None)
+            {
+                outParamMethods[methodId] = outMeta;
+            }
+        }
+        _outParamMethodsById = outParamMethods;
+
+        // Build flooded method set: methods with non-empty FloodingMethodMetadata
+        _floodedMethodIds = new HashSet<string>(
+            callGraph.MethodMetadata
+                .Where(kvp => !string.IsNullOrEmpty(kvp.Value.First.OriginalReturnType))
+                .Select(kvp => kvp.Key));
     }
 
     public bool AnyTransformed => _replacements.Count > 0;
+
+    /// <summary>
+    /// True if at least one <see cref="OutParameterTransformKind.BoolTryPattern"/> call site was rewritten.
+    /// When true the caller should ensure a <c>using</c> directive for the namespace that contains
+    /// <c>AsyncOutResult&lt;T&gt;</c> is present in the file.
+    /// </summary>
+    public bool UsedBoolTryPattern => _usedBoolTryPattern;
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Scope tracking for methods / local functions
+    // ──────────────────────────────────────────────────────────────────────────
+
+    public override SyntaxNode? VisitMethodDeclaration(MethodDeclarationSyntax node)
+    {
+        var methodId = ResolveMethodId(node);
+        var isFlooded = methodId != null && _floodedMethodIds.Contains(methodId);
+
+        _scopeStack.Push(isFlooded ? methodId : null);
+        var visited = base.VisitMethodDeclaration(node);
+        _scopeStack.Pop();
+
+        return visited;
+    }
+
+    public override SyntaxNode? VisitLocalFunctionStatement(LocalFunctionStatementSyntax node)
+    {
+        var methodId = ResolveLocalFunctionId(node);
+        var isFlooded = methodId != null && _floodedMethodIds.Contains(methodId);
+
+        _scopeStack.Push(isFlooded ? methodId : null);
+        var visited = base.VisitLocalFunctionStatement(node);
+        _scopeStack.Pop();
+
+        return visited;
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Block / statement transformation
+    // ──────────────────────────────────────────────────────────────────────────
 
     public override SyntaxNode? VisitBlock(BlockSyntax node)
     {
@@ -56,45 +146,57 @@ public class OutParameterCallSiteRewriter : CSharpSyntaxRewriter
 
     private List<StatementSyntax>? TryTransformStatement(StatementSyntax statement)
     {
-        // Find invocations in this statement that match our call sites
+        // Only transform when inside a flooded method scope
+        var currentCallerId = CurrentTransformingMethodId;
+        if (currentCallerId == null)
+        {
+            return null;
+        }
+
+        // Find invocations in this statement that call an out-parameter method
         foreach (var invocation in statement.DescendantNodes().OfType<InvocationExpressionSyntax>())
         {
-            var line = invocation.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
-            if (!_callSitesByLine.TryGetValue(line, out var callSiteInfo))
+            // Resolve the callee symbol via the semantic model
+            var calleeSymbol = _semanticModel.GetSymbolInfo(invocation).Symbol as IMethodSymbol;
+            if (calleeSymbol == null)
             {
                 continue;
             }
 
-            // Verify the invocation's method name matches the expected call site
-            var invokedName = GetInvokedMethodName(invocation);
-            if (invokedName != null && !MethodNameMatches(invokedName, callSiteInfo.MethodName))
+            var calleeId = MethodIdFactory.GetMethodId(calleeSymbol);
+            if (!_outParamMethodsById.TryGetValue(calleeId, out var outParamMeta))
             {
                 continue;
             }
 
-            if (callSiteInfo.IsTryPattern)
+            if (outParamMeta.TransformKind == OutParameterTransformKind.BoolTryPattern)
             {
-                return TransformTryPatternCallSite(statement, invocation, callSiteInfo);
+                return TransformTryPatternCallSite(statement, invocation, calleeSymbol, outParamMeta);
             }
             else
             {
-                return TransformTuplePatternCallSite(statement, invocation, callSiteInfo);
+                return TransformTuplePatternCallSite(statement, invocation, calleeSymbol, outParamMeta);
             }
         }
 
         return null;
     }
 
+    // ──────────────────────────────────────────────────────────────────────────
+    // Pattern-specific transformations
+    // ──────────────────────────────────────────────────────────────────────────
+
     private List<StatementSyntax>? TransformTryPatternCallSite(
         StatementSyntax statement,
         InvocationExpressionSyntax invocation,
-        OutParameterCallSiteInfo info)
+        IMethodSymbol calleeSymbol,
+        OutParameterMetadata meta)
     {
         var results = new List<StatementSyntax>();
-        var resultVarName = $"__{ToCamelCase(info.MethodName)}Result";
+        var resultVarName = $"__{ToCamelCase(calleeSymbol.Name)}Result";
 
         // Build new argument list without out params
-        var newArgs = RemoveOutArguments(invocation.ArgumentList, info.OutParameterIndices);
+        var newArgs = RemoveOutArguments(invocation.ArgumentList, meta.OutParameterIndices);
         var newInvocation = invocation
             .WithArgumentList(ArgumentList(SeparatedList(newArgs)));
 
@@ -117,24 +219,27 @@ public class OutParameterCallSiteRewriter : CSharpSyntaxRewriter
                 SyntaxKind.SimpleMemberAccessExpression,
                 IdentifierName(resultVarName),
                 IdentifierName("TryGetValue")))
-            .WithArgumentList(BuildOutArgumentList(info));
+            .WithArgumentList(BuildOutArgumentList(meta.OutParameterNames));
 
         var newStatement = statement.ReplaceNode(invocation, tryGetCall);
         results.Add(newStatement);
 
+        _replacements.Add((statement, results));
+        _usedBoolTryPattern = true;
         return results;
     }
 
     private List<StatementSyntax>? TransformTuplePatternCallSite(
         StatementSyntax statement,
         InvocationExpressionSyntax invocation,
-        OutParameterCallSiteInfo info)
+        IMethodSymbol calleeSymbol,
+        OutParameterMetadata meta)
     {
         var results = new List<StatementSyntax>();
-        var resultVarName = $"__{ToCamelCase(info.MethodName)}Result";
+        var resultVarName = $"__{ToCamelCase(calleeSymbol.Name)}Result";
 
         // Build new argument list without out params
-        var newArgs = RemoveOutArguments(invocation.ArgumentList, info.OutParameterIndices);
+        var newArgs = RemoveOutArguments(invocation.ArgumentList, meta.OutParameterIndices);
         var newInvocation = invocation
             .WithArgumentList(ArgumentList(SeparatedList(newArgs)));
 
@@ -143,22 +248,11 @@ public class OutParameterCallSiteRewriter : CSharpSyntaxRewriter
             Token(SyntaxKind.AwaitKeyword).WithTrailingTrivia(Space),
             newInvocation);
 
-        var tupleElements = new List<ArgumentSyntax>
-        {
-            Argument(DeclarationExpression(
-                IdentifierName("var"),
-                SingleVariableDesignation(Identifier(resultVarName))))
-        };
-        foreach (var name in info.OutParameterNames)
-        {
-            tupleElements.Add(Argument(IdentifierName(name)));
-        }
-
         // Use a deconstruction: var (__result, s) = await ...
         var deconstructDecl = LocalDeclarationStatement(
             VariableDeclaration(IdentifierName("var"))
                 .WithVariables(SingletonSeparatedList(
-                    VariableDeclarator(Identifier($"({resultVarName}, {string.Join(", ", info.OutParameterNames)})").WithLeadingTrivia(Space))
+                    VariableDeclarator(Identifier($"({resultVarName}, {string.Join(", ", meta.OutParameterNames)})").WithLeadingTrivia(Space))
                         .WithInitializer(EqualsValueClause(awaitExpr).WithLeadingTrivia(Space)))))
             .WithLeadingTrivia(statement.GetLeadingTrivia())
             .WithTrailingTrivia(statement.GetTrailingTrivia());
@@ -170,8 +264,13 @@ public class OutParameterCallSiteRewriter : CSharpSyntaxRewriter
             IdentifierName(resultVarName).WithTriviaFrom(invocation));
         results.Add(newStatement);
 
+        _replacements.Add((statement, results));
         return results;
     }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Helpers
+    // ──────────────────────────────────────────────────────────────────────────
 
     private static List<ArgumentSyntax> RemoveOutArguments(
         ArgumentListSyntax argList, List<int> outIndices)
@@ -188,9 +287,9 @@ public class OutParameterCallSiteRewriter : CSharpSyntaxRewriter
         return result;
     }
 
-    private static ArgumentListSyntax BuildOutArgumentList(OutParameterCallSiteInfo info)
+    private static ArgumentListSyntax BuildOutArgumentList(List<string> outParameterNames)
     {
-        if (info.OutParameterNames.Count == 1)
+        if (outParameterNames.Count == 1)
         {
             return ArgumentList(SingletonSeparatedList(
                 Argument(
@@ -198,10 +297,10 @@ public class OutParameterCallSiteRewriter : CSharpSyntaxRewriter
                     Token(SyntaxKind.OutKeyword).WithTrailingTrivia(Space),
                     DeclarationExpression(
                         IdentifierName("var").WithTrailingTrivia(Space),
-                        SingleVariableDesignation(Identifier(info.OutParameterNames[0]))))));
+                        SingleVariableDesignation(Identifier(outParameterNames[0]))))));
         }
 
-        var args = info.OutParameterNames.Select(name =>
+        var args = outParameterNames.Select(name =>
             Argument(
                 null,
                 Token(SyntaxKind.OutKeyword).WithTrailingTrivia(Space),
@@ -211,41 +310,19 @@ public class OutParameterCallSiteRewriter : CSharpSyntaxRewriter
         return ArgumentList(SeparatedList(args));
     }
 
-    private static string? GetInvokedMethodName(InvocationExpressionSyntax invocation)
+    private string? CurrentTransformingMethodId =>
+        _scopeStack.Count > 0 ? _scopeStack.Peek() : null;
+
+    private string? ResolveMethodId(MethodDeclarationSyntax node)
     {
-        return invocation.Expression switch
-        {
-            MemberAccessExpressionSyntax memberAccess => memberAccess.Name.Identifier.Text,
-            IdentifierNameSyntax identifier => identifier.Identifier.Text,
-            _ => null
-        };
+        var symbol = _semanticModel.GetDeclaredSymbol(node);
+        return symbol != null ? MethodIdFactory.GetMethodId(symbol) : null;
     }
 
-    /// <summary>
-    /// Checks if the invoked method name matches the expected call site method name.
-    /// The call site MethodName may be the async version (e.g., "TryGetAsync") while
-    /// the invocation may still use the original sync name (e.g., "TryGet").
-    /// </summary>
-    private static bool MethodNameMatches(string invokedName, string callSiteMethodName)
+    private string? ResolveLocalFunctionId(LocalFunctionStatementSyntax node)
     {
-        if (string.Equals(invokedName, callSiteMethodName, StringComparison.Ordinal))
-        {
-            return true;
-        }
-
-        // callSiteMethodName might be the async variant: check if adding "Async" to invokedName matches
-        if (string.Equals(invokedName + "Async", callSiteMethodName, StringComparison.Ordinal))
-        {
-            return true;
-        }
-
-        // Or the invokedName might already be the async variant
-        if (string.Equals(invokedName, callSiteMethodName + "Async", StringComparison.Ordinal))
-        {
-            return true;
-        }
-
-        return false;
+        var symbol = _semanticModel.GetDeclaredSymbol(node) as IMethodSymbol;
+        return symbol != null ? MethodIdFactory.GetMethodId(symbol) : null;
     }
 
     private static string ToCamelCase(string name)
@@ -257,16 +334,4 @@ public class OutParameterCallSiteRewriter : CSharpSyntaxRewriter
 
         return char.ToLowerInvariant(name[0]) + name.Substring(1);
     }
-}
-
-/// <summary>
-/// Information about a call site to an out-parameter method that needs transformation.
-/// </summary>
-public class OutParameterCallSiteInfo
-{
-    public required string MethodName { get; init; }
-    public required bool IsTryPattern { get; init; }
-    public required List<int> OutParameterIndices { get; init; }
-    public required List<string> OutParameterNames { get; init; }
-    public required int LineNumber { get; init; }
 }

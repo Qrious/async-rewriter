@@ -213,7 +213,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                                 ContainingType = interfaceMember.ContainingType?.ToDisplayString() ?? "",
                                 ContainingNamespace = interfaceMember.ContainingNamespace?.ToDisplayString() ?? "",
                                 ReturnType = interfaceMember.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-                                Parameters = interfaceMember.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
+                                Parameters = interfaceMember.Parameters.Select(p => new MethodParameter { Type = p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat), Name = p.Name, RefKind = ToRefKindString(p.RefKind) }).ToList(),
                                 FilePath = interfaceMember.Locations.FirstOrDefault()?.SourceTree?.FilePath ?? "external",
                                 StartLine = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Line + 1 ?? 0,
                                 EndLine = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Line + 1 ?? 0,
@@ -265,7 +265,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                             ContainingType = originalMember.ContainingType?.ToDisplayString() ?? "",
                             ContainingNamespace = originalMember.ContainingNamespace?.ToDisplayString() ?? "",
                             ReturnType = originalMember.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-                            Parameters = originalMember.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
+                             Parameters = originalMember.Parameters.Select(p => new MethodParameter { Type = p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat), Name = p.Name, RefKind = ToRefKindString(p.RefKind) }).ToList(),
                             FilePath = interfaceMember.Locations.FirstOrDefault()?.SourceTree?.FilePath ?? "external",
                             StartLine = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Line + 1 ?? 0,
                             EndLine = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Line + 1 ?? 0,
@@ -302,7 +302,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                     ContainingType = overriddenOriginal.ContainingType?.ToDisplayString() ?? "",
                     ContainingNamespace = overriddenOriginal.ContainingNamespace?.ToDisplayString() ?? "",
                     ReturnType = overriddenOriginal.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-                    Parameters = overriddenOriginal.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
+                     Parameters = overriddenOriginal.Parameters.Select(p => new MethodParameter { Type = p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat), Name = p.Name, RefKind = ToRefKindString(p.RefKind) }).ToList(),
                     FilePath = overridden.Locations.FirstOrDefault()?.SourceTree?.FilePath ?? "external",
                     StartLine = overridden.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Line + 1 ?? 0,
                     EndLine = overridden.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Line + 1 ?? 0,
@@ -322,8 +322,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
             ContainingType = methodSymbol.ContainingType?.ToDisplayString() ?? "",
             ContainingNamespace = methodSymbol.ContainingNamespace?.ToDisplayString() ?? "",
             ReturnType = methodSymbol.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-            Parameters = methodSymbol.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
-            ParameterRefKinds = GetParameterRefKinds(methodSymbol),
+            Parameters = methodSymbol.Parameters.Select(p => new MethodParameter { Type = p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat), Name = p.Name, RefKind = ToRefKindString(p.RefKind) }).ToList(),
             FilePath = _filePath,
             StartLine = lineSpan.StartLinePosition.Line + 1,
             EndLine = lineSpan.EndLinePosition.Line + 1,
@@ -366,8 +365,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
             ContainingType = methodSymbol.ContainingType?.ToDisplayString() ?? "",
             ContainingNamespace = methodSymbol.ContainingNamespace?.ToDisplayString() ?? "",
             ReturnType = methodSymbol.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-            Parameters = methodSymbol.Parameters.Select(p => $"{p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)} {p.Name}").ToList(),
-            ParameterRefKinds = GetParameterRefKinds(methodSymbol),
+            Parameters = methodSymbol.Parameters.Select(p => new MethodParameter { Type = p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat), Name = p.Name, RefKind = ToRefKindString(p.RefKind) }).ToList(),
             FilePath = _filePath,
             StartLine = lineSpan.StartLinePosition.Line + 1,
             EndLine = lineSpan.EndLinePosition.Line + 1,
@@ -377,22 +375,14 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
         };
     }
 
-    private static List<string?>? GetParameterRefKinds(IMethodSymbol methodSymbol)
+    internal static string? ToRefKindString(RefKind refKind) => refKind switch
     {
-        if (!methodSymbol.Parameters.Any(p => p.RefKind != RefKind.None))
-        {
-            return null;
-        }
-
-        return methodSymbol.Parameters.Select(p => p.RefKind switch
-        {
-            RefKind.Out => "out",
-            RefKind.Ref => "ref",
-            RefKind.In => "in",
-            RefKind.RefReadOnlyParameter => "in",
-            _ => (string?)null
-        }).ToList();
-    }
+        RefKind.Out => "out",
+        RefKind.Ref => "ref",
+        RefKind.In => "in",
+        RefKind.RefReadOnlyParameter => "in",
+        _ => null,
+    };
 
     /// <summary>
     /// Gets a method ID that preserves the instantiated containing type (e.g. IMapper&lt;Foo, Bar&gt;.Map(Foo))

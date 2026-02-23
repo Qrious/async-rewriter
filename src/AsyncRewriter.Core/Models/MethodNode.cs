@@ -16,7 +16,7 @@ public record MethodNode : IMethodNode
     public required string ContainingType { get; init; } = string.Empty;
     public required string ContainingNamespace { get; init; } = string.Empty;
     public required string ReturnType { get; init; } = string.Empty;
-    public required List<string> Parameters { get; init; } = new();
+    public required List<MethodParameter> Parameters { get; init; } = new();
     public required string FilePath { get; init; } = string.Empty;
     public required int StartLine { get; init; }
     public required int EndLine { get; init; }
@@ -34,7 +34,7 @@ public record MethodNode : IMethodNode
             { nameof(ContainingType), ContainingType },
             { nameof(ContainingNamespace), ContainingNamespace },
             { nameof(ReturnType), ReturnType },
-            { nameof(Parameters), string.Join(", ", Parameters) },
+            { nameof(Parameters), string.Join("|", Parameters.Select(p => p.ToString())) },
             { nameof(FilePath), FilePath },
             { nameof(StartLine), StartLine.ToString() },
             { nameof(EndLine), EndLine.ToString() },
@@ -54,7 +54,9 @@ public record MethodNode : IMethodNode
             ContainingType = data[nameof(ContainingType)].ToString(),
             ContainingNamespace = data[nameof(ContainingNamespace)].ToString(),
             ReturnType = data[nameof(ReturnType)].ToString(),
-            Parameters = data[nameof(Parameters)].ToString().Split(", ").ToList(),
+            Parameters = data[nameof(Parameters)].ToString() is { Length: > 0 } raw
+                ? raw.Split('|').Select(MethodParameter.Parse).ToList()
+                : new List<MethodParameter>(),
             FilePath = data[nameof(FilePath)].ToString(),
             StartLine = int.Parse(data[nameof(StartLine)]!.ToString()),
             EndLine = int.Parse(data[nameof(EndLine)].ToString()),
@@ -65,15 +67,9 @@ public record MethodNode : IMethodNode
     }
 
     /// <summary>
-    /// Ref kind for each parameter ("out", "ref", "in", or null for none).
-    /// Parallel to the Parameters list. Null if no parameters have ref kinds.
-    /// </summary>
-    public List<string?>? ParameterRefKinds { get; init; }
-
-    /// <summary>
     /// Returns true if any parameter has the "out" ref kind.
     /// </summary>
-    public bool HasOutParameters => ParameterRefKinds?.Any(k => k == "out") ?? false;
+    public bool HasOutParameters => Parameters.Any(p => p.RefKind == "out");
 
     public virtual bool Equals(IMethodNode? other)
     {

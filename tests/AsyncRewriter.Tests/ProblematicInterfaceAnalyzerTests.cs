@@ -40,7 +40,7 @@ public class ProblematicInterfaceAnalyzerTests
             ContainingType = containingType,
             ContainingNamespace = containingNamespace,
             ReturnType = returnType,
-            Parameters = new List<string>(),
+            Parameters = new List<MethodParameter>(),
             FilePath = filePath,
             StartLine = 1,
             EndLine = 10,

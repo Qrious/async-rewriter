@@ -216,9 +216,9 @@ public class MapperScenarioIntegrationTests
                 }
             }
             // Also add any detected sync wrappers
-            foreach (var wrapper in syncWrappers)
+            foreach (var (methodId, _) in syncWrappers.MethodMetadata)
             {
-                rootMethodIds.Add(wrapper.MethodId);
+                rootMethodIds.Add(methodId);
             }
 
             rootMethodIds.Should().NotBeEmpty("should have root async methods for flooding");

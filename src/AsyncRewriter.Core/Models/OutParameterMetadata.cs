@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using AsyncRewriter.Core.Interfaces;
 
@@ -59,8 +60,12 @@ public record OutParameterMetadata : IGraphMetadata<OutParameterMetadata>
 
     public static OutParameterMetadata FromDictionary(IReadOnlyDictionary<string, string> dictionary)
     {
+        if (!dictionary.TryGetValue("TransformKind", out var transformKindStr) || transformKindStr is null || !Enum.TryParse<OutParameterTransformKind>(transformKindStr, out var transformKind) || transformKind == OutParameterTransformKind.None)
+        {
+            return None;
+        }
+
         var originalReturnType = dictionary["OriginalReturnType"];
-        var transformKind = System.Enum.Parse<OutParameterTransformKind>(dictionary["TransformKind"]);
         var outParameterIndices = dictionary.TryGetValue("OutParameterIndices", out var indices) && indices != ""
             ? new List<int>(System.Array.ConvertAll(indices.Split(ListSeparator), int.Parse))
             : new List<int>();

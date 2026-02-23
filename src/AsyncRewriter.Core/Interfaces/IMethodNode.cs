@@ -1,5 +1,6 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using AsyncRewriter.Core.Models;
 
 namespace AsyncRewriter.Core.Interfaces;
 
@@ -31,9 +32,9 @@ public interface IMethodNode : IEquatable<IMethodNode>, IIdentifiable
     public string ReturnType { get; }
 
     /// <summary>
-    /// The list of parameter types for this method.
+    /// The list of parameters for this method.
     /// </summary>
-    public List<string> Parameters { get; }
+    public List<MethodParameter> Parameters { get; }
 
     /// <summary>
     /// The file path where this method is defined.

@@ -45,6 +45,11 @@ public class ModifyCommand : Command
             aliases: ["--dry-run", "-n"],
             description: "Print which files would be modified without writing changes",
             getDefaultValue: () => false);
+        var asyncOutResultNamespaceOption = new Option<string?>(
+            aliases: ["--async-out-result-namespace"],
+            description: "Namespace where the AsyncOutResult<T> helper class lives. " +
+                         "When provided, a using directive for this namespace is added to every file " +
+                         "that receives a BoolTryPattern out-parameter call-site rewrite.");
 
         AddArgument(callGraphId);
         AddOption(solutionOption);
@@ -52,10 +57,12 @@ public class ModifyCommand : Command
         AddOption(neo4jUserOption);
         AddOption(neo4jPasswordOption);
         AddOption(dryRunOption);
+        AddOption(asyncOutResultNamespaceOption);
 
         this.SetHandler(ExecuteAsync,
             callGraphId, solutionOption,
-            neo4jUriOption, neo4jUserOption, neo4jPasswordOption, dryRunOption);
+            neo4jUriOption, neo4jUserOption, neo4jPasswordOption, dryRunOption,
+            asyncOutResultNamespaceOption);
     }
 
     private async Task ExecuteAsync(
@@ -64,7 +71,8 @@ public class ModifyCommand : Command
         string neo4jUri,
         string neo4jUser,
         string neo4jPassword,
-        bool dryRun)
+        bool dryRun,
+        string? asyncOutResultNamespace)
     {
         var neo4jCredentials = new Neo4JCredentials(new Uri(neo4jUri), neo4jUser, neo4jPassword);
         _logger.LogInformation("Connecting to Neo4j at {Neo4JUri}...", neo4jCredentials.Url);
@@ -73,7 +81,7 @@ public class ModifyCommand : Command
 
         _logger.LogInformation("Loading flooded call graph: {CallGraphId}", callGraphId);
         var callGraph = await repository.Load<
-            CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata>,
+            CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata, OutParameterMetadata>,
             EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata>(
             callGraphId, default);
 
@@ -86,7 +94,8 @@ public class ModifyCommand : Command
         var documentProvider = await BuildDocumentProviderAsync(solutionPath);
 
         _logger.LogInformation("Running transformation{DryRun}...", dryRun ? " (dry run)" : "");
-        var transformations = await _transformer.TransformAsync(callGraph, documentProvider);
+        var transformations = await _transformer.TransformAsync(callGraph, documentProvider,
+            asyncOutResultNamespace: asyncOutResultNamespace);
 
         if (transformations.Count == 0)
         {

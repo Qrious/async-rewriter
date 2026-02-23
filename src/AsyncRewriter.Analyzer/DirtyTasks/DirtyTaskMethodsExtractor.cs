@@ -41,13 +41,13 @@ public class DirtyTaskMethodsExtractor : IDirtyTaskMethodsExtractor
     {
         foreach (var param in method.Parameters)
         {
-            if (FuncTaskRegex.IsMatch(param) && method.ReturnType == "void")
+            if (FuncTaskRegex.IsMatch(param.Type) && method.ReturnType == "void")
             {
                 reason = "Func<Task> parameter with void return";
                 return true;
             }
 
-            var match = FuncTaskOfTRegex.Match(param);
+            var match = FuncTaskOfTRegex.Match(param.Type);
             if (match.Success)
             {
                 var innerType = match.Groups[1].Value;
