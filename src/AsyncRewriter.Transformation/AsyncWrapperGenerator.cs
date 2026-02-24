@@ -61,6 +61,14 @@ public sealed class AsyncWrapperGenerator
         var allAdapterMethods = GetAllAdapterMethods(
             interfaceSymbol, interfaceDeclaration, semanticModel, compilation, warningList);
 
+        // Collect compilation units from all base interface files so their usings
+        // are available in the adapter.
+        var baseCompilationUnits = interfaceSymbol.AllInterfaces
+            .SelectMany(i => i.DeclaringSyntaxReferences)
+            .Select(r => r.SyntaxTree.GetRoot())
+            .OfType<CompilationUnitSyntax>()
+            .ToList();
+
         var nullableEnable = HasNullableEnable(compilationUnit);
 
         var asyncInterfaceSource = BuildAsyncInterface(
@@ -69,7 +77,7 @@ public sealed class AsyncWrapperGenerator
             postfix, directMethods, semanticModel, nullableEnable);
 
         var adapterSource = BuildAdapter(
-            compilationUnit, adapterClassName, originalName, asyncInterfaceName,
+            compilationUnit, baseCompilationUnits, adapterClassName, originalName, asyncInterfaceName,
             interfaceDeclaration.TypeParameterList, interfaceDeclaration.ConstraintClauses,
             asyncHelperNamespace, allAdapterMethods, nullableEnable);
 
@@ -224,6 +232,7 @@ public sealed class AsyncWrapperGenerator
 
     private static string BuildAdapter(
         CompilationUnitSyntax originalCompilationUnit,
+        List<CompilationUnitSyntax> baseCompilationUnits,
         string adapterClassName,
         string originalInterfaceName,
         string asyncInterfaceName,
@@ -322,7 +331,7 @@ public sealed class AsyncWrapperGenerator
             .WithMembers(List(methodDecls));
 
         return WrapInCompilationUnit(
-            originalCompilationUnit, namespaceName, classDecl,
+            originalCompilationUnit, baseCompilationUnits, namespaceName, classDecl,
             extraUsings: [asyncHelperNamespace, "System.Threading.Tasks"], nullableEnable);
     }
 
@@ -476,18 +485,38 @@ public sealed class AsyncWrapperGenerator
         string? namespaceName,
         MemberDeclarationSyntax member,
         IEnumerable<string> extraUsings,
+        bool nullableEnable) =>
+        WrapInCompilationUnit(originalCompilationUnit, [], namespaceName, member, extraUsings, nullableEnable);
+
+    private static string WrapInCompilationUnit(
+        CompilationUnitSyntax originalCompilationUnit,
+        List<CompilationUnitSyntax> additionalCompilationUnits,
+        string? namespaceName,
+        MemberDeclarationSyntax member,
+        IEnumerable<string> extraUsings,
         bool nullableEnable)
     {
-        var existingUsings = originalCompilationUnit.Usings;
-        var existingNames = existingUsings
+        var mergedUsings = originalCompilationUnit.Usings.ToList();
+        var seenNames = mergedUsings
             .Select(u => u.Name?.ToString())
             .Where(n => n != null)
             .ToHashSet()!;
 
-        var mergedUsings = existingUsings.ToList();
+        // Pull in usings from base interface files.
+        foreach (var cu in additionalCompilationUnits)
+        {
+            foreach (var u in cu.Usings)
+            {
+                var name = u.Name?.ToString();
+                if (name != null && seenNames.Add(name))
+                    mergedUsings.Add(u.WithoutTrivia());
+            }
+        }
+
+        // Add programmatic extras (e.g. System.Threading.Tasks, AsyncHelper namespace).
         foreach (var ns in extraUsings.Distinct())
         {
-            if (!existingNames.Contains(ns))
+            if (seenNames.Add(ns))
                 mergedUsings.Add(UsingDirective(ParseName(ns)));
         }
 
