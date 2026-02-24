@@ -55,10 +55,12 @@ public sealed class AsyncWrapperGenerator
         var nullableEnable = HasNullableEnable(compilationUnit);
 
         var asyncInterfaceSource = BuildAsyncInterface(
-            compilationUnit, asyncInterfaceName, eligibleMethods, semanticModel, nullableEnable);
+            compilationUnit, asyncInterfaceName, interfaceDeclaration.TypeParameterList,
+            interfaceDeclaration.ConstraintClauses, eligibleMethods, semanticModel, nullableEnable);
 
         var adapterSource = BuildAdapter(
             compilationUnit, adapterClassName, originalName, asyncInterfaceName,
+            interfaceDeclaration.TypeParameterList, interfaceDeclaration.ConstraintClauses,
             asyncHelperNamespace, eligibleMethods, semanticModel, nullableEnable);
 
         return (asyncInterfaceSource, adapterSource);
@@ -102,6 +104,8 @@ public sealed class AsyncWrapperGenerator
     private static string BuildAsyncInterface(
         CompilationUnitSyntax originalCompilationUnit,
         string asyncInterfaceName,
+        TypeParameterListSyntax? typeParameterList,
+        SyntaxList<TypeParameterConstraintClauseSyntax> constraintClauses,
         List<MethodDeclarationSyntax> methods,
         SemanticModel semanticModel,
         bool nullableEnable)
@@ -127,6 +131,8 @@ public sealed class AsyncWrapperGenerator
         var interfaceDecl = InterfaceDeclaration(asyncInterfaceName)
             .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword)))
             .WithAttributeLists(SingletonList(GeneratedCodeAttributeList()))
+            .WithTypeParameterList(typeParameterList)
+            .WithConstraintClauses(constraintClauses)
             .WithMembers(List(members));
 
         return WrapInCompilationUnit(
@@ -146,14 +152,19 @@ public sealed class AsyncWrapperGenerator
         string adapterClassName,
         string originalInterfaceName,
         string asyncInterfaceName,
+        TypeParameterListSyntax? typeParameterList,
+        SyntaxList<TypeParameterConstraintClauseSyntax> constraintClauses,
         string asyncHelperNamespace,
         List<MethodDeclarationSyntax> methods,
         SemanticModel semanticModel,
         bool nullableEnable)
     {
-        // private readonly IFooAsync _inner;
+        // private readonly IFooAsync<T> _inner;
+        var asyncInterfaceType = MakeTypeName(asyncInterfaceName, typeParameterList);
+        var originalInterfaceType = MakeTypeName(originalInterfaceName, typeParameterList);
+
         var fieldDecl = FieldDeclaration(
-                VariableDeclaration(IdentifierName(asyncInterfaceName))
+                VariableDeclaration(asyncInterfaceType)
                     .WithVariables(SingletonSeparatedList(VariableDeclarator(Identifier("_inner")))))
             .WithModifiers(TokenList(
                 Token(SyntaxKind.PrivateKeyword),
@@ -164,7 +175,7 @@ public sealed class AsyncWrapperGenerator
             .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword)))
             .WithParameterList(ParameterList(SingletonSeparatedList(
                 Parameter(Identifier("inner"))
-                    .WithType(IdentifierName(asyncInterfaceName)))))
+                    .WithType(asyncInterfaceType))))
             .WithBody(Block(ExpressionStatement(
                 AssignmentExpression(
                     SyntaxKind.SimpleAssignmentExpression,
@@ -232,8 +243,10 @@ public sealed class AsyncWrapperGenerator
         var classDecl = ClassDeclaration(adapterClassName)
             .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword)))
             .WithAttributeLists(SingletonList(GeneratedCodeAttributeList()))
+            .WithTypeParameterList(typeParameterList)
+            .WithConstraintClauses(constraintClauses)
             .WithBaseList(BaseList(SingletonSeparatedList<BaseTypeSyntax>(
-                SimpleBaseType(IdentifierName(originalInterfaceName)))))
+                SimpleBaseType(originalInterfaceType))))
             .WithMembers(List(methodDecls));
 
         return WrapInCompilationUnit(
@@ -280,6 +293,17 @@ public sealed class AsyncWrapperGenerator
 
         return (wrapped, false);
     }
+
+    /// <summary>
+    /// Returns <c>Name</c> when there are no type parameters, or <c>Name&lt;T, U&gt;</c>
+    /// when there are, using the parameter names as written in the source.
+    /// </summary>
+    private static TypeSyntax MakeTypeName(string name, TypeParameterListSyntax? tpl) =>
+        tpl is { Parameters.Count: > 0 }
+            ? GenericName(Identifier(name)).WithTypeArgumentList(
+                TypeArgumentList(SeparatedList<TypeSyntax>(
+                    tpl.Parameters.Select(tp => IdentifierName(tp.Identifier.ValueText)))))
+            : IdentifierName(name);
 
     private static AttributeListSyntax GeneratedCodeAttributeList() =>
         AttributeList(SingletonSeparatedList(
