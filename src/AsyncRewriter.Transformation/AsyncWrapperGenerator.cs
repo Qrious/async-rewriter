@@ -126,6 +126,7 @@ public sealed class AsyncWrapperGenerator
 
         var interfaceDecl = InterfaceDeclaration(asyncInterfaceName)
             .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword)))
+            .WithAttributeLists(SingletonList(GeneratedCodeAttributeList()))
             .WithMembers(List(members));
 
         return WrapInCompilationUnit(
@@ -230,6 +231,7 @@ public sealed class AsyncWrapperGenerator
 
         var classDecl = ClassDeclaration(adapterClassName)
             .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword)))
+            .WithAttributeLists(SingletonList(GeneratedCodeAttributeList()))
             .WithBaseList(BaseList(SingletonSeparatedList<BaseTypeSyntax>(
                 SimpleBaseType(IdentifierName(originalInterfaceName)))))
             .WithMembers(List(methodDecls));
@@ -278,6 +280,25 @@ public sealed class AsyncWrapperGenerator
 
         return (wrapped, false);
     }
+
+    private static AttributeListSyntax GeneratedCodeAttributeList() =>
+        AttributeList(SingletonSeparatedList(
+            Attribute(
+                QualifiedName(
+                    QualifiedName(
+                        QualifiedName(
+                            IdentifierName("System"),
+                            IdentifierName("CodeDom")),
+                        IdentifierName("Compiler")),
+                    IdentifierName("GeneratedCode")))
+            .WithArgumentList(AttributeArgumentList(SeparatedList<AttributeArgumentSyntax>(
+                new[]
+                {
+                    AttributeArgument(LiteralExpression(SyntaxKind.StringLiteralExpression,
+                        Literal("AsyncRewriter"))),
+                    AttributeArgument(LiteralExpression(SyntaxKind.StringLiteralExpression,
+                        Literal("1.0")))
+                })))));
 
     private static bool IsTaskLikeSymbol(ITypeSymbol? type)
     {
