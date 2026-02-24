@@ -18,6 +18,11 @@ namespace AsyncRewriter.Transformation;
 ///     <c>AsyncHelper.RunTaskSynchronously</c>.
 ///   </item>
 /// </list>
+///
+/// Type names, type parameters, generic constraints, and <c>using</c> directives are
+/// taken directly from the original source syntax so the generated output matches the
+/// coding style of the source file.  <c>#nullable enable</c> is propagated when present.
+///
 /// Methods that have <c>out</c> or <c>ref</c> parameters are skipped with a warning
 /// because those are incompatible with async delegates.
 /// </summary>
@@ -27,47 +32,34 @@ public sealed class AsyncWrapperGenerator
     // Public entry point
     // ──────────────────────────────────────────────────────────────────────────
 
-    /// <param name="interfaceSymbol">The interface to wrap.</param>
-    /// <param name="asyncHelperNamespace">
-    ///   Fully-qualified namespace that contains <c>AsyncHelper</c>
-    ///   (e.g. <c>MyProject.Threading</c>).
-    /// </param>
-    /// <param name="warnings">
-    ///   Populated with human-readable warnings for skipped members.
-    /// </param>
     public (string AsyncInterfaceSource, string AdapterSource) Generate(
         INamedTypeSymbol interfaceSymbol,
+        InterfaceDeclarationSyntax interfaceDeclaration,
+        CompilationUnitSyntax compilationUnit,
+        SemanticModel semanticModel,
         string asyncHelperNamespace,
         out IReadOnlyList<string> warnings)
     {
         var warningList = new List<string>();
         warnings = warningList;
 
-        var namespaceName = interfaceSymbol.ContainingNamespace.IsGlobalNamespace
-            ? null
-            : interfaceSymbol.ContainingNamespace.ToDisplayString();
+        var originalName = interfaceSymbol.Name;
+        var asyncInterfaceName = originalName + "Async";
 
-        var originalName = interfaceSymbol.Name;           // e.g. IFoo
-        var asyncInterfaceName = originalName + "Async";   // e.g. IFooAsync
-
-        // Strip leading 'I' for the adapter class name, fall back to full name.
         var baseName = originalName.Length > 1 && originalName[0] == 'I'
             ? originalName[1..]
             : originalName;
-        var adapterClassName = baseName + "AsyncAdapter";  // e.g. FooAsyncAdapter
+        var adapterClassName = baseName + "AsyncAdapter";
 
-        var eligibleMethods = GetEligibleMethods(interfaceSymbol, warningList);
+        var eligibleMethods = GetEligibleMethods(interfaceDeclaration, originalName, warningList);
+        var nullableEnable = HasNullableEnable(compilationUnit);
 
         var asyncInterfaceSource = BuildAsyncInterface(
-            namespaceName, asyncInterfaceName, eligibleMethods);
+            compilationUnit, asyncInterfaceName, eligibleMethods, semanticModel, nullableEnable);
 
         var adapterSource = BuildAdapter(
-            namespaceName,
-            adapterClassName,
-            originalName,
-            asyncInterfaceName,
-            asyncHelperNamespace,
-            eligibleMethods);
+            compilationUnit, adapterClassName, originalName, asyncInterfaceName,
+            asyncHelperNamespace, eligibleMethods, semanticModel, nullableEnable);
 
         return (asyncInterfaceSource, adapterSource);
     }
@@ -76,38 +68,28 @@ public sealed class AsyncWrapperGenerator
     // Method selection
     // ──────────────────────────────────────────────────────────────────────────
 
-    private static List<IMethodSymbol> GetEligibleMethods(
-        INamedTypeSymbol interfaceSymbol,
+    private static List<MethodDeclarationSyntax> GetEligibleMethods(
+        InterfaceDeclarationSyntax interfaceDeclaration,
+        string interfaceName,
         List<string> warnings)
     {
-        var result = new List<IMethodSymbol>();
+        var result = new List<MethodDeclarationSyntax>();
 
-        foreach (var member in interfaceSymbol.GetMembers())
+        foreach (var member in interfaceDeclaration.Members.OfType<MethodDeclarationSyntax>())
         {
-            if (member is not IMethodSymbol method)
-            {
-                continue;
-            }
-
-            // Skip property accessor noise; property-like methods are already covered
-            // by the property symbol itself (which we don't process).
-            if (method.MethodKind != MethodKind.Ordinary)
-            {
-                continue;
-            }
-
-            bool hasOutOrRef = method.Parameters.Any(
-                p => p.RefKind is RefKind.Out or RefKind.Ref);
+            var hasOutOrRef = member.ParameterList.Parameters.Any(p =>
+                p.Modifiers.Any(m =>
+                    m.IsKind(SyntaxKind.OutKeyword) || m.IsKind(SyntaxKind.RefKeyword)));
 
             if (hasOutOrRef)
             {
                 warnings.Add(
-                    $"Skipping {interfaceSymbol.Name}.{method.Name}: " +
+                    $"Skipping {interfaceName}.{member.Identifier.ValueText}: " +
                     "out/ref parameters are incompatible with async delegates.");
                 continue;
             }
 
-            result.Add(method);
+            result.Add(member);
         }
 
         return result;
@@ -118,42 +100,40 @@ public sealed class AsyncWrapperGenerator
     // ──────────────────────────────────────────────────────────────────────────
 
     private static string BuildAsyncInterface(
-        string? namespaceName,
+        CompilationUnitSyntax originalCompilationUnit,
         string asyncInterfaceName,
-        List<IMethodSymbol> methods)
+        List<MethodDeclarationSyntax> methods,
+        SemanticModel semanticModel,
+        bool nullableEnable)
     {
         var members = new List<MemberDeclarationSyntax>();
 
         foreach (var method in methods)
         {
-            var alreadyTaskBased = IsTaskLike(method.ReturnType.ToDisplayString());
+            var (asyncReturnType, alreadyTaskBased) = GetAsyncReturnType(method, semanticModel);
+            var asyncMethodName = AsyncMethodName(method.Identifier.ValueText, alreadyTaskBased);
 
-            // Already Task-returning methods are passed through unchanged (name + return type).
-            var returnType = alreadyTaskBased
-                ? ParseTypeName(method.ReturnType.ToDisplayString()).WithTrailingTrivia(Space)
-                : ToAsyncReturnTypeSyntax(method.ReturnType);
-
-            var asyncMethodName = alreadyTaskBased || method.Name.EndsWith("Async", StringComparison.Ordinal)
-                ? method.Name
-                : method.Name + "Async";
-
-            var methodDecl = MethodDeclaration(returnType, asyncMethodName)
-                .WithParameterList(BuildParameterList(method))
-                .WithSemicolonToken(Token(SyntaxKind.SemicolonToken))
-                .WithLeadingTrivia(LineFeed, Whitespace("    "));
+            var methodDecl = MethodDeclaration(asyncReturnType, asyncMethodName)
+                .WithTypeParameterList(method.TypeParameterList)
+                .WithConstraintClauses(method.ConstraintClauses)
+                .WithParameterList(method.ParameterList.WithoutTrivia())
+                .WithSemicolonToken(Token(SyntaxKind.SemicolonToken));
 
             members.Add(methodDecl);
         }
 
+        var namespaceName = GetNamespace(originalCompilationUnit);
+
         var interfaceDecl = InterfaceDeclaration(asyncInterfaceName)
-            .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword).WithTrailingTrivia(Space)))
-            .WithMembers(List(members))
-            .WithLeadingTrivia(LineFeed);
+            .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword)))
+            .WithMembers(List(members));
 
         return WrapInCompilationUnit(
+            originalCompilationUnit,
             namespaceName,
             interfaceDecl,
-            extraUsings: ["System.Threading.Tasks"]);
+            extraUsings: ["System.Threading.Tasks"],
+            nullableEnable);
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -161,72 +141,69 @@ public sealed class AsyncWrapperGenerator
     // ──────────────────────────────────────────────────────────────────────────
 
     private static string BuildAdapter(
-        string? namespaceName,
+        CompilationUnitSyntax originalCompilationUnit,
         string adapterClassName,
         string originalInterfaceName,
         string asyncInterfaceName,
         string asyncHelperNamespace,
-        List<IMethodSymbol> methods)
+        List<MethodDeclarationSyntax> methods,
+        SemanticModel semanticModel,
+        bool nullableEnable)
     {
         // private readonly IFooAsync _inner;
         var fieldDecl = FieldDeclaration(
-                VariableDeclaration(IdentifierName(asyncInterfaceName).WithTrailingTrivia(Space))
-                    .WithVariables(SingletonSeparatedList(
-                        VariableDeclarator(Identifier("_inner")))))
+                VariableDeclaration(IdentifierName(asyncInterfaceName))
+                    .WithVariables(SingletonSeparatedList(VariableDeclarator(Identifier("_inner")))))
             .WithModifiers(TokenList(
-                Token(SyntaxKind.PrivateKeyword).WithTrailingTrivia(Space),
-                Token(SyntaxKind.ReadOnlyKeyword).WithTrailingTrivia(Space)))
-            .WithLeadingTrivia(LineFeed, Whitespace("    "));
+                Token(SyntaxKind.PrivateKeyword),
+                Token(SyntaxKind.ReadOnlyKeyword)));
 
         // constructor
         var ctorDecl = ConstructorDeclaration(adapterClassName)
-            .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword).WithTrailingTrivia(Space)))
-            .WithParameterList(
-                ParameterList(SingletonSeparatedList(
-                    Parameter(Identifier("inner"))
-                        .WithType(IdentifierName(asyncInterfaceName).WithTrailingTrivia(Space)))))
-            .WithBody(Block(
-                ExpressionStatement(
-                    AssignmentExpression(
-                        SyntaxKind.SimpleAssignmentExpression,
-                        IdentifierName("_inner"),
-                        IdentifierName("inner")))))
-            .WithLeadingTrivia(LineFeed, Whitespace("    "));
+            .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword)))
+            .WithParameterList(ParameterList(SingletonSeparatedList(
+                Parameter(Identifier("inner"))
+                    .WithType(IdentifierName(asyncInterfaceName)))))
+            .WithBody(Block(ExpressionStatement(
+                AssignmentExpression(
+                    SyntaxKind.SimpleAssignmentExpression,
+                    IdentifierName("_inner"),
+                    IdentifierName("inner")))));
 
-        var methodDecls = new List<MemberDeclarationSyntax>();
-        methodDecls.Add(fieldDecl);
-        methodDecls.Add(ctorDecl);
+        var methodDecls = new List<MemberDeclarationSyntax> { fieldDecl, ctorDecl };
 
         foreach (var method in methods)
         {
-            var alreadyTaskBased = IsTaskLike(method.ReturnType.ToDisplayString());
+            var (_, alreadyTaskBased) = GetAsyncReturnType(method, semanticModel);
+            var isVoid = method.ReturnType is PredefinedTypeSyntax pt &&
+                         pt.Keyword.IsKind(SyntaxKind.VoidKeyword);
 
-            var asyncMethodName = alreadyTaskBased || method.Name.EndsWith("Async", StringComparison.Ordinal)
-                ? method.Name
-                : method.Name + "Async";
+            var asyncMethodName = AsyncMethodName(method.Identifier.ValueText, alreadyTaskBased);
 
-            // Build the inner call: _inner.MethodAsync(p1, p2, ...) or _inner.Method(...)
+            // _inner.MethodAsync<T>(p1, p2, ...)
+            SimpleNameSyntax innerMethodName = method.TypeParameterList is { Parameters.Count: > 0 } tpl
+                ? GenericName(Identifier(asyncMethodName))
+                    .WithTypeArgumentList(TypeArgumentList(SeparatedList<TypeSyntax>(
+                        tpl.Parameters.Select(tp => IdentifierName(tp.Identifier.ValueText)))))
+                : IdentifierName(asyncMethodName);
+
             var innerCall = InvocationExpression(
                 MemberAccessExpression(
                     SyntaxKind.SimpleMemberAccessExpression,
                     IdentifierName("_inner"),
-                    IdentifierName(asyncMethodName)),
+                    innerMethodName),
                 BuildArgumentList(method));
 
             StatementSyntax bodyStatement;
-            var isVoidReturn = method.ReturnType.SpecialType == SpecialType.System_Void;
 
             if (alreadyTaskBased)
             {
-                // Method already returns Task — delegate directly, no sync wrapper needed.
-                bodyStatement = ReturnStatement(innerCall.WithLeadingTrivia(Space));
+                // Already returns Task — delegate directly, no sync wrapper.
+                bodyStatement = ReturnStatement(innerCall);
             }
             else
             {
-                // Lambda: () => _inner.MethodAsync(...)
                 var lambda = ParenthesizedLambdaExpression(innerCall);
-
-                // AsyncHelper.RunTaskSynchronously(lambda)
                 var helperCall = InvocationExpression(
                     MemberAccessExpression(
                         SyntaxKind.SimpleMemberAccessExpression,
@@ -234,130 +211,185 @@ public sealed class AsyncWrapperGenerator
                         IdentifierName("RunTaskSynchronously")),
                     ArgumentList(SingletonSeparatedList(Argument(lambda))));
 
-                if (isVoidReturn)
-                {
-                    bodyStatement = ExpressionStatement(helperCall);
-                }
-                else
-                {
-                    bodyStatement = ReturnStatement(helperCall.WithLeadingTrivia(Space));
-                }
+                bodyStatement = isVoid
+                    ? ExpressionStatement(helperCall)
+                    : ReturnStatement(helperCall);
             }
 
-            // Use the original (non-async) return type for the implementing method.
-            var returnTypeSyntax = ParseTypeName(method.ReturnType.ToDisplayString())
-                .WithTrailingTrivia(Space);
-
-            var methodDecl = MethodDeclaration(returnTypeSyntax, method.Name)
-                .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword).WithTrailingTrivia(Space)))
-                .WithParameterList(BuildParameterList(method))
-                .WithBody(Block(bodyStatement))
-                .WithLeadingTrivia(LineFeed, Whitespace("    "));
+            var methodDecl = MethodDeclaration(method.ReturnType.WithoutTrivia(), method.Identifier.ValueText)
+                .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword)))
+                .WithTypeParameterList(method.TypeParameterList)
+                .WithConstraintClauses(method.ConstraintClauses)
+                .WithParameterList(method.ParameterList.WithoutTrivia())
+                .WithBody(Block(bodyStatement));
 
             methodDecls.Add(methodDecl);
         }
 
+        var namespaceName = GetNamespace(originalCompilationUnit);
+
         var classDecl = ClassDeclaration(adapterClassName)
-            .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword).WithTrailingTrivia(Space)))
+            .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword)))
             .WithBaseList(BaseList(SingletonSeparatedList<BaseTypeSyntax>(
                 SimpleBaseType(IdentifierName(originalInterfaceName)))))
-            .WithMembers(List(methodDecls))
-            .WithLeadingTrivia(LineFeed);
+            .WithMembers(List(methodDecls));
 
         return WrapInCompilationUnit(
+            originalCompilationUnit,
             namespaceName,
             classDecl,
-            extraUsings: [asyncHelperNamespace, "System.Threading.Tasks"]);
+            extraUsings: [asyncHelperNamespace, "System.Threading.Tasks"],
+            nullableEnable);
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Syntax helpers
+    // Helpers
     // ──────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Transforms the method's return type to its async counterpart:
-    /// <c>void</c> → <c>Task</c>, <c>T</c> → <c>Task&lt;T&gt;</c>.
-    /// Types that are already Task/ValueTask are left unchanged.
+    /// Returns the async return type for the generated interface method and a flag
+    /// indicating whether the original method was already Task-based.
+    /// The returned type syntax is derived from the original source syntax, not from
+    /// the fully-qualified symbol display string.
     /// </summary>
-    private static TypeSyntax ToAsyncReturnTypeSyntax(ITypeSymbol returnType)
+    private static (TypeSyntax ReturnType, bool AlreadyTaskBased) GetAsyncReturnType(
+        MethodDeclarationSyntax method,
+        SemanticModel semanticModel)
     {
-        if (returnType.SpecialType == SpecialType.System_Void)
+        var typeInfo = semanticModel.GetTypeInfo(method.ReturnType);
+        var typeSymbol = typeInfo.Type;
+
+        // void → Task
+        if (typeSymbol?.SpecialType == SpecialType.System_Void)
         {
-            return IdentifierName("Task").WithTrailingTrivia(Space);
+            return (IdentifierName("Task"), false);
         }
 
-        var displayName = returnType.ToDisplayString();
-
-        // Already a Task / ValueTask family — keep as-is.
-        if (IsTaskLike(displayName))
+        // Already Task/ValueTask — keep the original syntax as written.
+        if (IsTaskLikeSymbol(typeSymbol))
         {
-            return ParseTypeName(displayName).WithTrailingTrivia(Space);
+            return (method.ReturnType.WithoutTrivia(), true);
         }
 
-        // Wrap in Task<T>.
-        return GenericName(Identifier("Task"))
+        // T → Task<T> using the original type syntax.
+        var wrapped = GenericName(Identifier("Task"))
             .WithTypeArgumentList(TypeArgumentList(SingletonSeparatedList(
-                ParseTypeName(displayName))))
-            .WithTrailingTrivia(Space);
+                method.ReturnType.WithoutTrivia())));
+
+        return (wrapped, false);
     }
 
-    private static bool IsTaskLike(string displayName) =>
-        displayName is
+    private static bool IsTaskLikeSymbol(ITypeSymbol? type)
+    {
+        if (type == null) return false;
+
+        var name = type is INamedTypeSymbol { IsGenericType: true } generic
+            ? generic.ConstructedFrom.ToDisplayString()
+            : type.ToDisplayString();
+
+        return name is
             "System.Threading.Tasks.Task" or
+            "System.Threading.Tasks.Task<TResult>" or
             "System.Threading.Tasks.ValueTask" or
-            "Task" or "ValueTask" ||
-        displayName.StartsWith("System.Threading.Tasks.Task<", StringComparison.Ordinal) ||
-        displayName.StartsWith("System.Threading.Tasks.ValueTask<", StringComparison.Ordinal) ||
-        displayName.StartsWith("Task<", StringComparison.Ordinal) ||
-        displayName.StartsWith("ValueTask<", StringComparison.Ordinal);
-
-    private static ParameterListSyntax BuildParameterList(IMethodSymbol method)
-    {
-        var parameters = method.Parameters.Select(p =>
-        {
-            var typeSyntax = ParseTypeName(p.Type.ToDisplayString()).WithTrailingTrivia(Space);
-            return Parameter(Identifier(p.Name)).WithType(typeSyntax);
-        });
-
-        return ParameterList(SeparatedList(parameters));
+            "System.Threading.Tasks.ValueTask<TResult>";
     }
 
-    private static ArgumentListSyntax BuildArgumentList(IMethodSymbol method)
+    private static string AsyncMethodName(string original, bool alreadyTaskBased) =>
+        alreadyTaskBased || original.EndsWith("Async", StringComparison.Ordinal)
+            ? original
+            : original + "Async";
+
+    private static ArgumentListSyntax BuildArgumentList(MethodDeclarationSyntax method)
     {
-        var arguments = method.Parameters.Select(p => Argument(IdentifierName(p.Name)));
+        var arguments = method.ParameterList.Parameters
+            .Select(p => Argument(IdentifierName(p.Identifier.ValueText)));
         return ArgumentList(SeparatedList(arguments));
     }
 
+    /// <summary>
+    /// Extracts the namespace name from a file-scoped or block-scoped namespace declaration,
+    /// or returns null for the global namespace.
+    /// </summary>
+    private static string? GetNamespace(CompilationUnitSyntax compilationUnit)
+    {
+        // File-scoped namespace: namespace Foo.Bar;
+        var fileScoped = compilationUnit.Members
+            .OfType<FileScopedNamespaceDeclarationSyntax>()
+            .FirstOrDefault();
+        if (fileScoped != null)
+            return fileScoped.Name.ToString();
+
+        // Block-scoped namespace: namespace Foo.Bar { ... }
+        var blockScoped = compilationUnit.Members
+            .OfType<NamespaceDeclarationSyntax>()
+            .FirstOrDefault();
+        if (blockScoped != null)
+            return blockScoped.Name.ToString();
+
+        return null;
+    }
+
+    private static bool HasNullableEnable(CompilationUnitSyntax compilationUnit) =>
+        compilationUnit.DescendantTrivia()
+            .Where(t => t.HasStructure)
+            .Select(t => t.GetStructure())
+            .OfType<NullableDirectiveTriviaSyntax>()
+            .Any(d => d.SettingToken.IsKind(SyntaxKind.EnableKeyword));
+
     private static string WrapInCompilationUnit(
+        CompilationUnitSyntax originalCompilationUnit,
         string? namespaceName,
         MemberDeclarationSyntax member,
-        IEnumerable<string> extraUsings)
+        IEnumerable<string> extraUsings,
+        bool nullableEnable)
     {
-        var usings = extraUsings
-            .Distinct()
-            .OrderBy(u => u)
-            .Select(u => UsingDirective(ParseName(u).WithLeadingTrivia(Space))
-                .WithTrailingTrivia(LineFeed))
-            .ToArray();
+        // Start with the original usings, then add any extras that aren't already present.
+        var existingUsings = originalCompilationUnit.Usings;
+        var existingNames = existingUsings
+            .Select(u => u.Name?.ToString())
+            .Where(n => n != null)
+            .ToHashSet()!;
 
-        CompilationUnitSyntax compilationUnit;
+        var mergedUsings = existingUsings.ToList();
+        foreach (var ns in extraUsings.Distinct())
+        {
+            if (!existingNames.Contains(ns))
+            {
+                mergedUsings.Add(UsingDirective(ParseName(ns)));
+            }
+        }
+
+        CompilationUnitSyntax result;
 
         if (namespaceName != null)
         {
-            var namespaceDecl = NamespaceDeclaration(ParseName(namespaceName).WithLeadingTrivia(Space))
-                .WithMembers(SingletonList(member));
+            // Preserve file-scoped namespace style when the original used it.
+            var usedFileScoped = originalCompilationUnit.Members
+                .OfType<FileScopedNamespaceDeclarationSyntax>()
+                .Any();
 
-            compilationUnit = CompilationUnit()
-                .WithUsings(List(usings))
-                .WithMembers(SingletonList<MemberDeclarationSyntax>(namespaceDecl));
+            MemberDeclarationSyntax nsMember = usedFileScoped
+                ? FileScopedNamespaceDeclaration(ParseName(namespaceName))
+                    .WithMembers(SingletonList(member))
+                : NamespaceDeclaration(ParseName(namespaceName))
+                    .WithMembers(SingletonList(member));
+
+            result = CompilationUnit()
+                .WithUsings(List(mergedUsings))
+                .WithMembers(SingletonList(nsMember));
         }
         else
         {
-            compilationUnit = CompilationUnit()
-                .WithUsings(List(usings))
+            result = CompilationUnit()
+                .WithUsings(List(mergedUsings))
                 .WithMembers(SingletonList(member));
         }
 
-        return compilationUnit.NormalizeWhitespace().ToFullString();
+        var source = result.NormalizeWhitespace().ToFullString();
+
+        if (nullableEnable)
+            source = "#nullable enable\n" + source;
+
+        return source;
     }
 }

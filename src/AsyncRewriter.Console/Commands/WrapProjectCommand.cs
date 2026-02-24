@@ -158,7 +158,12 @@ public class WrapProjectCommand : Command
             string.Join(", ", interfaceProjects.Select(p => p.Name)));
 
         // ── Phase 1: collect interface candidates ────────────────────────────
-        var candidates = new List<(INamedTypeSymbol Symbol, string InterfaceFilePath)>();
+        var candidates = new List<(
+            INamedTypeSymbol Symbol,
+            InterfaceDeclarationSyntax Declaration,
+            CompilationUnitSyntax CompilationUnit,
+            SemanticModel SemanticModel,
+            string InterfaceFilePath)>();
 
         foreach (var project in interfaceProjects)
         {
@@ -176,8 +181,8 @@ public class WrapProjectCommand : Command
                 var syntaxTree = await document.GetSyntaxTreeAsync();
                 if (syntaxTree == null) continue;
 
+                var root = (CompilationUnitSyntax)await syntaxTree.GetRootAsync();
                 var semanticModel = compilation.GetSemanticModel(syntaxTree);
-                var root = await syntaxTree.GetRootAsync();
 
                 foreach (var node in root.DescendantNodes().OfType<InterfaceDeclarationSyntax>())
                 {
@@ -187,7 +192,7 @@ public class WrapProjectCommand : Command
                     if (postfix != null && !symbol.Name.EndsWith(postfix, StringComparison.Ordinal))
                         continue;
 
-                    candidates.Add((symbol, document.FilePath));
+                    candidates.Add((symbol, node, root, semanticModel, document.FilePath));
                 }
             }
         }
@@ -213,10 +218,13 @@ public class WrapProjectCommand : Command
         var generator = new AsyncWrapperGenerator();
         var generated = new List<(string FilePath, string Content, string Label)>();
 
-        foreach (var (symbol, interfaceFilePath) in candidates)
+        foreach (var (symbol, declaration, compilationUnit, semanticModel, interfaceFilePath) in candidates)
         {
             var (asyncInterfaceSource, adapterSource) = generator.Generate(
                 symbol,
+                declaration,
+                compilationUnit,
+                semanticModel,
                 asyncHelperNamespace,
                 out var warnings);
 
@@ -296,7 +304,7 @@ public class WrapProjectCommand : Command
     /// </summary>
     private async Task<Dictionary<string, string>> FindImplementationFilePathsAsync(
         Solution solution,
-        List<(INamedTypeSymbol Symbol, string InterfaceFilePath)> candidates)
+        List<(INamedTypeSymbol Symbol, InterfaceDeclarationSyntax Declaration, CompilationUnitSyntax CompilationUnit, SemanticModel SemanticModel, string InterfaceFilePath)> candidates)
     {
         var result = new Dictionary<string, string>(StringComparer.Ordinal);
 
