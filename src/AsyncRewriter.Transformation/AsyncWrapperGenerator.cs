@@ -126,46 +126,58 @@ public sealed class AsyncWrapperGenerator
     /// Returns all eligible methods and properties from the full interface hierarchy (for the adapter).
     /// Direct members come first, followed by each base interface's members in order.
     /// Duplicate signatures (same display string) are skipped.
+    /// <para>
+    /// Each entry carries either a <see cref="SemanticModel"/> (for members whose source
+    /// syntax already uses the correct concrete types) or an <see cref="ISymbol"/> (for
+    /// members inherited through a constructed generic instantiation such as
+    /// <c>IRepository&lt;User&gt;</c>, where the source syntax still contains the type
+    /// parameter <c>T</c> but the symbol already has the substituted type).
+    /// </para>
     /// </summary>
-    private static List<(MemberDeclarationSyntax Member, SemanticModel Model)> GetAllAdapterMembers(
+    private static List<(MemberDeclarationSyntax Syntax, SemanticModel? Model, ISymbol? Symbol)> GetAllAdapterMembers(
         INamedTypeSymbol interfaceSymbol,
         InterfaceDeclarationSyntax interfaceDeclaration,
         SemanticModel semanticModel,
         Compilation compilation,
         List<string> warnings)
     {
-        var result = new List<(MemberDeclarationSyntax, SemanticModel)>();
+        var result = new List<(MemberDeclarationSyntax, SemanticModel?, ISymbol?)>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
 
-        // Direct members.
+        // Direct members — source syntax has the right types.
         foreach (var member in interfaceDeclaration.Members)
         {
-            ISymbol? symbol = member switch
+            ISymbol? sym = member switch
             {
                 MethodDeclarationSyntax m => semanticModel.GetDeclaredSymbol(m),
                 PropertyDeclarationSyntax p => semanticModel.GetDeclaredSymbol(p),
                 _ => null
             };
 
-            if (symbol == null || !seen.Add(symbol.ToDisplayString()))
+            if (sym == null || !seen.Add(sym.ToDisplayString()))
                 continue;
 
             if (member is MethodDeclarationSyntax method && HasOutOrRef(method))
                 continue; // already warned in GetEligibleDirectMembers
 
             if (member is MethodDeclarationSyntax or PropertyDeclarationSyntax)
-                result.Add((member, semanticModel));
+                result.Add((member, semanticModel, null));
         }
 
         // Inherited members from all base interfaces.
         foreach (var baseInterface in interfaceSymbol.AllInterfaces)
         {
-            foreach (var symbol in baseInterface.GetMembers())
+            // A base interface is a "constructed generic" when its type arguments contain
+            // at least one non-type-parameter (e.g. IRepository<User> but not IRepository<T>).
+            bool needsSubstitution = baseInterface.IsGenericType &&
+                baseInterface.TypeArguments.Any(ta => ta.TypeKind != TypeKind.TypeParameter);
+
+            foreach (var sym in baseInterface.GetMembers())
             {
-                if (!seen.Add(symbol.ToDisplayString()))
+                if (!seen.Add(sym.ToDisplayString()))
                     continue;
 
-                switch (symbol)
+                switch (sym)
                 {
                     case IMethodSymbol method when method.MethodKind == MethodKind.Ordinary:
                         if (method.Parameters.Any(p => p.RefKind is RefKind.Out or RefKind.Ref))
@@ -175,18 +187,28 @@ public sealed class AsyncWrapperGenerator
                                 "out/ref parameters are incompatible with async delegates.");
                             continue;
                         }
-                        if (method.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax()
+                        if (needsSubstitution)
+                        {
+                            // Build a concrete syntax from the symbol so the type parameters
+                            // (e.g. T) are replaced with the actual type arguments (e.g. User).
+                            result.Add((BuildMethodSyntaxFromSymbol(method), null, method));
+                        }
+                        else if (method.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax()
                             is MethodDeclarationSyntax methodSyntax)
                         {
-                            result.Add((methodSyntax, compilation.GetSemanticModel(methodSyntax.SyntaxTree)));
+                            result.Add((methodSyntax, compilation.GetSemanticModel(methodSyntax.SyntaxTree), null));
                         }
                         break;
 
                     case IPropertySymbol property:
-                        if (property.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax()
+                        if (needsSubstitution)
+                        {
+                            result.Add((BuildPropertySyntaxFromSymbol(property), null, property));
+                        }
+                        else if (property.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax()
                             is PropertyDeclarationSyntax propertySyntax)
                         {
-                            result.Add((propertySyntax, compilation.GetSemanticModel(propertySyntax.SyntaxTree)));
+                            result.Add((propertySyntax, compilation.GetSemanticModel(propertySyntax.SyntaxTree), null));
                         }
                         break;
                 }
@@ -194,6 +216,57 @@ public sealed class AsyncWrapperGenerator
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Builds a <see cref="MethodDeclarationSyntax"/> whose return type and parameter types
+    /// are taken from the symbol (with all type-parameter substitutions already applied).
+    /// Used for methods inherited through constructed generic base interfaces.
+    /// </summary>
+    private static MethodDeclarationSyntax BuildMethodSyntaxFromSymbol(IMethodSymbol method)
+    {
+        var fmt = SymbolDisplayFormat.MinimallyQualifiedFormat;
+
+        var returnType = ParseTypeName(method.ReturnType.ToDisplayString(fmt));
+        var parameters = method.Parameters.Select(p =>
+            Parameter(Identifier(p.Name))
+                .WithType(ParseTypeName(p.Type.ToDisplayString(fmt))));
+
+        TypeParameterListSyntax? typeParamList = method.TypeParameters.Length > 0
+            ? TypeParameterList(SeparatedList(
+                method.TypeParameters.Select(tp => TypeParameter(tp.Name))))
+            : null;
+
+        return MethodDeclaration(returnType, method.Name)
+            .WithTypeParameterList(typeParamList)
+            .WithParameterList(ParameterList(SeparatedList(parameters)));
+    }
+
+    /// <summary>
+    /// Builds a <see cref="PropertyDeclarationSyntax"/> whose type is taken from the symbol.
+    /// Used for properties inherited through constructed generic base interfaces.
+    /// </summary>
+    private static PropertyDeclarationSyntax BuildPropertySyntaxFromSymbol(IPropertySymbol property)
+    {
+        var fmt = SymbolDisplayFormat.MinimallyQualifiedFormat;
+        var propType = ParseTypeName(property.Type.ToDisplayString(fmt));
+
+        // Reconstruct the accessor list from the symbol so we know which accessors exist.
+        var accessors = new List<AccessorDeclarationSyntax>();
+        if (property.GetMethod != null)
+            accessors.Add(AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
+                .WithSemicolonToken(Token(SyntaxKind.SemicolonToken)));
+        if (property.SetMethod != null)
+        {
+            var kind = property.SetMethod.IsInitOnly
+                ? SyntaxKind.InitAccessorDeclaration
+                : SyntaxKind.SetAccessorDeclaration;
+            accessors.Add(AccessorDeclaration(kind)
+                .WithSemicolonToken(Token(SyntaxKind.SemicolonToken)));
+        }
+
+        return PropertyDeclaration(propType, property.Name)
+            .WithAccessorList(AccessorList(List(accessors)));
     }
 
     private static bool HasOutOrRef(MethodDeclarationSyntax method) =>
@@ -270,7 +343,7 @@ public sealed class AsyncWrapperGenerator
         TypeParameterListSyntax? typeParameterList,
         SyntaxList<TypeParameterConstraintClauseSyntax> constraintClauses,
         string asyncHelperNamespace,
-        List<(MemberDeclarationSyntax Member, SemanticModel Model)> members,
+        List<(MemberDeclarationSyntax Syntax, SemanticModel? Model, ISymbol? Symbol)> members,
         bool nullableEnable)
     {
         var asyncInterfaceType = MakeTypeName(asyncInterfaceName, typeParameterList);
@@ -297,15 +370,19 @@ public sealed class AsyncWrapperGenerator
 
         var methodDecls = new List<MemberDeclarationSyntax> { fieldDecl, ctorDecl };
 
-        foreach (var (member, model) in members)
+        foreach (var (syntax, model, symbol) in members)
         {
-            switch (member)
+            switch (syntax)
             {
                 case MethodDeclarationSyntax method:
                 {
-                    var (_, alreadyTaskBased) = GetAsyncReturnType(method, model);
-                    var isVoid = method.ReturnType is PredefinedTypeSyntax pt &&
-                                 pt.Keyword.IsKind(SyntaxKind.VoidKeyword);
+                    // For members from constructed generic bases, type info comes from the symbol.
+                    var (_, alreadyTaskBased) = symbol is IMethodSymbol ms
+                        ? GetAsyncReturnType(ms.ReturnType, method.ReturnType)
+                        : GetAsyncReturnType(method, model!);
+                    var isVoid = symbol is IMethodSymbol ms2
+                        ? ms2.ReturnType.SpecialType == SpecialType.System_Void
+                        : method.ReturnType is PredefinedTypeSyntax pt && pt.Keyword.IsKind(SyntaxKind.VoidKeyword);
 
                     var asyncMethodName = AsyncMethodName(method.Identifier.ValueText, alreadyTaskBased);
 
@@ -348,6 +425,36 @@ public sealed class AsyncWrapperGenerator
                         .WithConstraintClauses(method.ConstraintClauses)
                         .WithParameterList(method.ParameterList.WithoutTrivia())
                         .WithBody(Block(bodyStatement)));
+                    break;
+                }
+                case PropertyDeclarationSyntax property when symbol is IPropertySymbol ps:
+                {
+                    // Constructed generic base: detect accessors from the symbol.
+                    var innerAccess = MemberAccessExpression(
+                        SyntaxKind.SimpleMemberAccessExpression,
+                        IdentifierName("_inner"),
+                        IdentifierName(property.Identifier.ValueText));
+
+                    var accessors = new List<AccessorDeclarationSyntax>();
+                    if (ps.GetMethod != null)
+                        accessors.Add(AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
+                            .WithExpressionBody(ArrowExpressionClause(innerAccess))
+                            .WithSemicolonToken(Token(SyntaxKind.SemicolonToken)));
+                    if (ps.SetMethod != null)
+                    {
+                        var kind = ps.SetMethod.IsInitOnly
+                            ? SyntaxKind.InitAccessorDeclaration
+                            : SyntaxKind.SetAccessorDeclaration;
+                        accessors.Add(AccessorDeclaration(kind)
+                            .WithExpressionBody(ArrowExpressionClause(
+                                AssignmentExpression(SyntaxKind.SimpleAssignmentExpression,
+                                    innerAccess, IdentifierName("value"))))
+                            .WithSemicolonToken(Token(SyntaxKind.SemicolonToken)));
+                    }
+
+                    methodDecls.Add(PropertyDeclaration(property.Type.WithoutTrivia(), property.Identifier.ValueText)
+                        .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword)))
+                        .WithAccessorList(AccessorList(List(accessors))));
                     break;
                 }
                 case PropertyDeclarationSyntax property:
@@ -420,18 +527,28 @@ public sealed class AsyncWrapperGenerator
     private static (TypeSyntax ReturnType, bool AlreadyTaskBased) GetAsyncReturnType(
         MethodDeclarationSyntax method,
         SemanticModel semanticModel)
-    {
-        var typeSymbol = semanticModel.GetTypeInfo(method.ReturnType).Type;
+        => GetAsyncReturnType(
+            semanticModel.GetTypeInfo(method.ReturnType).Type,
+            method.ReturnType);
 
+    /// <summary>
+    /// Overload used when type info comes directly from a symbol (constructed generic base).
+    /// <paramref name="concreteSyntax"/> is the already-substituted return type syntax built
+    /// from the symbol (e.g. <c>User</c> instead of <c>T</c>).
+    /// </summary>
+    private static (TypeSyntax ReturnType, bool AlreadyTaskBased) GetAsyncReturnType(
+        ITypeSymbol? typeSymbol,
+        TypeSyntax concreteSyntax)
+    {
         if (typeSymbol?.SpecialType == SpecialType.System_Void)
             return (IdentifierName("Task"), false);
 
         if (IsTaskLikeSymbol(typeSymbol))
-            return (method.ReturnType.WithoutTrivia(), true);
+            return (concreteSyntax.WithoutTrivia(), true);
 
         var wrapped = GenericName(Identifier("Task"))
             .WithTypeArgumentList(TypeArgumentList(SingletonSeparatedList(
-                method.ReturnType.WithoutTrivia())));
+                concreteSyntax.WithoutTrivia())));
 
         return (wrapped, false);
     }
