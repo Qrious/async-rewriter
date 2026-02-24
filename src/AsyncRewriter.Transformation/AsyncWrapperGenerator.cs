@@ -55,10 +55,10 @@ public sealed class AsyncWrapperGenerator
         var adapterClassName = baseName + "AsyncAdapter";
 
         // Async interface: only direct members (inherited ones come via the async base interfaces).
-        var directMethods = GetEligibleDirectMethods(interfaceDeclaration, originalName, warningList);
+        var directMembers = GetEligibleDirectMembers(interfaceDeclaration, originalName, warningList);
 
-        // Adapter: must implement every method in the full hierarchy.
-        var allAdapterMethods = GetAllAdapterMethods(
+        // Adapter: must implement every member in the full hierarchy.
+        var allAdapterMembers = GetAllAdapterMembers(
             interfaceSymbol, interfaceDeclaration, semanticModel, compilation, warningList);
 
         // Collect compilation units from all base interface files so their usings
@@ -74,100 +74,122 @@ public sealed class AsyncWrapperGenerator
         var asyncInterfaceSource = BuildAsyncInterface(
             compilationUnit, asyncInterfaceName, interfaceDeclaration.TypeParameterList,
             interfaceDeclaration.ConstraintClauses, interfaceDeclaration.BaseList,
-            postfix, directMethods, semanticModel, nullableEnable);
+            postfix, directMembers, semanticModel, nullableEnable);
 
         var adapterSource = BuildAdapter(
             compilationUnit, baseCompilationUnits, adapterClassName, originalName, asyncInterfaceName,
             interfaceDeclaration.TypeParameterList, interfaceDeclaration.ConstraintClauses,
-            asyncHelperNamespace, allAdapterMethods, nullableEnable);
+            asyncHelperNamespace, allAdapterMembers, nullableEnable);
 
         return (asyncInterfaceSource, adapterSource);
     }
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Method selection
+    // Member selection
     // ──────────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Returns only the methods declared directly on the interface (for the async interface).
+    /// Returns the methods and properties declared directly on the interface (for the async interface).
     /// </summary>
-    private static List<MethodDeclarationSyntax> GetEligibleDirectMethods(
+    private static List<MemberDeclarationSyntax> GetEligibleDirectMembers(
         InterfaceDeclarationSyntax interfaceDeclaration,
         string interfaceName,
         List<string> warnings)
     {
-        var result = new List<MethodDeclarationSyntax>();
+        var result = new List<MemberDeclarationSyntax>();
 
-        foreach (var member in interfaceDeclaration.Members.OfType<MethodDeclarationSyntax>())
+        foreach (var member in interfaceDeclaration.Members)
         {
-            if (HasOutOrRef(member))
+            switch (member)
             {
-                warnings.Add(
-                    $"Skipping {interfaceName}.{member.Identifier.ValueText}: " +
-                    "out/ref parameters are incompatible with async delegates.");
-                continue;
-            }
+                case MethodDeclarationSyntax method:
+                    if (HasOutOrRef(method))
+                    {
+                        warnings.Add(
+                            $"Skipping {interfaceName}.{method.Identifier.ValueText}: " +
+                            "out/ref parameters are incompatible with async delegates.");
+                        continue;
+                    }
+                    result.Add(method);
+                    break;
 
-            result.Add(member);
+                case PropertyDeclarationSyntax:
+                    result.Add(member);
+                    break;
+            }
         }
 
         return result;
     }
 
     /// <summary>
-    /// Returns all eligible methods from the full interface hierarchy (for the adapter).
-    /// Direct methods come first, followed by each base interface's methods in order.
+    /// Returns all eligible methods and properties from the full interface hierarchy (for the adapter).
+    /// Direct members come first, followed by each base interface's members in order.
     /// Duplicate signatures (same display string) are skipped.
     /// </summary>
-    private static List<(MethodDeclarationSyntax Method, SemanticModel Model)> GetAllAdapterMethods(
+    private static List<(MemberDeclarationSyntax Member, SemanticModel Model)> GetAllAdapterMembers(
         INamedTypeSymbol interfaceSymbol,
         InterfaceDeclarationSyntax interfaceDeclaration,
         SemanticModel semanticModel,
         Compilation compilation,
         List<string> warnings)
     {
-        var result = new List<(MethodDeclarationSyntax, SemanticModel)>();
+        var result = new List<(MemberDeclarationSyntax, SemanticModel)>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
 
-        // Direct methods.
-        foreach (var member in interfaceDeclaration.Members.OfType<MethodDeclarationSyntax>())
+        // Direct members.
+        foreach (var member in interfaceDeclaration.Members)
         {
-            if (HasOutOrRef(member))
-                continue; // already warned in GetEligibleDirectMethods
+            ISymbol? symbol = member switch
+            {
+                MethodDeclarationSyntax m => semanticModel.GetDeclaredSymbol(m),
+                PropertyDeclarationSyntax p => semanticModel.GetDeclaredSymbol(p),
+                _ => null
+            };
 
-            var symbol = semanticModel.GetDeclaredSymbol(member);
             if (symbol == null || !seen.Add(symbol.ToDisplayString()))
                 continue;
 
-            result.Add((member, semanticModel));
+            if (member is MethodDeclarationSyntax method && HasOutOrRef(method))
+                continue; // already warned in GetEligibleDirectMembers
+
+            if (member is MethodDeclarationSyntax or PropertyDeclarationSyntax)
+                result.Add((member, semanticModel));
         }
 
-        // Inherited methods from all base interfaces.
+        // Inherited members from all base interfaces.
         foreach (var baseInterface in interfaceSymbol.AllInterfaces)
         {
-            foreach (var member in baseInterface.GetMembers().OfType<IMethodSymbol>())
+            foreach (var symbol in baseInterface.GetMembers())
             {
-                if (member.MethodKind != MethodKind.Ordinary)
+                if (!seen.Add(symbol.ToDisplayString()))
                     continue;
 
-                if (!seen.Add(member.ToDisplayString()))
-                    continue;
-
-                if (member.Parameters.Any(p => p.RefKind is RefKind.Out or RefKind.Ref))
+                switch (symbol)
                 {
-                    warnings.Add(
-                        $"Skipping inherited {baseInterface.Name}.{member.Name}: " +
-                        "out/ref parameters are incompatible with async delegates.");
-                    continue;
+                    case IMethodSymbol method when method.MethodKind == MethodKind.Ordinary:
+                        if (method.Parameters.Any(p => p.RefKind is RefKind.Out or RefKind.Ref))
+                        {
+                            warnings.Add(
+                                $"Skipping inherited {baseInterface.Name}.{method.Name}: " +
+                                "out/ref parameters are incompatible with async delegates.");
+                            continue;
+                        }
+                        if (method.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax()
+                            is MethodDeclarationSyntax methodSyntax)
+                        {
+                            result.Add((methodSyntax, compilation.GetSemanticModel(methodSyntax.SyntaxTree)));
+                        }
+                        break;
+
+                    case IPropertySymbol property:
+                        if (property.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax()
+                            is PropertyDeclarationSyntax propertySyntax)
+                        {
+                            result.Add((propertySyntax, compilation.GetSemanticModel(propertySyntax.SyntaxTree)));
+                        }
+                        break;
                 }
-
-                var syntaxRef = member.DeclaringSyntaxReferences.FirstOrDefault();
-                if (syntaxRef == null) continue;
-
-                if (syntaxRef.GetSyntax() is not MethodDeclarationSyntax methodSyntax) continue;
-
-                var model = compilation.GetSemanticModel(syntaxRef.SyntaxTree);
-                result.Add((methodSyntax, model));
             }
         }
 
@@ -190,24 +212,33 @@ public sealed class AsyncWrapperGenerator
         SyntaxList<TypeParameterConstraintClauseSyntax> constraintClauses,
         BaseListSyntax? baseList,
         string? postfix,
-        List<MethodDeclarationSyntax> methods,
+        List<MemberDeclarationSyntax> directMembers,
         SemanticModel semanticModel,
         bool nullableEnable)
     {
         var members = new List<MemberDeclarationSyntax>();
 
-        foreach (var method in methods)
+        foreach (var member in directMembers)
         {
-            var (asyncReturnType, alreadyTaskBased) = GetAsyncReturnType(method, semanticModel);
-            var asyncMethodName = AsyncMethodName(method.Identifier.ValueText, alreadyTaskBased);
+            switch (member)
+            {
+                case MethodDeclarationSyntax method:
+                {
+                    var (asyncReturnType, alreadyTaskBased) = GetAsyncReturnType(method, semanticModel);
+                    var asyncMethodName = AsyncMethodName(method.Identifier.ValueText, alreadyTaskBased);
 
-            var methodDecl = MethodDeclaration(asyncReturnType, asyncMethodName)
-                .WithTypeParameterList(method.TypeParameterList)
-                .WithConstraintClauses(method.ConstraintClauses)
-                .WithParameterList(method.ParameterList.WithoutTrivia())
-                .WithSemicolonToken(Token(SyntaxKind.SemicolonToken));
-
-            members.Add(methodDecl);
+                    members.Add(MethodDeclaration(asyncReturnType, asyncMethodName)
+                        .WithTypeParameterList(method.TypeParameterList)
+                        .WithConstraintClauses(method.ConstraintClauses)
+                        .WithParameterList(method.ParameterList.WithoutTrivia())
+                        .WithSemicolonToken(Token(SyntaxKind.SemicolonToken)));
+                    break;
+                }
+                case PropertyDeclarationSyntax property:
+                    // Properties are copied verbatim — they cannot be async.
+                    members.Add(property.WithoutTrivia());
+                    break;
+            }
         }
 
         var namespaceName = GetNamespace(originalCompilationUnit);
@@ -239,7 +270,7 @@ public sealed class AsyncWrapperGenerator
         TypeParameterListSyntax? typeParameterList,
         SyntaxList<TypeParameterConstraintClauseSyntax> constraintClauses,
         string asyncHelperNamespace,
-        List<(MethodDeclarationSyntax Method, SemanticModel Model)> methods,
+        List<(MemberDeclarationSyntax Member, SemanticModel Model)> members,
         bool nullableEnable)
     {
         var asyncInterfaceType = MakeTypeName(asyncInterfaceName, typeParameterList);
@@ -266,57 +297,104 @@ public sealed class AsyncWrapperGenerator
 
         var methodDecls = new List<MemberDeclarationSyntax> { fieldDecl, ctorDecl };
 
-        foreach (var (method, model) in methods)
+        foreach (var (member, model) in members)
         {
-            var (_, alreadyTaskBased) = GetAsyncReturnType(method, model);
-            var isVoid = method.ReturnType is PredefinedTypeSyntax pt &&
-                         pt.Keyword.IsKind(SyntaxKind.VoidKeyword);
-
-            var asyncMethodName = AsyncMethodName(method.Identifier.ValueText, alreadyTaskBased);
-
-            // _inner.MethodAsync<T>(p1, p2, ...)
-            SimpleNameSyntax innerMethodName = method.TypeParameterList is { Parameters.Count: > 0 } tpl
-                ? GenericName(Identifier(asyncMethodName))
-                    .WithTypeArgumentList(TypeArgumentList(SeparatedList<TypeSyntax>(
-                        tpl.Parameters.Select(tp => IdentifierName(tp.Identifier.ValueText)))))
-                : IdentifierName(asyncMethodName);
-
-            var innerCall = InvocationExpression(
-                MemberAccessExpression(
-                    SyntaxKind.SimpleMemberAccessExpression,
-                    IdentifierName("_inner"),
-                    innerMethodName),
-                BuildArgumentList(method));
-
-            StatementSyntax bodyStatement;
-
-            if (alreadyTaskBased)
+            switch (member)
             {
-                bodyStatement = ReturnStatement(innerCall);
-            }
-            else
-            {
-                var lambda = ParenthesizedLambdaExpression(innerCall);
-                var helperCall = InvocationExpression(
-                    MemberAccessExpression(
+                case MethodDeclarationSyntax method:
+                {
+                    var (_, alreadyTaskBased) = GetAsyncReturnType(method, model);
+                    var isVoid = method.ReturnType is PredefinedTypeSyntax pt &&
+                                 pt.Keyword.IsKind(SyntaxKind.VoidKeyword);
+
+                    var asyncMethodName = AsyncMethodName(method.Identifier.ValueText, alreadyTaskBased);
+
+                    SimpleNameSyntax innerMethodName = method.TypeParameterList is { Parameters.Count: > 0 } tpl
+                        ? GenericName(Identifier(asyncMethodName))
+                            .WithTypeArgumentList(TypeArgumentList(SeparatedList<TypeSyntax>(
+                                tpl.Parameters.Select(tp => IdentifierName(tp.Identifier.ValueText)))))
+                        : IdentifierName(asyncMethodName);
+
+                    var innerCall = InvocationExpression(
+                        MemberAccessExpression(
+                            SyntaxKind.SimpleMemberAccessExpression,
+                            IdentifierName("_inner"),
+                            innerMethodName),
+                        BuildArgumentList(method));
+
+                    StatementSyntax bodyStatement;
+                    if (alreadyTaskBased)
+                    {
+                        bodyStatement = ReturnStatement(innerCall);
+                    }
+                    else
+                    {
+                        var lambda = ParenthesizedLambdaExpression(innerCall);
+                        var helperCall = InvocationExpression(
+                            MemberAccessExpression(
+                                SyntaxKind.SimpleMemberAccessExpression,
+                                IdentifierName("AsyncHelper"),
+                                IdentifierName("RunTaskSynchronously")),
+                            ArgumentList(SingletonSeparatedList(Argument(lambda))));
+
+                        bodyStatement = isVoid
+                            ? ExpressionStatement(helperCall)
+                            : ReturnStatement(helperCall);
+                    }
+
+                    methodDecls.Add(MethodDeclaration(method.ReturnType.WithoutTrivia(), method.Identifier.ValueText)
+                        .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword)))
+                        .WithTypeParameterList(method.TypeParameterList)
+                        .WithConstraintClauses(method.ConstraintClauses)
+                        .WithParameterList(method.ParameterList.WithoutTrivia())
+                        .WithBody(Block(bodyStatement)));
+                    break;
+                }
+                case PropertyDeclarationSyntax property:
+                {
+                    var innerAccess = MemberAccessExpression(
                         SyntaxKind.SimpleMemberAccessExpression,
-                        IdentifierName("AsyncHelper"),
-                        IdentifierName("RunTaskSynchronously")),
-                    ArgumentList(SingletonSeparatedList(Argument(lambda))));
+                        IdentifierName("_inner"),
+                        IdentifierName(property.Identifier.ValueText));
 
-                bodyStatement = isVoid
-                    ? ExpressionStatement(helperCall)
-                    : ReturnStatement(helperCall);
+                    var accessors = new List<AccessorDeclarationSyntax>();
+
+                    var hasGetter = property.AccessorList?.Accessors
+                        .Any(a => a.IsKind(SyntaxKind.GetAccessorDeclaration)) ?? true;
+                    var hasSetter = property.AccessorList?.Accessors
+                        .Any(a => a.IsKind(SyntaxKind.SetAccessorDeclaration)) ?? false;
+                    var hasInit = property.AccessorList?.Accessors
+                        .Any(a => a.IsKind(SyntaxKind.InitAccessorDeclaration)) ?? false;
+
+                    if (hasGetter)
+                        accessors.Add(AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
+                            .WithExpressionBody(ArrowExpressionClause(innerAccess))
+                            .WithSemicolonToken(Token(SyntaxKind.SemicolonToken)));
+
+                    if (hasSetter)
+                        accessors.Add(AccessorDeclaration(SyntaxKind.SetAccessorDeclaration)
+                            .WithExpressionBody(ArrowExpressionClause(
+                                AssignmentExpression(
+                                    SyntaxKind.SimpleAssignmentExpression,
+                                    innerAccess,
+                                    IdentifierName("value"))))
+                            .WithSemicolonToken(Token(SyntaxKind.SemicolonToken)));
+
+                    if (hasInit)
+                        accessors.Add(AccessorDeclaration(SyntaxKind.InitAccessorDeclaration)
+                            .WithExpressionBody(ArrowExpressionClause(
+                                AssignmentExpression(
+                                    SyntaxKind.SimpleAssignmentExpression,
+                                    innerAccess,
+                                    IdentifierName("value"))))
+                            .WithSemicolonToken(Token(SyntaxKind.SemicolonToken)));
+
+                    methodDecls.Add(PropertyDeclaration(property.Type.WithoutTrivia(), property.Identifier.ValueText)
+                        .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword)))
+                        .WithAccessorList(AccessorList(List(accessors))));
+                    break;
+                }
             }
-
-            var methodDecl = MethodDeclaration(method.ReturnType.WithoutTrivia(), method.Identifier.ValueText)
-                .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword)))
-                .WithTypeParameterList(method.TypeParameterList)
-                .WithConstraintClauses(method.ConstraintClauses)
-                .WithParameterList(method.ParameterList.WithoutTrivia())
-                .WithBody(Block(bodyStatement));
-
-            methodDecls.Add(methodDecl);
         }
 
         var namespaceName = GetNamespace(originalCompilationUnit);
