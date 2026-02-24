@@ -38,6 +38,7 @@ public sealed class AsyncWrapperGenerator
         CompilationUnitSyntax compilationUnit,
         SemanticModel semanticModel,
         string asyncHelperNamespace,
+        string? postfix,
         out IReadOnlyList<string> warnings)
     {
         var warningList = new List<string>();
@@ -56,7 +57,8 @@ public sealed class AsyncWrapperGenerator
 
         var asyncInterfaceSource = BuildAsyncInterface(
             compilationUnit, asyncInterfaceName, interfaceDeclaration.TypeParameterList,
-            interfaceDeclaration.ConstraintClauses, eligibleMethods, semanticModel, nullableEnable);
+            interfaceDeclaration.ConstraintClauses, interfaceDeclaration.BaseList,
+            postfix, eligibleMethods, semanticModel, nullableEnable);
 
         var adapterSource = BuildAdapter(
             compilationUnit, adapterClassName, originalName, asyncInterfaceName,
@@ -106,6 +108,8 @@ public sealed class AsyncWrapperGenerator
         string asyncInterfaceName,
         TypeParameterListSyntax? typeParameterList,
         SyntaxList<TypeParameterConstraintClauseSyntax> constraintClauses,
+        BaseListSyntax? baseList,
+        string? postfix,
         List<MethodDeclarationSyntax> methods,
         SemanticModel semanticModel,
         bool nullableEnable)
@@ -128,11 +132,14 @@ public sealed class AsyncWrapperGenerator
 
         var namespaceName = GetNamespace(originalCompilationUnit);
 
+        var asyncBaseList = BuildAsyncBaseList(baseList, postfix);
+
         var interfaceDecl = InterfaceDeclaration(asyncInterfaceName)
             .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword)))
             .WithAttributeLists(SingletonList(GeneratedCodeAttributeList()))
             .WithTypeParameterList(typeParameterList)
             .WithConstraintClauses(constraintClauses)
+            .WithBaseList(asyncBaseList)
             .WithMembers(List(members));
 
         return WrapInCompilationUnit(
@@ -292,6 +299,63 @@ public sealed class AsyncWrapperGenerator
                 method.ReturnType.WithoutTrivia())));
 
         return (wrapped, false);
+    }
+
+    /// <summary>
+    /// Copies the original interface's base list, replacing each base interface whose
+    /// simple name ends with <paramref name="postfix"/> with its async counterpart
+    /// (appending <c>Async</c> to the identifier).  When <paramref name="postfix"/> is
+    /// null every base type is kept as-is.
+    /// </summary>
+    private static BaseListSyntax? BuildAsyncBaseList(BaseListSyntax? baseList, string? postfix)
+    {
+        if (baseList == null) return null;
+
+        var rewritten = baseList.Types.Select(bt =>
+        {
+            var asyncType = postfix != null ? TryMakeAsyncTypeSyntax(bt.Type, postfix) : null;
+            return asyncType != null ? (BaseTypeSyntax)SimpleBaseType(asyncType) : bt;
+        });
+
+        return BaseList(SeparatedList(rewritten));
+    }
+
+    /// <summary>
+    /// If <paramref name="type"/> is a simple or generic name whose identifier ends with
+    /// <paramref name="postfix"/> and does not already end with <c>Async</c>, returns
+    /// a new type syntax with <c>Async</c> appended to the identifier.
+    /// Otherwise returns <c>null</c>.
+    /// </summary>
+    private static TypeSyntax? TryMakeAsyncTypeSyntax(TypeSyntax type, string postfix)
+    {
+        switch (type)
+        {
+            case IdentifierNameSyntax id:
+            {
+                var name = id.Identifier.ValueText;
+                if (!name.EndsWith(postfix, StringComparison.Ordinal) ||
+                    name.EndsWith("Async", StringComparison.Ordinal))
+                    return null;
+                return IdentifierName(name + "Async");
+            }
+            case GenericNameSyntax generic:
+            {
+                var name = generic.Identifier.ValueText;
+                if (!name.EndsWith(postfix, StringComparison.Ordinal) ||
+                    name.EndsWith("Async", StringComparison.Ordinal))
+                    return null;
+                return generic.WithIdentifier(Identifier(name + "Async"));
+            }
+            case QualifiedNameSyntax qualified:
+            {
+                var asyncRight = TryMakeAsyncTypeSyntax(qualified.Right, postfix);
+                return asyncRight != null
+                    ? qualified.WithRight((SimpleNameSyntax)asyncRight)
+                    : null;
+            }
+            default:
+                return null;
+        }
     }
 
     /// <summary>

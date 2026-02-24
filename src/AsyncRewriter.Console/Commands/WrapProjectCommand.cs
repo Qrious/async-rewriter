@@ -226,6 +226,7 @@ public class WrapProjectCommand : Command
                 compilationUnit,
                 semanticModel,
                 asyncHelperNamespace,
+                postfix,
                 out var warnings);
 
             foreach (var warning in warnings)
