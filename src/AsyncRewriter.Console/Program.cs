@@ -58,6 +58,7 @@ class Program
         serviceCollection.AddSingleton<Command, BuildCallGraphCommand>();
         serviceCollection.AddSingleton<Command, FloodCallGraphCommand>();
         serviceCollection.AddSingleton<Command, ModifyCommand>();
+        serviceCollection.AddSingleton<Command, RewriteLinqAsyncCommand>();
 
         serviceCollection.AddLogging(c => c.AddSimpleConsole());
     }
