@@ -85,6 +85,13 @@ public class RewriteLinqAsyncCommand : Command
 
         foreach (var project in solution.Projects)
         {
+            var compilation = await project.GetCompilationAsync();
+            if (compilation == null)
+            {
+                _logger.LogWarning("Could not get compilation for project {ProjectName}, skipping.", project.Name);
+                continue;
+            }
+
             foreach (var document in project.Documents)
             {
                 if (document.FilePath == null)
@@ -92,13 +99,16 @@ public class RewriteLinqAsyncCommand : Command
                     continue;
                 }
 
-                var root = await document.GetSyntaxRootAsync();
-                if (root == null)
+                var syntaxTree = await document.GetSyntaxTreeAsync();
+                if (syntaxTree == null)
                 {
                     continue;
                 }
 
-                var rewriter = new LinqAsyncOverloadRewriter(asyncLinqNamespace);
+                var root = await syntaxTree.GetRootAsync();
+                var semanticModel = compilation.GetSemanticModel(syntaxTree);
+
+                var rewriter = new LinqAsyncOverloadRewriter(asyncLinqNamespace, semanticModel);
                 var newRoot = rewriter.Visit(root);
 
                 if (!rewriter.AnyRewritten)
