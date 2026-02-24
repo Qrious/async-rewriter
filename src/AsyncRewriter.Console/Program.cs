@@ -60,6 +60,7 @@ class Program
         serviceCollection.AddSingleton<Command, ModifyCommand>();
         serviceCollection.AddSingleton<Command, RewriteLinqAsyncCommand>();
         serviceCollection.AddSingleton<Command, FixMissingAwaitsCommand>();
+        serviceCollection.AddSingleton<Command, ReplaceInterfaceCommand>();
 
         serviceCollection.AddLogging(c => c.AddSimpleConsole());
     }
