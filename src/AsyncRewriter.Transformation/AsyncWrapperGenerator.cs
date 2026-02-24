@@ -15,7 +15,8 @@ namespace AsyncRewriter.Transformation;
 ///   <item>
 ///     A synchronous adapter class (<c>FooAsyncAdapter</c>) that implements the original
 ///     interface by forwarding every call to the async counterpart via
-///     <c>AsyncHelper.RunTaskSynchronously</c>.
+///     <c>AsyncHelper.RunTaskSynchronously</c>.  The adapter includes methods inherited
+///     from all base interfaces in the hierarchy.
 ///   </item>
 /// </list>
 ///
@@ -37,6 +38,7 @@ public sealed class AsyncWrapperGenerator
         InterfaceDeclarationSyntax interfaceDeclaration,
         CompilationUnitSyntax compilationUnit,
         SemanticModel semanticModel,
+        Compilation compilation,
         string asyncHelperNamespace,
         string? postfix,
         out IReadOnlyList<string> warnings)
@@ -52,18 +54,24 @@ public sealed class AsyncWrapperGenerator
             : originalName;
         var adapterClassName = baseName + "AsyncAdapter";
 
-        var eligibleMethods = GetEligibleMethods(interfaceDeclaration, originalName, warningList);
+        // Async interface: only direct members (inherited ones come via the async base interfaces).
+        var directMethods = GetEligibleDirectMethods(interfaceDeclaration, originalName, warningList);
+
+        // Adapter: must implement every method in the full hierarchy.
+        var allAdapterMethods = GetAllAdapterMethods(
+            interfaceSymbol, interfaceDeclaration, semanticModel, compilation, warningList);
+
         var nullableEnable = HasNullableEnable(compilationUnit);
 
         var asyncInterfaceSource = BuildAsyncInterface(
             compilationUnit, asyncInterfaceName, interfaceDeclaration.TypeParameterList,
             interfaceDeclaration.ConstraintClauses, interfaceDeclaration.BaseList,
-            postfix, eligibleMethods, semanticModel, nullableEnable);
+            postfix, directMethods, semanticModel, nullableEnable);
 
         var adapterSource = BuildAdapter(
             compilationUnit, adapterClassName, originalName, asyncInterfaceName,
             interfaceDeclaration.TypeParameterList, interfaceDeclaration.ConstraintClauses,
-            asyncHelperNamespace, eligibleMethods, semanticModel, nullableEnable);
+            asyncHelperNamespace, allAdapterMethods, nullableEnable);
 
         return (asyncInterfaceSource, adapterSource);
     }
@@ -72,7 +80,10 @@ public sealed class AsyncWrapperGenerator
     // Method selection
     // ──────────────────────────────────────────────────────────────────────────
 
-    private static List<MethodDeclarationSyntax> GetEligibleMethods(
+    /// <summary>
+    /// Returns only the methods declared directly on the interface (for the async interface).
+    /// </summary>
+    private static List<MethodDeclarationSyntax> GetEligibleDirectMethods(
         InterfaceDeclarationSyntax interfaceDeclaration,
         string interfaceName,
         List<string> warnings)
@@ -81,11 +92,7 @@ public sealed class AsyncWrapperGenerator
 
         foreach (var member in interfaceDeclaration.Members.OfType<MethodDeclarationSyntax>())
         {
-            var hasOutOrRef = member.ParameterList.Parameters.Any(p =>
-                p.Modifiers.Any(m =>
-                    m.IsKind(SyntaxKind.OutKeyword) || m.IsKind(SyntaxKind.RefKeyword)));
-
-            if (hasOutOrRef)
+            if (HasOutOrRef(member))
             {
                 warnings.Add(
                     $"Skipping {interfaceName}.{member.Identifier.ValueText}: " +
@@ -98,6 +105,71 @@ public sealed class AsyncWrapperGenerator
 
         return result;
     }
+
+    /// <summary>
+    /// Returns all eligible methods from the full interface hierarchy (for the adapter).
+    /// Direct methods come first, followed by each base interface's methods in order.
+    /// Duplicate signatures (same display string) are skipped.
+    /// </summary>
+    private static List<(MethodDeclarationSyntax Method, SemanticModel Model)> GetAllAdapterMethods(
+        INamedTypeSymbol interfaceSymbol,
+        InterfaceDeclarationSyntax interfaceDeclaration,
+        SemanticModel semanticModel,
+        Compilation compilation,
+        List<string> warnings)
+    {
+        var result = new List<(MethodDeclarationSyntax, SemanticModel)>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        // Direct methods.
+        foreach (var member in interfaceDeclaration.Members.OfType<MethodDeclarationSyntax>())
+        {
+            if (HasOutOrRef(member))
+                continue; // already warned in GetEligibleDirectMethods
+
+            var symbol = semanticModel.GetDeclaredSymbol(member);
+            if (symbol == null || !seen.Add(symbol.ToDisplayString()))
+                continue;
+
+            result.Add((member, semanticModel));
+        }
+
+        // Inherited methods from all base interfaces.
+        foreach (var baseInterface in interfaceSymbol.AllInterfaces)
+        {
+            foreach (var member in baseInterface.GetMembers().OfType<IMethodSymbol>())
+            {
+                if (member.MethodKind != MethodKind.Ordinary)
+                    continue;
+
+                if (!seen.Add(member.ToDisplayString()))
+                    continue;
+
+                if (member.Parameters.Any(p => p.RefKind is RefKind.Out or RefKind.Ref))
+                {
+                    warnings.Add(
+                        $"Skipping inherited {baseInterface.Name}.{member.Name}: " +
+                        "out/ref parameters are incompatible with async delegates.");
+                    continue;
+                }
+
+                var syntaxRef = member.DeclaringSyntaxReferences.FirstOrDefault();
+                if (syntaxRef == null) continue;
+
+                if (syntaxRef.GetSyntax() is not MethodDeclarationSyntax methodSyntax) continue;
+
+                var model = compilation.GetSemanticModel(syntaxRef.SyntaxTree);
+                result.Add((methodSyntax, model));
+            }
+        }
+
+        return result;
+    }
+
+    private static bool HasOutOrRef(MethodDeclarationSyntax method) =>
+        method.ParameterList.Parameters.Any(p =>
+            p.Modifiers.Any(m =>
+                m.IsKind(SyntaxKind.OutKeyword) || m.IsKind(SyntaxKind.RefKeyword)));
 
     // ──────────────────────────────────────────────────────────────────────────
     // Async interface generation
@@ -131,7 +203,6 @@ public sealed class AsyncWrapperGenerator
         }
 
         var namespaceName = GetNamespace(originalCompilationUnit);
-
         var asyncBaseList = BuildAsyncBaseList(baseList, postfix);
 
         var interfaceDecl = InterfaceDeclaration(asyncInterfaceName)
@@ -143,11 +214,8 @@ public sealed class AsyncWrapperGenerator
             .WithMembers(List(members));
 
         return WrapInCompilationUnit(
-            originalCompilationUnit,
-            namespaceName,
-            interfaceDecl,
-            extraUsings: ["System.Threading.Tasks"],
-            nullableEnable);
+            originalCompilationUnit, namespaceName, interfaceDecl,
+            extraUsings: ["System.Threading.Tasks"], nullableEnable);
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -162,14 +230,13 @@ public sealed class AsyncWrapperGenerator
         TypeParameterListSyntax? typeParameterList,
         SyntaxList<TypeParameterConstraintClauseSyntax> constraintClauses,
         string asyncHelperNamespace,
-        List<MethodDeclarationSyntax> methods,
-        SemanticModel semanticModel,
+        List<(MethodDeclarationSyntax Method, SemanticModel Model)> methods,
         bool nullableEnable)
     {
-        // private readonly IFooAsync<T> _inner;
         var asyncInterfaceType = MakeTypeName(asyncInterfaceName, typeParameterList);
         var originalInterfaceType = MakeTypeName(originalInterfaceName, typeParameterList);
 
+        // private readonly IFooAsync<T> _inner;
         var fieldDecl = FieldDeclaration(
                 VariableDeclaration(asyncInterfaceType)
                     .WithVariables(SingletonSeparatedList(VariableDeclarator(Identifier("_inner")))))
@@ -181,8 +248,7 @@ public sealed class AsyncWrapperGenerator
         var ctorDecl = ConstructorDeclaration(adapterClassName)
             .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword)))
             .WithParameterList(ParameterList(SingletonSeparatedList(
-                Parameter(Identifier("inner"))
-                    .WithType(asyncInterfaceType))))
+                Parameter(Identifier("inner")).WithType(asyncInterfaceType))))
             .WithBody(Block(ExpressionStatement(
                 AssignmentExpression(
                     SyntaxKind.SimpleAssignmentExpression,
@@ -191,9 +257,9 @@ public sealed class AsyncWrapperGenerator
 
         var methodDecls = new List<MemberDeclarationSyntax> { fieldDecl, ctorDecl };
 
-        foreach (var method in methods)
+        foreach (var (method, model) in methods)
         {
-            var (_, alreadyTaskBased) = GetAsyncReturnType(method, semanticModel);
+            var (_, alreadyTaskBased) = GetAsyncReturnType(method, model);
             var isVoid = method.ReturnType is PredefinedTypeSyntax pt &&
                          pt.Keyword.IsKind(SyntaxKind.VoidKeyword);
 
@@ -217,7 +283,6 @@ public sealed class AsyncWrapperGenerator
 
             if (alreadyTaskBased)
             {
-                // Already returns Task — delegate directly, no sync wrapper.
                 bodyStatement = ReturnStatement(innerCall);
             }
             else
@@ -257,43 +322,26 @@ public sealed class AsyncWrapperGenerator
             .WithMembers(List(methodDecls));
 
         return WrapInCompilationUnit(
-            originalCompilationUnit,
-            namespaceName,
-            classDecl,
-            extraUsings: [asyncHelperNamespace, "System.Threading.Tasks"],
-            nullableEnable);
+            originalCompilationUnit, namespaceName, classDecl,
+            extraUsings: [asyncHelperNamespace, "System.Threading.Tasks"], nullableEnable);
     }
 
     // ──────────────────────────────────────────────────────────────────────────
     // Helpers
     // ──────────────────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Returns the async return type for the generated interface method and a flag
-    /// indicating whether the original method was already Task-based.
-    /// The returned type syntax is derived from the original source syntax, not from
-    /// the fully-qualified symbol display string.
-    /// </summary>
     private static (TypeSyntax ReturnType, bool AlreadyTaskBased) GetAsyncReturnType(
         MethodDeclarationSyntax method,
         SemanticModel semanticModel)
     {
-        var typeInfo = semanticModel.GetTypeInfo(method.ReturnType);
-        var typeSymbol = typeInfo.Type;
+        var typeSymbol = semanticModel.GetTypeInfo(method.ReturnType).Type;
 
-        // void → Task
         if (typeSymbol?.SpecialType == SpecialType.System_Void)
-        {
             return (IdentifierName("Task"), false);
-        }
 
-        // Already Task/ValueTask — keep the original syntax as written.
         if (IsTaskLikeSymbol(typeSymbol))
-        {
             return (method.ReturnType.WithoutTrivia(), true);
-        }
 
-        // T → Task<T> using the original type syntax.
         var wrapped = GenericName(Identifier("Task"))
             .WithTypeArgumentList(TypeArgumentList(SingletonSeparatedList(
                 method.ReturnType.WithoutTrivia())));
@@ -301,12 +349,6 @@ public sealed class AsyncWrapperGenerator
         return (wrapped, false);
     }
 
-    /// <summary>
-    /// Copies the original interface's base list, replacing each base interface whose
-    /// simple name ends with <paramref name="postfix"/> with its async counterpart
-    /// (appending <c>Async</c> to the identifier).  When <paramref name="postfix"/> is
-    /// null every base type is kept as-is.
-    /// </summary>
     private static BaseListSyntax? BuildAsyncBaseList(BaseListSyntax? baseList, string? postfix)
     {
         if (baseList == null) return null;
@@ -320,12 +362,6 @@ public sealed class AsyncWrapperGenerator
         return BaseList(SeparatedList(rewritten));
     }
 
-    /// <summary>
-    /// If <paramref name="type"/> is a simple or generic name whose identifier ends with
-    /// <paramref name="postfix"/> and does not already end with <c>Async</c>, returns
-    /// a new type syntax with <c>Async</c> appended to the identifier.
-    /// Otherwise returns <c>null</c>.
-    /// </summary>
     private static TypeSyntax? TryMakeAsyncTypeSyntax(TypeSyntax type, string postfix)
     {
         switch (type)
@@ -358,10 +394,6 @@ public sealed class AsyncWrapperGenerator
         }
     }
 
-    /// <summary>
-    /// Returns <c>Name</c> when there are no type parameters, or <c>Name&lt;T, U&gt;</c>
-    /// when there are, using the parameter names as written in the source.
-    /// </summary>
     private static TypeSyntax MakeTypeName(string name, TypeParameterListSyntax? tpl) =>
         tpl is { Parameters.Count: > 0 }
             ? GenericName(Identifier(name)).WithTypeArgumentList(
@@ -415,20 +447,14 @@ public sealed class AsyncWrapperGenerator
         return ArgumentList(SeparatedList(arguments));
     }
 
-    /// <summary>
-    /// Extracts the namespace name from a file-scoped or block-scoped namespace declaration,
-    /// or returns null for the global namespace.
-    /// </summary>
     private static string? GetNamespace(CompilationUnitSyntax compilationUnit)
     {
-        // File-scoped namespace: namespace Foo.Bar;
         var fileScoped = compilationUnit.Members
             .OfType<FileScopedNamespaceDeclarationSyntax>()
             .FirstOrDefault();
         if (fileScoped != null)
             return fileScoped.Name.ToString();
 
-        // Block-scoped namespace: namespace Foo.Bar { ... }
         var blockScoped = compilationUnit.Members
             .OfType<NamespaceDeclarationSyntax>()
             .FirstOrDefault();
@@ -452,7 +478,6 @@ public sealed class AsyncWrapperGenerator
         IEnumerable<string> extraUsings,
         bool nullableEnable)
     {
-        // Start with the original usings, then add any extras that aren't already present.
         var existingUsings = originalCompilationUnit.Usings;
         var existingNames = existingUsings
             .Select(u => u.Name?.ToString())
@@ -463,16 +488,13 @@ public sealed class AsyncWrapperGenerator
         foreach (var ns in extraUsings.Distinct())
         {
             if (!existingNames.Contains(ns))
-            {
                 mergedUsings.Add(UsingDirective(ParseName(ns)));
-            }
         }
 
         CompilationUnitSyntax result;
 
         if (namespaceName != null)
         {
-            // Preserve file-scoped namespace style when the original used it.
             var usedFileScoped = originalCompilationUnit.Members
                 .OfType<FileScopedNamespaceDeclarationSyntax>()
                 .Any();

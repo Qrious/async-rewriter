@@ -163,6 +163,7 @@ public class WrapProjectCommand : Command
             InterfaceDeclarationSyntax Declaration,
             CompilationUnitSyntax CompilationUnit,
             SemanticModel SemanticModel,
+            Compilation Compilation,
             string InterfaceFilePath)>();
 
         foreach (var project in interfaceProjects)
@@ -192,7 +193,7 @@ public class WrapProjectCommand : Command
                     if (postfix != null && !symbol.Name.EndsWith(postfix, StringComparison.Ordinal))
                         continue;
 
-                    candidates.Add((symbol, node, root, semanticModel, document.FilePath));
+                    candidates.Add((symbol, node, root, semanticModel, compilation, document.FilePath));
                 }
             }
         }
@@ -218,13 +219,14 @@ public class WrapProjectCommand : Command
         var generator = new AsyncWrapperGenerator();
         var generated = new List<(string FilePath, string Content, string Label)>();
 
-        foreach (var (symbol, declaration, compilationUnit, semanticModel, interfaceFilePath) in candidates)
+        foreach (var (symbol, declaration, compilationUnit, semanticModel, compilation, interfaceFilePath) in candidates)
         {
             var (asyncInterfaceSource, adapterSource) = generator.Generate(
                 symbol,
                 declaration,
                 compilationUnit,
                 semanticModel,
+                compilation,
                 asyncHelperNamespace,
                 postfix,
                 out var warnings);
@@ -305,7 +307,7 @@ public class WrapProjectCommand : Command
     /// </summary>
     private async Task<Dictionary<string, string>> FindImplementationFilePathsAsync(
         Solution solution,
-        List<(INamedTypeSymbol Symbol, InterfaceDeclarationSyntax Declaration, CompilationUnitSyntax CompilationUnit, SemanticModel SemanticModel, string InterfaceFilePath)> candidates)
+        List<(INamedTypeSymbol Symbol, InterfaceDeclarationSyntax Declaration, CompilationUnitSyntax CompilationUnit, SemanticModel SemanticModel, Compilation Compilation, string InterfaceFilePath)> candidates)
     {
         var result = new Dictionary<string, string>(StringComparer.Ordinal);
 
