@@ -202,6 +202,15 @@ public sealed class SemanticCallGraphRewriter : CSharpSyntaxRewriter
             return visited;
         }
 
+        // If this invocation is the WhenNotNull of a ConditionalAccessExpression
+        // (i.e. the ".Method()" part of "obj?.Method()"), the await must be placed
+        // outside the entire ConditionalAccessExpression, not just around this node.
+        // Return unchanged here; VisitConditionalAccessExpression will add the await.
+        if (node.Expression is MemberBindingExpressionSyntax)
+        {
+            return visited;
+        }
+
         // Determine what expression to await (unwrap sync wrappers if needed).
         ExpressionSyntax expressionToAwait = visited;
         if (_syncWrapperMethodIds.Contains(calleeId))
@@ -217,6 +226,68 @@ public sealed class SemanticCallGraphRewriter : CSharpSyntaxRewriter
         }
 
         return BuildAwaitExpression(node, visited, expressionToAwait);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Conditional-access expressions — await the whole ?. expression
+    // ──────────────────────────────────────────────────────────────────────────
+
+    public override SyntaxNode? VisitConditionalAccessExpression(
+        ConditionalAccessExpressionSyntax node)
+    {
+        var visited = (ConditionalAccessExpressionSyntax)
+            base.VisitConditionalAccessExpression(node)!;
+
+        // Only handle the case where WhenNotNull is a (possibly already-rewritten)
+        // invocation that needs await.  VisitInvocationExpression has already resolved
+        // whether the callee is awaitable and returned the invocation unchanged when
+        // node.Expression is a MemberBindingExpression; we now detect this situation by
+        // re-checking the original WhenNotNull invocation against the awaitable-callee map.
+        if (node.WhenNotNull is not InvocationExpressionSyntax originalInvocation)
+        {
+            return visited;
+        }
+
+        var currentCallerId = CurrentTransformingMethodId;
+        if (currentCallerId == null)
+        {
+            return visited;
+        }
+
+        if (!_awaitableCalleesByCallerId.TryGetValue(currentCallerId, out var awaitableCallees))
+        {
+            return visited;
+        }
+
+        // Use the original node for symbol resolution — the semantic model is bound to
+        // the original syntax tree.
+        var calleeSymbol = _semanticModel.GetSymbolInfo(originalInvocation).Symbol as IMethodSymbol;
+        if (calleeSymbol == null)
+        {
+            return visited;
+        }
+
+        var calleeId = MethodIdFactory.GetMethodId(calleeSymbol);
+        if (!awaitableCallees.Contains(calleeId))
+        {
+            return visited;
+        }
+
+        // Wrap the entire conditional-access expression in await.
+        // e.g.  obj?.MethodAsync()          →  await obj?.MethodAsync()
+        //       obj?.MethodAsync().Other()   →  (await obj?.MethodAsync()).Other()
+        //   (the second case is handled by the parent of the ConditionalAccess node)
+        var leadingTrivia = visited.GetLeadingTrivia();
+        var awaitExpr = AwaitExpression(
+            Token(SyntaxKind.AwaitKeyword).WithTrailingTrivia(Space),
+            visited.WithoutLeadingTrivia());
+
+        if (node.Parent is MemberAccessExpressionSyntax or ElementAccessExpressionSyntax)
+        {
+            return ParenthesizedExpression(awaitExpr).WithLeadingTrivia(leadingTrivia);
+        }
+
+        return awaitExpr.WithLeadingTrivia(leadingTrivia);
     }
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -359,11 +430,12 @@ public sealed class SemanticCallGraphRewriter : CSharpSyntaxRewriter
     {
         var leadingTrivia = visited.GetLeadingTrivia();
 
-        // Parenthesise await in member-access chains to avoid parse ambiguity:
+        // Parenthesise await in member-access / element-access chains to avoid parse ambiguity:
         // a.Method1().Method2() → (await a.Method1()).Method2()
+        // ConditionalAccessExpression is intentionally excluded here: that case is handled
+        // by VisitConditionalAccessExpression, which awaits the whole ?. expression.
         if (originalNode.Parent is MemberAccessExpressionSyntax
-            or ElementAccessExpressionSyntax
-            or ConditionalAccessExpressionSyntax)
+            or ElementAccessExpressionSyntax)
         {
             var trailingTrivia = visited.GetTrailingTrivia();
             var stripped = expressionToAwait.WithoutLeadingTrivia().WithoutTrailingTrivia();

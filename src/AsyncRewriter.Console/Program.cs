@@ -1,6 +1,7 @@
 using System.CommandLine;
 using AsyncRewriter.Analyzer;
 using AsyncRewriter.Analyzer.EntityFramework;
+using AsyncRewriter.Analyzer.ServiceInterface;
 using AsyncRewriter.Console.Commands;
 using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Neo4j;
@@ -50,6 +51,7 @@ class Program
         serviceCollection.AddTransient<IDirtyTaskMethodsExtractor, DirtyTaskMethodsExtractor>();
         serviceCollection.AddTransient<IAsyncCallGraphFlooder, AsyncCallGraphFlooder>();
         serviceCollection.AddTransient<IEntityFrameworkSyncCallExtractor, EntityFrameworkSyncCallExtractor>();
+        serviceCollection.AddTransient<IAsyncInterfaceMethodExtractor, AsyncInterfaceMethodExtractor>();
         serviceCollection.AddSingleton<ICallGraphRepository, Neo4jCallGraphRepository>();
         serviceCollection.AddSingleton<IOutParameterAnalyzer, OutParameterAnalyzer>();
         serviceCollection.AddSingleton<FloodedCallGraphTransformer>();

@@ -165,3 +165,50 @@ public record CompositeMetadata<T1, T2, T3, T4> : IGraphMetadata<CompositeMetada
         };
     }
 }
+
+public record CompositeMetadata<T1, T2, T3, T4, T5> : IGraphMetadata<CompositeMetadata<T1, T2, T3, T4, T5>>
+    where T1 : IGraphMetadata<T1>
+    where T2 : IGraphMetadata<T2>
+    where T3 : IGraphMetadata<T3>
+    where T4 : IGraphMetadata<T4>
+    where T5 : IGraphMetadata<T5>
+{
+    public required T1 First { get; init; }
+    public required T2 Second { get; init; }
+    public required T3 Third { get; init; }
+    public required T4 Fourth { get; init; }
+    public required T5 Fifth { get; init; }
+
+    public IReadOnlyDictionary<string, string> ToDictionary()
+    {
+        var result = new Dictionary<string, string>();
+        foreach (var (k, v) in First.ToDictionary())
+            result["0:" + k] = v;
+        foreach (var (k, v) in Second.ToDictionary())
+            result["1:" + k] = v;
+        foreach (var (k, v) in Third.ToDictionary())
+            result["2:" + k] = v;
+        foreach (var (k, v) in Fourth.ToDictionary())
+            result["3:" + k] = v;
+        foreach (var (k, v) in Fifth.ToDictionary())
+            result["4:" + k] = v;
+        return result;
+    }
+
+    public static CompositeMetadata<T1, T2, T3, T4, T5> FromDictionary(IReadOnlyDictionary<string, string> dictionary)
+    {
+        var d1 = dictionary.Where(kv => kv.Key.StartsWith("0:")).ToDictionary(kv => kv.Key[2..], kv => kv.Value);
+        var d2 = dictionary.Where(kv => kv.Key.StartsWith("1:")).ToDictionary(kv => kv.Key[2..], kv => kv.Value);
+        var d3 = dictionary.Where(kv => kv.Key.StartsWith("2:")).ToDictionary(kv => kv.Key[2..], kv => kv.Value);
+        var d4 = dictionary.Where(kv => kv.Key.StartsWith("3:")).ToDictionary(kv => kv.Key[2..], kv => kv.Value);
+        var d5 = dictionary.Where(kv => kv.Key.StartsWith("4:")).ToDictionary(kv => kv.Key[2..], kv => kv.Value);
+        return new CompositeMetadata<T1, T2, T3, T4, T5>
+        {
+            First = T1.FromDictionary(d1),
+            Second = T2.FromDictionary(d2),
+            Third = T3.FromDictionary(d3),
+            Fourth = T4.FromDictionary(d4),
+            Fifth = T5.FromDictionary(d5)
+        };
+    }
+}

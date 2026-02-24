@@ -26,6 +26,7 @@ public class EntityFrameworkSyncCallExtractor : IEntityFrameworkSyncCallExtracto
 
     private static readonly ImmutableHashSet<string> EfNamespaces = ImmutableHashSet.Create(
         StringComparer.OrdinalIgnoreCase,
+        "System.Linq.Queryable",
         "System.Data.Entity",
         "System.Data.Entity.Infrastructure",
         "System.Data.Entity.Utilities");
@@ -37,13 +38,19 @@ public class EntityFrameworkSyncCallExtractor : IEntityFrameworkSyncCallExtracto
         foreach (var call in callGraph.Calls)
         {
             if (!callGraph.Methods.TryGetValue(call.CalleeId, out var callee))
+            {
                 continue;
+            }
 
             if (!IsEfSyncMethodWithAsyncOverload(callee))
+            {
                 continue;
+            }
 
             if (!callGraph.Methods.TryGetValue(call.CallerId, out var caller))
+            {
                 continue;
+            }
 
             if (!metadata.ContainsKey(caller.Id))
             {
@@ -67,7 +74,9 @@ public class EntityFrameworkSyncCallExtractor : IEntityFrameworkSyncCallExtracto
     private static bool IsEfSyncMethodWithAsyncOverload(IMethodNode method)
     {
         if (!EfSyncMethodsWithAsyncOverloads.Contains(method.Name))
+        {
             return false;
+        }
 
         return EfNamespaces.Contains(method.ContainingNamespace)
                || EfTypes.Contains(method.ContainingType);

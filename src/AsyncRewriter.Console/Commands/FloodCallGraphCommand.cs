@@ -17,6 +17,7 @@ public class FloodCallGraphCommand : Command
     private readonly IAsyncCallGraphFlooder _flooder;
     private readonly IDirtyTaskMethodsExtractor _dirtyTaskMethodsExtractor;
     private readonly IEntityFrameworkSyncCallExtractor _efSyncCallExtractor;
+    private readonly IAsyncInterfaceMethodExtractor _asyncInterfaceMethodExtractor;
     private readonly IOutParameterAnalyzer _outParameterAnalyzer;
 
     public FloodCallGraphCommand(
@@ -24,6 +25,7 @@ public class FloodCallGraphCommand : Command
         IAsyncCallGraphFlooder flooder,
         IDirtyTaskMethodsExtractor dirtyTaskMethodsExtractor,
         IEntityFrameworkSyncCallExtractor efSyncCallExtractor,
+        IAsyncInterfaceMethodExtractor asyncInterfaceMethodExtractor,
         IOutParameterAnalyzer outParameterAnalyzer)
         : base("flood", "Flood a existing callgraph")
     {
@@ -31,6 +33,7 @@ public class FloodCallGraphCommand : Command
         _flooder = flooder;
         _dirtyTaskMethodsExtractor = dirtyTaskMethodsExtractor;
         _efSyncCallExtractor = efSyncCallExtractor;
+        _asyncInterfaceMethodExtractor = asyncInterfaceMethodExtractor;
         _outParameterAnalyzer = outParameterAnalyzer;
 
         var callGraphId = new Argument<string>("callgraph", "The id of the call graph to flood");
@@ -92,8 +95,18 @@ public class FloodCallGraphCommand : Command
             _logger.LogTrace("EF Sync Caller: {MethodId} ({MethodName}) - {Reason}", id, callGraph.Methods[id].Name, meta.Reason);
         }
 
+        _logger.LogInformation("Analyzing *Service interface methods in call graph...");
+        var serviceGraph = _asyncInterfaceMethodExtractor.Extract(callGraph);
+        _logger.LogInformation("Found {Count} *Service interface methods (and their implementations)!", serviceGraph.MethodMetadata.Count);
+
+        foreach (var (id, meta) in serviceGraph.MethodMetadata)
+        {
+            _logger.LogTrace("Service interface method: {MethodId} ({MethodName}) - interface: {InterfaceName}", id, callGraph.Methods[id].Name, meta.InterfaceName);
+        }
+
         var rootMethodIds = new HashSet<string>(syncWrapperGraph.MethodMetadata.Keys);
         rootMethodIds.UnionWith(efGraph.MethodMetadata.Keys);
+        rootMethodIds.UnionWith(serviceGraph.MethodMetadata.Keys);
 
         var floodedGraph = await _flooder.Flood(callGraph, rootMethodIds, newCallGraphId: newGraphId);
 
@@ -104,23 +117,25 @@ public class FloodCallGraphCommand : Command
 
 
         // Combine flooding metadata with sync wrapper and EF metadata into a composite graph
-        var compositeMetadata = new Dictionary<string, CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata, OutParameterMetadata>>();
+        var compositeMetadata = new Dictionary<string, CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata, OutParameterMetadata, ServiceInterfaceMethodMetadata>>();
         foreach (var (id, floodingMeta) in floodedGraph.MethodMetadata)
         {
             syncWrapperGraph.TryGetMethodMetadata(id, out var syncMeta);
             efGraph.TryGetMethodMetadata(id, out var efMeta);
             outParameterCallGraph.TryGetMethodMetadata(id, out var outParameterMeta);
-            compositeMetadata[id] = new CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata, OutParameterMetadata>
+            serviceGraph.TryGetMethodMetadata(id, out var serviceMeta);
+            compositeMetadata[id] = new CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata, OutParameterMetadata, ServiceInterfaceMethodMetadata>
             {
                 First = floodingMeta,
                 Second = syncMeta ?? SyncWrapperMethodMetadata.None,
                 Third = efMeta ?? EntityFrameworkMethodMetadata.None,
-                Fourth = outParameterMeta ?? OutParameterMetadata.None
+                Fourth = outParameterMeta ?? OutParameterMetadata.None,
+                Fifth = serviceMeta ?? ServiceInterfaceMethodMetadata.None
             };
         }
 
         var combinedGraph = new CallGraphWithMetadata<
-            CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata, OutParameterMetadata>,
+            CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata, OutParameterMetadata, ServiceInterfaceMethodMetadata>,
             EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata>(
             floodedGraph.Id,
             floodedGraph.BaseGraph,
