@@ -62,6 +62,7 @@ class Program
         serviceCollection.AddSingleton<Command, FixMissingAwaitsCommand>();
         serviceCollection.AddSingleton<Command, ReplaceInterfaceCommand>();
         serviceCollection.AddSingleton<Command, WrapProjectCommand>();
+        serviceCollection.AddSingleton<Command, CopilotDrivenRefactorCommand>();
 
         serviceCollection.AddLogging(c => c.AddSimpleConsole());
     }
