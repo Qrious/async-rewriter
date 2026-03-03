@@ -151,7 +151,7 @@ public class UpgradeRepositoryInterfacesCommand : Command
 
                 // Step B: add CancellationToken to methods on the async interfaces
                 // (only meaningful for the file that *declares* the interface)
-                var ctRewriter = new AddCancellationTokenRewriter(semanticModel, asyncSymbols);
+                var ctRewriter = new AddCancellationTokenRewriter(asyncSymbols);
                 var rootAfterCt = ctRewriter.Visit(root);
                 if (ctRewriter.AnyRewritten)
                 {

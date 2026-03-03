@@ -9,26 +9,27 @@ namespace AsyncRewriter.Transformation;
 /// Adds a <c>CancellationToken cancellationToken = default</c> parameter to every method
 /// declared inside a specified set of interface declarations, skipping methods that already
 /// have a <c>CancellationToken</c> parameter.
+///
+/// Interfaces are matched by short name so the rewriter can safely be applied to a
+/// syntax tree that has already been modified (and therefore no longer matches its
+/// original <see cref="SemanticModel"/>).
 /// </summary>
 public sealed class AddCancellationTokenRewriter : CSharpSyntaxRewriter
 {
-    private readonly IReadOnlySet<INamedTypeSymbol> _targetInterfaces;
-    private readonly SemanticModel _semanticModel;
+    private readonly IReadOnlySet<string> _targetInterfaceNames;
 
     public bool AnyRewritten { get; private set; }
 
-    public AddCancellationTokenRewriter(
-        SemanticModel semanticModel,
-        IReadOnlySet<INamedTypeSymbol> targetInterfaces)
+    public AddCancellationTokenRewriter(IReadOnlySet<INamedTypeSymbol> targetInterfaces)
     {
-        _semanticModel = semanticModel;
-        _targetInterfaces = targetInterfaces;
+        _targetInterfaceNames = targetInterfaces
+            .Select(s => s.Name)
+            .ToHashSet(StringComparer.Ordinal);
     }
 
     public override SyntaxNode? VisitInterfaceDeclaration(InterfaceDeclarationSyntax node)
     {
-        var symbol = _semanticModel.GetDeclaredSymbol(node);
-        if (symbol == null || !_targetInterfaces.Contains(symbol, SymbolEqualityComparer.Default))
+        if (!_targetInterfaceNames.Contains(node.Identifier.ValueText))
         {
             return base.VisitInterfaceDeclaration(node);
         }
