@@ -9,7 +9,9 @@ using System.Threading.Tasks;
 using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
 using AsyncRewriter.Neo4j;
+using AsyncRewriter.Transformation;
 using GitHub.Copilot.SDK;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.Extensions.Logging;
 
 namespace AsyncRewriter.Console.Commands;
@@ -133,10 +135,10 @@ public class CopilotDrivenRefactorCommand : Command
                 continue;
             }
 
-            // Call Copilot for each method in this file (depth-ordered) and collect replacements.
-            var replacements = new List<(int StartLine, int EndLine, string MethodName, string RefactoredText)>();
+            // Call Copilot for each method in this file and collect replacements keyed by start line.
+            var replacementsByStartLine = new Dictionary<int, string>();
 
-            foreach (var (methodId, metadata, method) in fileGroup.OrderBy(x => x.Metadata.Depth))
+            foreach (var (methodId, metadata, method) in fileGroup)
             {
                 var methodSource = ReadMethodSource(method!);
                 if (methodSource == null)
@@ -162,43 +164,22 @@ public class CopilotDrivenRefactorCommand : Command
                     continue;
                 }
 
-                replacements.Add((method.StartLine, method.EndLine, method.Name, refactored));
+                replacementsByStartLine[method.StartLine] = refactored;
                 totalRefactored++;
             }
 
-            if (replacements.Count == 0)
+            if (replacementsByStartLine.Count == 0)
                 continue;
 
-            var fileLines = (await File.ReadAllLinesAsync(filePath)).ToList();
+            // Apply all replacements in a single Roslyn rewrite pass — no ordering required.
+            var sourceText = await File.ReadAllTextAsync(filePath);
+            var syntaxTree = CSharpSyntaxTree.ParseText(sourceText);
+            var root = await syntaxTree.GetRootAsync();
 
-            // Process from bottom of file upward so line indices stay valid.
-            foreach (var (startLine, endLine, methodName, refactoredText) in replacements.OrderByDescending(r => r.StartLine))
-            {
-                if (startLine < 0 || endLine >= fileLines.Count || startLine > endLine)
-                {
-                    _logger.LogWarning("Line range [{Start},{End}] out of bounds for {Method} in {File}; skipping",
-                        startLine, endLine, methodName, filePath);
-                    continue;
-                }
+            var rewriter = new CopilotMethodReplacementRewriter(replacementsByStartLine);
+            var newRoot = rewriter.Visit(root);
 
-                var newMethodLines = refactoredText
-                    .Replace("\r\n", "\n")
-                    .Split('\n')
-                    .ToList();
-
-                // Preserve the indentation of the original first line.
-                var originalIndent = GetIndent(fileLines[startLine]);
-                var refactoredIndent = GetIndent(newMethodLines.FirstOrDefault() ?? "");
-                if (originalIndent != refactoredIndent)
-                {
-                    newMethodLines = ReindentLines(newMethodLines, refactoredIndent, originalIndent);
-                }
-
-                fileLines.RemoveRange(startLine, endLine - startLine + 1);
-                fileLines.InsertRange(startLine, newMethodLines);
-            }
-
-            await File.WriteAllLinesAsync(filePath, fileLines);
+            await File.WriteAllTextAsync(filePath, newRoot.ToFullString());
             _logger.LogInformation("Modified: {FilePath}", filePath);
             filesModified++;
         }
@@ -397,25 +378,4 @@ public class CopilotDrivenRefactorCommand : Command
                 """;
     }
 
-    // ── Indentation helpers ─────────────────────────────────────────────────
-
-    private static string GetIndent(string line)
-    {
-        int i = 0;
-        while (i < line.Length && (line[i] == ' ' || line[i] == '\t')) i++;
-        return line[..i];
-    }
-
-    private static List<string> ReindentLines(List<string> lines, string fromIndent, string toIndent)
-    {
-        return lines.Select(line =>
-        {
-            if (line.StartsWith(fromIndent, StringComparison.Ordinal))
-            {
-                return toIndent + line[fromIndent.Length..];
-            }
-
-            return line;
-        }).ToList();
-    }
 }
