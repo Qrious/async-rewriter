@@ -63,6 +63,7 @@ class Program
         serviceCollection.AddSingleton<Command, ReplaceInterfaceCommand>();
         serviceCollection.AddSingleton<Command, WrapProjectCommand>();
         serviceCollection.AddSingleton<Command, CopilotDrivenRefactorCommand>();
+        serviceCollection.AddSingleton<Command, UpgradeRepositoryInterfacesCommand>();
 
         serviceCollection.AddLogging(c => c.AddSimpleConsole());
     }
