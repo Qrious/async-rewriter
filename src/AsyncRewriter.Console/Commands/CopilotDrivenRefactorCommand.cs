@@ -59,6 +59,9 @@ public class CopilotDrivenRefactorCommand : Command
             aliases: ["--parallelism", "-p"],
             description: "Maximum number of concurrent Copilot requests (default: 1)",
             getDefaultValue: () => 1);
+        var sessionFileOption = new Option<string?>(
+            aliases: ["--session", "-s"],
+            description: "Path to a session file for resume support. Progress is saved after each method; re-running with the same file skips already-completed methods.");
 
         AddArgument(callGraphIdArg);
         AddOption(neo4jUriOption);
@@ -68,17 +71,27 @@ public class CopilotDrivenRefactorCommand : Command
         AddOption(githubTokenOption);
         AddOption(dryRunOption);
         AddOption(parallelismOption);
+        AddOption(sessionFileOption);
 
-        this.SetHandler(ExecuteAsync,
-            callGraphIdArg,
-            neo4jUriOption, neo4jUserOption, neo4jPasswordOption,
-            modelOption, githubTokenOption, dryRunOption, parallelismOption);
+        this.SetHandler(async ctx =>
+        {
+            await ExecuteAsync(
+                ctx.ParseResult.GetValueForArgument(callGraphIdArg),
+                ctx.ParseResult.GetValueForOption(neo4jUriOption)!,
+                ctx.ParseResult.GetValueForOption(neo4jUserOption)!,
+                ctx.ParseResult.GetValueForOption(neo4jPasswordOption)!,
+                ctx.ParseResult.GetValueForOption(modelOption)!,
+                ctx.ParseResult.GetValueForOption(githubTokenOption),
+                ctx.ParseResult.GetValueForOption(dryRunOption),
+                ctx.ParseResult.GetValueForOption(parallelismOption),
+                ctx.ParseResult.GetValueForOption(sessionFileOption));
+        });
     }
 
     private async Task ExecuteAsync(
         string callGraphId,
         string neo4jUri, string neo4jUser, string neo4jPassword,
-        string model, string? githubToken, bool dryRun, int parallelism)
+        string model, string? githubToken, bool dryRun, int parallelism, string? sessionFile)
     {
         var neo4jCredentials = new Neo4JCredentials(new Uri(neo4jUri), neo4jUser, neo4jPassword);
         _logger.LogInformation("Connecting to Neo4j at {Neo4JUri}...", neo4jCredentials.Url);
@@ -106,6 +119,17 @@ public class CopilotDrivenRefactorCommand : Command
             .ToList();
 
         _logger.LogInformation("Found {Count} flooded methods to refactor", floodedEntries.Count);
+
+        // ── Session (resume support) ────────────────────────────────────────
+        CopilotRefactorSession? session = null;
+        if (sessionFile != null)
+        {
+            session = await CopilotRefactorSession.OpenOrCreateAsync(sessionFile, callGraphId);
+            var alreadyDone = floodedEntries.Count(e => session.IsCompleted(e.MethodId));
+            if (alreadyDone > 0)
+                _logger.LogInformation("Resuming session: {Done}/{Total} methods already completed, skipping them.",
+                    alreadyDone, floodedEntries.Count);
+        }
 
         var floodedMethodIds = new HashSet<string>(floodedEntries.Select(x => x.MethodId));
 
@@ -137,6 +161,12 @@ public class CopilotDrivenRefactorCommand : Command
             async (entry, _) =>
         {
             var (methodId, metadata, method) = entry;
+
+            if (session != null && session.IsCompleted(methodId))
+            {
+                _logger.LogDebug("Skipping already-completed method {MethodId}", methodId);
+                return;
+            }
 
             if (!File.Exists(method!.FilePath))
             {
@@ -193,6 +223,8 @@ public class CopilotDrivenRefactorCommand : Command
                 await File.WriteAllTextAsync(method.FilePath, newRoot.ToFullString());
                 modifiedFiles[method.FilePath] = true;
                 Interlocked.Increment(ref totalRefactored);
+                if (session != null)
+                    await session.MarkCompletedAsync(methodId);
             }
             finally
             {
