@@ -22,10 +22,16 @@ namespace AsyncRewriter.Transformation;
 public sealed class InterfaceReplaceRewriter : CSharpSyntaxRewriter
 {
     private readonly SemanticModel _semanticModel;
-    private readonly INamedTypeSymbol _oldSymbol;
-    private readonly string _newShortName;
-    private readonly string _newNamespace;
-    private readonly string _newFullName;
+
+    // Single-pair fields (null when using the multi-pair constructor).
+    private readonly INamedTypeSymbol? _oldSymbol;
+    private readonly string? _newShortName;
+    private readonly string? _newNamespace;
+    private readonly string? _newFullName;
+
+    // Multi-pair support.
+    private readonly IReadOnlyDictionary<INamedTypeSymbol, (string FullName, string ShortName, string Namespace)>? _pairs;
+
     private bool _anyRewritten;
 
     public bool AnyRewritten => _anyRewritten;
@@ -52,17 +58,50 @@ public sealed class InterfaceReplaceRewriter : CSharpSyntaxRewriter
         }
     }
 
+    /// <summary>
+    /// Multi-pair constructor: replaces all listed interfaces in a single tree traversal,
+    /// avoiding the "node is not within syntax tree" error that occurs when the same
+    /// semantic model is used against nodes from an already-rewritten tree.
+    /// </summary>
+    public InterfaceReplaceRewriter(
+        SemanticModel semanticModel,
+        IReadOnlyDictionary<INamedTypeSymbol, string> oldToNewFullName)
+    {
+        _semanticModel = semanticModel;
+
+        var pairs = new Dictionary<INamedTypeSymbol, (string, string, string)>(SymbolEqualityComparer.Default);
+        foreach (var (oldSym, newFull) in oldToNewFullName)
+        {
+            var lastDot = newFull.LastIndexOf('.');
+            var ns = lastDot >= 0 ? newFull[..lastDot] : string.Empty;
+            var shortName = lastDot >= 0 ? newFull[(lastDot + 1)..] : newFull;
+            pairs[oldSym] = (newFull, shortName, ns);
+        }
+
+        _pairs = pairs;
+    }
+
     // ──────────────────────────────────────────────────────────────────────────
-    // Compilation unit — add using for new namespace when needed
+    // Compilation unit — add using for new namespace(s) when needed
     // ──────────────────────────────────────────────────────────────────────────
 
     public override SyntaxNode? VisitCompilationUnit(CompilationUnitSyntax node)
     {
         var visited = (CompilationUnitSyntax)base.VisitCompilationUnit(node)!;
 
-        if (_anyRewritten && !string.IsNullOrEmpty(_newNamespace))
+        if (_anyRewritten)
         {
-            visited = EnsureUsingDirective(visited, _newNamespace);
+            if (_pairs != null)
+            {
+                foreach (var (_, _, ns) in _pairs.Values.Where(p => !string.IsNullOrEmpty(p.Namespace)))
+                {
+                    visited = EnsureUsingDirective(visited, ns);
+                }
+            }
+            else if (!string.IsNullOrEmpty(_newNamespace))
+            {
+                visited = EnsureUsingDirective(visited, _newNamespace!);
+            }
         }
 
         return visited;
@@ -74,23 +113,24 @@ public sealed class InterfaceReplaceRewriter : CSharpSyntaxRewriter
 
     public override SyntaxNode? VisitIdentifierName(IdentifierNameSyntax node)
     {
-        if (!ResolvesToOldInterface(node))
+        var replacement = TryGetReplacement(node);
+        if (replacement == null)
         {
             return node;
         }
 
         _anyRewritten = true;
-        return IdentifierName(_newShortName)
+        return IdentifierName(replacement.Value.ShortName)
             .WithTriviaFrom(node);
     }
 
     public override SyntaxNode? VisitQualifiedName(QualifiedNameSyntax node)
     {
-        // If the whole qualified name resolves to the old interface, replace wholesale.
-        if (ResolvesToOldInterface(node))
+        var replacement = TryGetReplacement(node);
+        if (replacement != null)
         {
             _anyRewritten = true;
-            return ParseName(_newFullName)
+            return ParseName(replacement.Value.FullName)
                 .WithTriviaFrom(node);
         }
 
@@ -99,10 +139,11 @@ public sealed class InterfaceReplaceRewriter : CSharpSyntaxRewriter
 
     public override SyntaxNode? VisitGenericName(GenericNameSyntax node)
     {
-        if (ResolvesToOldInterface(node))
+        var replacement = TryGetReplacement(node);
+        if (replacement != null)
         {
             _anyRewritten = true;
-            return IdentifierName(_newShortName)
+            return IdentifierName(replacement.Value.ShortName)
                 .WithTriviaFrom(node);
         }
 
@@ -113,24 +154,58 @@ public sealed class InterfaceReplaceRewriter : CSharpSyntaxRewriter
     // Detection helpers
     // ──────────────────────────────────────────────────────────────────────────
 
-    private bool ResolvesToOldInterface(ExpressionSyntax node)
+    private (string FullName, string ShortName, string Namespace)? TryGetReplacement(ExpressionSyntax node)
     {
         var symbolInfo = _semanticModel.GetSymbolInfo(node);
         var symbol = symbolInfo.Symbol ?? symbolInfo.CandidateSymbols.FirstOrDefault();
-        return symbol != null && SymbolEqualityComparer.Default.Equals(symbol, _oldSymbol);
+        if (symbol == null)
+        {
+            return null;
+        }
+
+        if (_pairs != null)
+        {
+            return _pairs.TryGetValue((INamedTypeSymbol)symbol, out var entry) ? entry : null;
+        }
+
+        return SymbolEqualityComparer.Default.Equals(symbol, _oldSymbol)
+            ? (_newFullName!, _newShortName!, _newNamespace!)
+            : null;
     }
 
-    private bool ResolvesToOldInterface(TypeSyntax node)
+    private (string FullName, string ShortName, string Namespace)? TryGetReplacement(TypeSyntax node)
     {
         var typeInfo = _semanticModel.GetTypeInfo(node);
-        if (typeInfo.Type != null && SymbolEqualityComparer.Default.Equals(typeInfo.Type, _oldSymbol))
+        if (typeInfo.Type is INamedTypeSymbol typeSymbol)
         {
-            return true;
+            if (_pairs != null)
+            {
+                if (_pairs.TryGetValue(typeSymbol, out var entry))
+                {
+                    return entry;
+                }
+            }
+            else if (SymbolEqualityComparer.Default.Equals(typeSymbol, _oldSymbol))
+            {
+                return (_newFullName!, _newShortName!, _newNamespace!);
+            }
         }
 
         var symbolInfo = _semanticModel.GetSymbolInfo(node);
         var symbol = symbolInfo.Symbol ?? symbolInfo.CandidateSymbols.FirstOrDefault();
-        return symbol != null && SymbolEqualityComparer.Default.Equals(symbol, _oldSymbol);
+        if (symbol is not INamedTypeSymbol namedSymbol)
+        {
+            return null;
+        }
+
+        if (_pairs != null)
+        {
+            return _pairs.TryGetValue(namedSymbol, out var p) ? p : null;
+        }
+
+        return SymbolEqualityComparer.Default.Equals(namedSymbol, _oldSymbol)
+            ? (_newFullName!, _newShortName!, _newNamespace!)
+            : null;
     }
 
     // ──────────────────────────────────────────────────────────────────────────

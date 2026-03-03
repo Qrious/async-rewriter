@@ -132,18 +132,21 @@ public class UpgradeRepositoryInterfacesCommand : Command
 
                 var anyChanged = false;
 
-                // Step A: replace I*Repository → I*RepositoryAsync references
-                foreach (var (oldSymbol, newSymbol) in localPairs)
-                {
-                    var replaceRewriter = new InterfaceReplaceRewriter(
-                        semanticModel, oldSymbol, newSymbol.ToDisplayString());
+                // Step A: replace I*Repository → I*RepositoryAsync references.
+                // Use a single multi-pair rewriter so the semantic model is only
+                // applied to nodes from the original tree (avoids "node not within
+                // syntax tree" when multiple pairs match the same document).
+                var oldToNew = localPairs.ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => kvp.Value.ToDisplayString(),
+                    (IEqualityComparer<INamedTypeSymbol>)SymbolEqualityComparer.Default);
 
-                    var newRoot = replaceRewriter.Visit(root);
-                    if (replaceRewriter.AnyRewritten)
-                    {
-                        root = newRoot!;
-                        anyChanged = true;
-                    }
+                var replaceRewriter = new InterfaceReplaceRewriter(semanticModel, oldToNew);
+                var replacedRoot = replaceRewriter.Visit(root);
+                if (replaceRewriter.AnyRewritten)
+                {
+                    root = replacedRoot!;
+                    anyChanged = true;
                 }
 
                 // Step B: add CancellationToken to methods on the async interfaces
