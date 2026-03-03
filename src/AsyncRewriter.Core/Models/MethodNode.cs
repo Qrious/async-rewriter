@@ -23,6 +23,7 @@ public record MethodNode : IMethodNode
     public int StartCharacter { get; init; }
     public int EndCharacter { get; init; }
     public required bool IsReturnTypeParameter { get; init; }
+    public bool IsInterfaceMethod { get; init; }
 
     public IDictionary<string, string> ToDictionary()
     {
@@ -40,7 +41,8 @@ public record MethodNode : IMethodNode
             { nameof(EndLine), EndLine.ToString() },
             { nameof(StartCharacter), StartCharacter.ToString() },
             { nameof(EndCharacter), EndCharacter.ToString() },
-            { nameof(IsReturnTypeParameter), IsReturnTypeParameter.ToString() }
+            { nameof(IsReturnTypeParameter), IsReturnTypeParameter.ToString() },
+            { nameof(IsInterfaceMethod), IsInterfaceMethod.ToString() }
         };
     }
 
@@ -63,6 +65,7 @@ public record MethodNode : IMethodNode
             StartCharacter = data.TryGetValue(nameof(StartCharacter), out var sc) ? int.Parse(sc.ToString()) : 0,
             EndCharacter = data.TryGetValue(nameof(EndCharacter), out var ec) ? int.Parse(ec.ToString()) : 0,
             IsReturnTypeParameter =  bool.Parse(data[nameof(IsReturnTypeParameter)].ToString()),
+            IsInterfaceMethod = data.TryGetValue(nameof(IsInterfaceMethod), out var im) && bool.Parse(im.ToString()),
         };
     }
 

@@ -67,6 +67,11 @@ public interface IMethodNode : IEquatable<IMethodNode>, IIdentifiable
     public bool IsReturnTypeParameter { get; }
 
     /// <summary>
+    /// Indicates whether this method is declared on an interface.
+    /// </summary>
+    public bool IsInterfaceMethod { get; }
+
+    /// <summary>
     /// Converts the method node properties to a dictionary representation.
     /// </summary>
     /// <returns>A dictionary containing the method node's properties as key-value pairs.</returns>

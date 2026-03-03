@@ -154,7 +154,7 @@ public class CopilotDrivenRefactorCommand : Command
             var newReturnType = ComputeNewReturnType(metadata.OriginalReturnType);
             var newSignature = BuildNewSignature(method, newReturnType);
             var calleeContext = BuildCalleeContext(callGraph, methodId, floodedMethodIds);
-            bool isInterfaceMember = method.ContainingType.StartsWith('I');
+            bool isInterfaceMember = method.IsInterfaceMethod;
             var prompt = BuildPrompt(methodSource, newSignature, calleeContext, isInterfaceMember);
 
             _logger.LogInformation("Refactoring {Type}.{Method} (depth {Depth})...",

@@ -227,7 +227,8 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                                 EndLine = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Line + 1 ?? 0,
                                 StartCharacter = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Character ?? 0,
                                 EndCharacter = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Character ?? 0,
-                                IsReturnTypeParameter = isReturnTypeParam
+                                IsReturnTypeParameter = isReturnTypeParam,
+                                IsInterfaceMethod = true,
                             });
 
                             // InterfaceImplementation: implementing method → instantiated
@@ -282,6 +283,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                             StartCharacter = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Character ?? 0,
                             EndCharacter = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Character ?? 0,
                             IsReturnTypeParameter = isReturnTypeParam,
+                            IsInterfaceMethod = true,
                         });
                     }
                 }
@@ -390,6 +392,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
             StartCharacter = lineSpan.StartLinePosition.Character,
             EndCharacter = lineSpan.EndLinePosition.Character,
             IsReturnTypeParameter = isReturnTypeParameter,
+            IsInterfaceMethod = true,
         };
     }
 
