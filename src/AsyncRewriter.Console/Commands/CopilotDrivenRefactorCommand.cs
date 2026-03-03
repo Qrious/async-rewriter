@@ -44,7 +44,7 @@ public class CopilotDrivenRefactorCommand : Command
         var modelOption = new Option<string>(
             aliases: ["--model", "-m"],
             description: "Copilot model to use",
-            getDefaultValue: () => "claude-sonnet-4-5");
+            getDefaultValue: () => "gpt-5-mini");
         var githubTokenOption = new Option<string?>(
             aliases: ["--github-token"],
             description: "GitHub token for Copilot authentication (uses CLI auth if omitted)");
@@ -101,7 +101,6 @@ public class CopilotDrivenRefactorCommand : Command
 
         var floodedMethodIds = new HashSet<string>(floodedEntries.Select(x => x.MethodId));
 
-        // Phase 1: For each method in topological order, call Copilot and collect refactored text.
         var clientOptions = githubToken != null
             ? new CopilotClientOptions { GitHubToken = githubToken }
             : null;
@@ -109,55 +108,15 @@ public class CopilotDrivenRefactorCommand : Command
         await using var client = new CopilotClient(clientOptions);
         await client.StartAsync();
 
-        // methodId → refactored method source text
-        var refactoredByMethodId = new Dictionary<string, string>();
-
-        foreach (var (methodId, metadata, method) in floodedEntries)
-        {
-            var methodSource = ReadMethodSource(method!);
-            if (methodSource == null)
-            {
-                _logger.LogWarning("Could not read source for {Method} in {File}", method!.Name, method.FilePath);
-                continue;
-            }
-
-            var newReturnType = ComputeNewReturnType(metadata.OriginalReturnType);
-            var newSignature = BuildNewSignature(method!, newReturnType);
-            var calleeContext = BuildCalleeContext(callGraph, methodId, floodedMethodIds);
-
-            var prompt = BuildPrompt(methodSource, newSignature, calleeContext);
-
-            _logger.LogInformation("Refactoring {Type}.{Method} (depth {Depth})...",
-                method!.ContainingType, method.Name, metadata.Depth);
-
-            var refactoredRaw = await CallCopilotAsync(client, model, prompt);
-            var refactored = ExtractCodeBlock(refactoredRaw);
-
-            if (refactored == null)
-            {
-                _logger.LogWarning("No code block returned for {Method}; skipping", method.Name);
-                continue;
-            }
-
-            refactoredByMethodId[methodId] = refactored;
-        }
-
-        _logger.LogInformation("Copilot refactored {Count}/{Total} methods",
-            refactoredByMethodId.Count, floodedEntries.Count);
-
-        // Phase 2: Apply changes per file, bottom-to-top within each file so earlier
-        // line numbers remain stable as we replace later methods first.
-        var byFile = refactoredByMethodId
-            .Select(kvp =>
-            {
-                callGraph.Methods.TryGetValue(kvp.Key, out var method);
-                return (MethodId: kvp.Key, RefactoredText: kvp.Value, Method: method!);
-            })
-            .Where(x => x.Method != null)
-            .GroupBy(x => x.Method.FilePath)
+        // Group by file. Within each file, process methods in topological order (deepest first)
+        // so callee context is consistent, then apply all replacements before moving to the next file.
+        var byFile = floodedEntries
+            .GroupBy(x => x.Method!.FilePath)
             .ToList();
 
         int filesModified = 0;
+        int totalRefactored = 0;
+
         foreach (var fileGroup in byFile)
         {
             var filePath = fileGroup.Key;
@@ -174,22 +133,51 @@ public class CopilotDrivenRefactorCommand : Command
                 continue;
             }
 
+            // Call Copilot for each method in this file (depth-ordered) and collect replacements.
+            var replacements = new List<(int StartLine, int EndLine, string MethodName, string RefactoredText)>();
+
+            foreach (var (methodId, metadata, method) in fileGroup.OrderBy(x => x.Metadata.Depth))
+            {
+                var methodSource = ReadMethodSource(method!);
+                if (methodSource == null)
+                {
+                    _logger.LogWarning("Could not read source for {Method} in {File}", method!.Name, method.FilePath);
+                    continue;
+                }
+
+                var newReturnType = ComputeNewReturnType(metadata.OriginalReturnType);
+                var newSignature = BuildNewSignature(method!, newReturnType);
+                var calleeContext = BuildCalleeContext(callGraph, methodId, floodedMethodIds);
+                var prompt = BuildPrompt(methodSource, newSignature, calleeContext);
+
+                _logger.LogInformation("Refactoring {Type}.{Method} (depth {Depth})...",
+                    method!.ContainingType, method.Name, metadata.Depth);
+
+                var refactoredRaw = await CallCopilotAsync(client, model, prompt);
+                var refactored = ExtractCodeBlock(refactoredRaw);
+
+                if (refactored == null)
+                {
+                    _logger.LogWarning("No code block returned for {Method}; skipping", method.Name);
+                    continue;
+                }
+
+                replacements.Add((method.StartLine, method.EndLine, method.Name, refactored));
+                totalRefactored++;
+            }
+
+            if (replacements.Count == 0)
+                continue;
+
             var fileLines = (await File.ReadAllLinesAsync(filePath)).ToList();
 
             // Process from bottom of file upward so line indices stay valid.
-            var replacements = fileGroup
-                .OrderByDescending(x => x.Method.StartLine)
-                .ToList();
-
-            foreach (var (_, refactoredText, method) in replacements)
+            foreach (var (startLine, endLine, methodName, refactoredText) in replacements.OrderByDescending(r => r.StartLine))
             {
-                int startLine = method.StartLine; // 0-based inclusive
-                int endLine = method.EndLine;     // 0-based inclusive
-
                 if (startLine < 0 || endLine >= fileLines.Count || startLine > endLine)
                 {
                     _logger.LogWarning("Line range [{Start},{End}] out of bounds for {Method} in {File}; skipping",
-                        startLine, endLine, method.Name, filePath);
+                        startLine, endLine, methodName, filePath);
                     continue;
                 }
 
@@ -215,10 +203,8 @@ public class CopilotDrivenRefactorCommand : Command
             filesModified++;
         }
 
-        if (!dryRun)
-        {
-            _logger.LogInformation("Modified {FileCount} file(s).", filesModified);
-        }
+        _logger.LogInformation("Copilot refactored {Count}/{Total} methods across {FileCount} file(s).",
+            totalRefactored, floodedEntries.Count, filesModified);
     }
 
     // ── Copilot interaction ─────────────────────────────────────────────────

@@ -28,14 +28,14 @@ public class BuildCallGraphCommand : Command
                 "--neo4j-user"
             },
             description: "Neo4j username",
-            getDefaultValue: () => "neo4j");
+            getDefaultValue: () => "");
         var neo4jPasswordOption = new Option<string>(
             aliases: new[]
             {
                 "--neo4j-password"
             },
             description: "Neo4j password",
-            getDefaultValue: () => "asyncrewriter");
+            getDefaultValue: () => "");
         var graphIdOption = new Option<string?>(
             aliases: new[]
             {
