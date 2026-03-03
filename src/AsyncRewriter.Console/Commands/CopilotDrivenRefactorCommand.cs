@@ -228,6 +228,7 @@ public class CopilotDrivenRefactorCommand : Command
         await using var session = await client.CreateSessionAsync(new SessionConfig
         {
             Model = model,
+            OnPermissionRequest = PermissionHandler.ApproveAll
         });
 
         string? response = null;
