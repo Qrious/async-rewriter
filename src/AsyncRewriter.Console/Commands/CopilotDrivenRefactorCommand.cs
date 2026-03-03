@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.CommandLine;
 using System.IO;
@@ -54,6 +55,10 @@ public class CopilotDrivenRefactorCommand : Command
             aliases: ["--dry-run", "-n"],
             description: "Print what would be refactored without writing changes",
             getDefaultValue: () => false);
+        var parallelismOption = new Option<int>(
+            aliases: ["--parallelism", "-p"],
+            description: "Maximum number of concurrent Copilot requests (default: 1)",
+            getDefaultValue: () => 1);
 
         AddArgument(callGraphIdArg);
         AddOption(neo4jUriOption);
@@ -62,17 +67,18 @@ public class CopilotDrivenRefactorCommand : Command
         AddOption(modelOption);
         AddOption(githubTokenOption);
         AddOption(dryRunOption);
+        AddOption(parallelismOption);
 
         this.SetHandler(ExecuteAsync,
             callGraphIdArg,
             neo4jUriOption, neo4jUserOption, neo4jPasswordOption,
-            modelOption, githubTokenOption, dryRunOption);
+            modelOption, githubTokenOption, dryRunOption, parallelismOption);
     }
 
     private async Task ExecuteAsync(
         string callGraphId,
         string neo4jUri, string neo4jUser, string neo4jPassword,
-        string model, string? githubToken, bool dryRun)
+        string model, string? githubToken, bool dryRun, int parallelism)
     {
         var neo4jCredentials = new Neo4JCredentials(new Uri(neo4jUri), neo4jUser, neo4jPassword);
         _logger.LogInformation("Connecting to Neo4j at {Neo4JUri}...", neo4jCredentials.Url);
@@ -110,82 +116,99 @@ public class CopilotDrivenRefactorCommand : Command
         await using var client = new CopilotClient(clientOptions);
         await client.StartAsync();
 
-        // Group by file. Within each file, process methods in topological order (deepest first)
-        // so callee context is consistent, then apply all replacements before moving to the next file.
-        var byFile = floodedEntries
-            .GroupBy(x => x.Method!.FilePath)
-            .ToList();
-
-        int filesModified = 0;
-        int totalRefactored = 0;
-
-        foreach (var fileGroup in byFile)
+        if (dryRun)
         {
-            var filePath = fileGroup.Key;
-            if (!File.Exists(filePath))
-            {
-                _logger.LogWarning("File not found, skipping: {FilePath}", filePath);
-                continue;
-            }
-
-            if (dryRun)
-            {
+            foreach (var fileGroup in floodedEntries.GroupBy(x => x.Method!.FilePath))
                 _logger.LogInformation("[dry-run] Would modify: {FilePath} ({Count} method(s))",
-                    filePath, fileGroup.Count());
-                continue;
-            }
-
-            // Call Copilot for each method in this file and collect replacements keyed by start line.
-            var replacementsByStartLine = new Dictionary<int, string>();
-
-            foreach (var (methodId, metadata, method) in fileGroup)
-            {
-                var methodSource = ReadMethodSource(method!);
-                if (methodSource == null)
-                {
-                    _logger.LogWarning("Could not read source for {Method} in {File}", method!.Name, method.FilePath);
-                    continue;
-                }
-
-                var newReturnType = ComputeNewReturnType(metadata.OriginalReturnType);
-                var newSignature = BuildNewSignature(method!, newReturnType);
-                var calleeContext = BuildCalleeContext(callGraph, methodId, floodedMethodIds);
-                var prompt = BuildPrompt(methodSource, newSignature, calleeContext);
-
-                _logger.LogInformation("Refactoring {Type}.{Method} (depth {Depth})...",
-                    method!.ContainingType, method.Name, metadata.Depth);
-
-                var refactoredRaw = await CallCopilotAsync(client, model, prompt);
-                var refactored = ExtractCodeBlock(refactoredRaw);
-
-                if (refactored == null)
-                {
-                    _logger.LogWarning("No code block returned for {Method}; skipping", method.Name);
-                    continue;
-                }
-
-                replacementsByStartLine[method.StartLine] = refactored;
-                totalRefactored++;
-            }
-
-            if (replacementsByStartLine.Count == 0)
-                continue;
-
-            // Apply all replacements in a single Roslyn rewrite pass — no ordering required.
-            var sourceText = await File.ReadAllTextAsync(filePath);
-            var syntaxTree = CSharpSyntaxTree.ParseText(sourceText);
-            var root = await syntaxTree.GetRootAsync();
-
-            var rewriter = new CopilotMethodReplacementRewriter(replacementsByStartLine);
-            var newRoot = rewriter.Visit(root);
-
-            await File.WriteAllTextAsync(filePath, newRoot.ToFullString());
-            _logger.LogInformation("Modified: {FilePath}", filePath);
-            filesModified++;
+                    fileGroup.Key, fileGroup.Count());
+            return;
         }
 
+        _logger.LogInformation("Processing with parallelism={Parallelism}", parallelism);
+
+        // Throttle concurrent Copilot calls; per-file semaphores serialise the read-modify-write.
+        using var throttle = new SemaphoreSlim(parallelism, parallelism);
+        var fileLocks = new ConcurrentDictionary<string, SemaphoreSlim>();
+        var modifiedFiles = new ConcurrentDictionary<string, bool>();
+        int totalRefactored = 0;
+
+        var tasks = floodedEntries.Select(async entry =>
+        {
+            var (methodId, metadata, method) = entry;
+
+            if (!File.Exists(method!.FilePath))
+            {
+                _logger.LogWarning("File not found, skipping: {FilePath}", method.FilePath);
+                return;
+            }
+
+            var methodSource = ReadMethodSource(method);
+            if (methodSource == null)
+            {
+                _logger.LogWarning("Could not read source for {Method} in {File}", method.Name, method.FilePath);
+                return;
+            }
+
+            var newReturnType = ComputeNewReturnType(metadata.OriginalReturnType);
+            var newSignature = BuildNewSignature(method, newReturnType);
+            var calleeContext = BuildCalleeContext(callGraph, methodId, floodedMethodIds);
+            var prompt = BuildPrompt(methodSource, newSignature, calleeContext);
+
+            _logger.LogInformation("Refactoring {Type}.{Method} (depth {Depth})...",
+                method.ContainingType, method.Name, metadata.Depth);
+
+            // ── Copilot call (throttled) ───────────────────────────────────
+            await throttle.WaitAsync();
+            string? refactored;
+            try
+            {
+                var refactoredRaw = await CallCopilotAsync(client, model, prompt);
+                refactored = ExtractCodeBlock(refactoredRaw);
+            }
+            finally
+            {
+                throttle.Release();
+            }
+
+            if (refactored == null)
+            {
+                _logger.LogWarning("No code block returned for {Method}; skipping", method.Name);
+                return;
+            }
+
+            // ── File write (per-file lock) ─────────────────────────────────
+            var fileLock = fileLocks.GetOrAdd(method.FilePath, _ => new SemaphoreSlim(1, 1));
+            bool acquiredImmediately = await fileLock.WaitAsync(0);
+            if (!acquiredImmediately)
+            {
+                _logger.LogDebug("Lock contention on {FilePath} waiting for {Method}; queuing...",
+                    method.FilePath, method.Name);
+                await fileLock.WaitAsync();
+            }
+            try
+            {
+                var sourceText = await File.ReadAllTextAsync(method.FilePath);
+                var syntaxTree = CSharpSyntaxTree.ParseText(sourceText);
+                var root = await syntaxTree.GetRootAsync();
+
+                var rewriter = new CopilotMethodReplacementRewriter(
+                    new Dictionary<int, string> { [method.StartLine] = refactored });
+                var newRoot = rewriter.Visit(root);
+
+                await File.WriteAllTextAsync(method.FilePath, newRoot.ToFullString());
+                modifiedFiles[method.FilePath] = true;
+                Interlocked.Increment(ref totalRefactored);
+            }
+            finally
+            {
+                fileLock.Release();
+            }
+        });
+
+        await Task.WhenAll(tasks);
+
         _logger.LogInformation("Copilot refactored {Count}/{Total} methods across {FileCount} file(s).",
-            totalRefactored, floodedEntries.Count, filesModified);
+            totalRefactored, floodedEntries.Count, modifiedFiles.Count);
     }
 
     // ── Copilot interaction ─────────────────────────────────────────────────
