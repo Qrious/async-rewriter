@@ -126,13 +126,15 @@ public class CopilotDrivenRefactorCommand : Command
 
         _logger.LogInformation("Processing with parallelism={Parallelism}", parallelism);
 
-        // Throttle concurrent Copilot calls; per-file semaphores serialise the read-modify-write.
-        using var throttle = new SemaphoreSlim(parallelism, parallelism);
+        // Per-file semaphores serialise the read-modify-write.
         var fileLocks = new ConcurrentDictionary<string, SemaphoreSlim>();
         var modifiedFiles = new ConcurrentDictionary<string, bool>();
         int totalRefactored = 0;
 
-        var tasks = floodedEntries.Select(async entry =>
+        await Parallel.ForEachAsync(
+            floodedEntries,
+            new ParallelOptions { MaxDegreeOfParallelism = parallelism },
+            async (entry, _) =>
         {
             var (methodId, metadata, method) = entry;
 
@@ -157,18 +159,10 @@ public class CopilotDrivenRefactorCommand : Command
             _logger.LogInformation("Refactoring {Type}.{Method} (depth {Depth})...",
                 method.ContainingType, method.Name, metadata.Depth);
 
-            // ── Copilot call (throttled) ───────────────────────────────────
-            await throttle.WaitAsync();
+            // ── Copilot call ───────────────────────────────────────────────
             string? refactored;
-            try
-            {
-                var refactoredRaw = await CallCopilotAsync(client, model, prompt);
-                refactored = ExtractCodeBlock(refactoredRaw);
-            }
-            finally
-            {
-                throttle.Release();
-            }
+            var refactoredRaw = await CallCopilotAsync(client, model, prompt);
+            refactored = ExtractCodeBlock(refactoredRaw);
 
             if (refactored == null)
             {
@@ -204,8 +198,6 @@ public class CopilotDrivenRefactorCommand : Command
                 fileLock.Release();
             }
         });
-
-        await Task.WhenAll(tasks);
 
         _logger.LogInformation("Copilot refactored {Count}/{Total} methods across {FileCount} file(s).",
             totalRefactored, floodedEntries.Count, modifiedFiles.Count);
