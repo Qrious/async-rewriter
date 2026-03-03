@@ -154,7 +154,8 @@ public class CopilotDrivenRefactorCommand : Command
             var newReturnType = ComputeNewReturnType(metadata.OriginalReturnType);
             var newSignature = BuildNewSignature(method, newReturnType);
             var calleeContext = BuildCalleeContext(callGraph, methodId, floodedMethodIds);
-            var prompt = BuildPrompt(methodSource, newSignature, calleeContext);
+            bool isInterfaceMember = !methodSource.Contains('{');
+            var prompt = BuildPrompt(methodSource, newSignature, calleeContext, isInterfaceMember);
 
             _logger.LogInformation("Refactoring {Type}.{Method} (depth {Depth})...",
                 method.ContainingType, method.Name, metadata.Depth);
@@ -342,19 +343,20 @@ public class CopilotDrivenRefactorCommand : Command
             : "(none — all callees remain synchronous)";
     }
 
-    private static string BuildPrompt(string methodSource, string newSignature, string calleeContext)
+    private static string BuildPrompt(string methodSource, string newSignature, string calleeContext, bool isInterfaceMember = false)
     {
         // Use $$""" so single { } are literal; interpolations use {{ }}.
         return $$"""
                 You are a C# async refactoring assistant. Transform the target method below.
                 Rules:
-                - Return ONLY the refactored method body (no class wrapper, no using directives).
+                - Return ONLY the refactored method (no class wrapper, no using directives).
                 - Wrap the output in a ```csharp code block.
                 - Preserve all existing logic and error handling exactly.
                 - Add 'await' to every call listed under "Callee methods that became async".
                 - Pass 'cancellationToken' through to every async callee that accepts a CancellationToken.
-                - Return the Task directly (no async/await) when there is a single async expression and the result is not used further.
-                - Use Task.CompletedTask or Task.FromResult<T>() when the method has no async calls.
+                {{(isInterfaceMember
+                    ? "- This is an interface member: output ONLY the new signature followed by a semicolon — no method body, no braces."
+                    : "- Return the Task directly (no async/await) when there is a single async expression and the result is not used further.\n                - Use Task.CompletedTask or Task.FromResult<T>() when the method has no async calls.")}}
 
                 ## Target method (refactor this):
                 ```csharp
