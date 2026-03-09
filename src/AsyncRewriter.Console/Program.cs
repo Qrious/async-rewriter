@@ -37,7 +37,17 @@ class Program
         {
             rootCommand.AddCommand(command);
         }
-        return await rootCommand.InvokeAsync(args);
+
+        try
+        {
+            return await rootCommand.InvokeAsync(args);
+        }
+        catch (Exception ex)
+        {
+            logger.LogCritical(ex, "Error: {Message}", ex.Message);
+
+            return 1;
+        }
     }
 
     private static void ConfigureServices(ServiceCollection serviceCollection)
@@ -51,6 +61,7 @@ class Program
         serviceCollection.AddTransient<IDirtyTaskMethodsExtractor, DirtyTaskMethodsExtractor>();
         serviceCollection.AddTransient<IAsyncCallGraphFlooder, AsyncCallGraphFlooder>();
         serviceCollection.AddTransient<IEntityFrameworkSyncCallExtractor, EntityFrameworkSyncCallExtractor>();
+        serviceCollection.AddTransient<IDocumentSemanticModelProvider, SolutionDocumentSemanticModelProvider>();
         serviceCollection.AddTransient<IAsyncInterfaceMethodExtractor, AsyncInterfaceMethodExtractor>();
         serviceCollection.AddSingleton<ICallGraphRepository, Neo4jCallGraphRepository>();
         serviceCollection.AddSingleton<IOutParameterAnalyzer, OutParameterAnalyzer>();
@@ -64,6 +75,7 @@ class Program
         serviceCollection.AddSingleton<Command, WrapProjectCommand>();
         serviceCollection.AddSingleton<Command, CopilotDrivenRefactorCommand>();
         serviceCollection.AddSingleton<Command, UpgradeRepositoryInterfacesCommand>();
+        serviceCollection.AddSingleton<Command, AddImplCancellationTokenCommand>();
 
         serviceCollection.AddLogging(c => c.AddSimpleConsole());
     }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Diagnostics;
 using AsyncRewriter.Core.Interfaces;
 using AsyncRewriter.Core.Models;
 
@@ -22,7 +23,7 @@ public class EntityFrameworkSyncCallExtractor : IEntityFrameworkSyncCallExtracto
 
     private static readonly ImmutableHashSet<string> EfTypes = ImmutableHashSet.Create(
         StringComparer.OrdinalIgnoreCase,
-        "QueryableExtensions", "DbContext", "DbSet", "DbQuery", "Database", "DbExtensions");
+        "QueryableExtensions", "DbContext", "DbSet", "DbQuery", "Database", "DbExtensions", "System.Linq.Queryable");
 
     private static readonly ImmutableHashSet<string> EfNamespaces = ImmutableHashSet.Create(
         StringComparer.OrdinalIgnoreCase,

@@ -71,9 +71,11 @@ public sealed class AddCancellationTokenRewriter : CSharpSyntaxRewriter
     {
         // CancellationToken cancellationToken = default
         var ctType = ParseTypeName("CancellationToken")
-            .WithLeadingTrivia(Space);
+            .WithLeadingTrivia(Space)
+            .WithTrailingTrivia(Space);
 
         var defaultValue = EqualsValueClause(
+            Token(TriviaList(Space), SyntaxKind.EqualsToken, TriviaList(Space)),
             LiteralExpression(SyntaxKind.DefaultLiteralExpression, Token(SyntaxKind.DefaultKeyword)));
 
         var ctParam = Parameter(Identifier("cancellationToken"))
@@ -83,15 +85,41 @@ public sealed class AddCancellationTokenRewriter : CSharpSyntaxRewriter
         var oldList = method.ParameterList;
         SeparatedSyntaxList<ParameterSyntax> newParams;
 
+        if (oldList.Parameters.Any(ct => ct.Identifier.ToString() == "cancellationToken"))
+        {
+            // If the method already has a parameter named 'cancellationToken'  do not add another one.
+            return method;
+        }
+
         if (oldList.Parameters.Count == 0)
         {
             newParams = SingletonSeparatedList(ctParam);
         }
         else
         {
-            // Insert after the last parameter; add a leading comma separator.
-            ctParam = ctParam.WithLeadingTrivia(Space);
-            newParams = oldList.Parameters.Add(ctParam);
+            // If the method has a 'params' parameter, insert the cancellation token
+            // before the params parameter so the params argument remains the last parameter.
+            var paramsIndex = -1;
+            for (int i = 0; i < oldList.Parameters.Count; i++)
+            {
+                if (oldList.Parameters[i].Modifiers.Any(m => m.IsKind(SyntaxKind.ParamsKeyword)))
+                {
+                    paramsIndex = i;
+                    break;
+                }
+            }
+
+            if (paramsIndex >= 0)
+            {
+                // Insert before the params parameter. Do not add extra leading trivia; the
+                // separator tokens are handled by the SeparatedSyntaxList.
+                newParams = oldList.Parameters.Insert(paramsIndex, ctParam.WithLeadingTrivia(Space));
+            }
+            else
+            {
+                // Insert after the last parameter; add a leading space so formatting matches.
+                newParams = oldList.Parameters.Add(ctParam.WithLeadingTrivia(Space));
+            }
         }
 
         var newList = oldList.WithParameters(newParams);

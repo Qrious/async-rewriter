@@ -36,7 +36,8 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
         ConcurrentDictionary<string, IMethodOverride> methodOverrides,
         CancellationToken cancellationToken = default)
     {
-        return Extract(callGraphId, root, semanticModel, filePath, methods, interfaceImplementations, methodOverrides, new ConcurrentDictionary<string, IGenericInstantiation>(), cancellationToken);
+        return Extract(callGraphId, root, semanticModel, filePath, methods, interfaceImplementations, methodOverrides, new ConcurrentDictionary<string, IGenericInstantiation>(),
+            cancellationToken);
     }
 
     public async Task Extract(
@@ -64,6 +65,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
     public override async Task VisitMethodDeclarationAsync(MethodDeclarationSyntax node, CancellationToken cancellationToken = default)
     {
         var methodSymbol = _semanticModel.GetDeclaredSymbol(node) as IMethodSymbol;
+
         if (methodSymbol != null)
         {
             var methodNode = CreateMethodNode(node, methodSymbol);
@@ -77,6 +79,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
     public override async Task VisitLocalFunctionStatementAsync(LocalFunctionStatementSyntax node, CancellationToken cancellationToken = default)
     {
         var methodSymbol = _semanticModel.GetDeclaredSymbol(node) as IMethodSymbol;
+
         if (methodSymbol != null)
         {
             var methodNode = CreateMethodNode(node, methodSymbol);
@@ -90,6 +93,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
     public override async Task VisitParenthesizedLambdaExpressionAsync(ParenthesizedLambdaExpressionSyntax node, CancellationToken cancellationToken = default)
     {
         var methodSymbol = _semanticModel.GetSymbolInfo(node).Symbol as IMethodSymbol;
+
         if (methodSymbol != null)
         {
             var methodNode = CreateMethodNode(node, methodSymbol);
@@ -102,6 +106,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
     public override async Task VisitSimpleLambdaExpressionAsync(SimpleLambdaExpressionSyntax node, CancellationToken cancellationToken = default)
     {
         var methodSymbol = _semanticModel.GetSymbolInfo(node).Symbol as IMethodSymbol;
+
         if (methodSymbol != null)
         {
             var methodNode = CreateMethodNode(node, methodSymbol);
@@ -114,6 +119,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
     public override async Task VisitInterfaceDeclarationAsync(InterfaceDeclarationSyntax node, CancellationToken cancellationToken = default)
     {
         var interfaceSymbol = _semanticModel.GetDeclaredSymbol(node);
+
         if (interfaceSymbol == null)
         {
             return;
@@ -122,6 +128,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
         foreach (var member in node.Members.OfType<MethodDeclarationSyntax>())
         {
             var methodSymbol = _semanticModel.GetDeclaredSymbol(member) as IMethodSymbol;
+
             if (methodSymbol == null)
             {
                 continue;
@@ -138,6 +145,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
         bool isReturnTypeParam = false;
 
         var name = methodSymbol.Name;
+
         if (methodSymbol.MethodKind == MethodKind.AnonymousFunction)
         {
             var containingName = (methodSymbol.ContainingSymbol as IMethodSymbol)?.Name ?? "";
@@ -151,8 +159,8 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
         {
             var explicitContainingType = explicitImpl.ContainingType;
             var isGenericInstantiation = explicitContainingType is INamedTypeSymbol nt
-                && nt.IsGenericType
-                && !SymbolEqualityComparer.Default.Equals(nt, nt.OriginalDefinition);
+                                         && nt.IsGenericType
+                                         && !SymbolEqualityComparer.Default.Equals(nt, nt.OriginalDefinition);
 
             if (isGenericInstantiation)
             {
@@ -186,6 +194,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
         }
 
         var containingType = methodSymbol.ContainingType;
+
         if (containingType != null)
         {
             foreach (var iface in containingType.AllInterfaces)
@@ -193,6 +202,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                 foreach (var interfaceMember in iface.GetMembers().OfType<IMethodSymbol>())
                 {
                     var implementation = containingType.FindImplementationForInterfaceMember(interfaceMember);
+
                     if (SymbolEqualityComparer.Default.Equals(implementation, methodSymbol))
                     {
                         var genericMethodId = GetMethodId(interfaceMember);
@@ -200,7 +210,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
 
                         // Check if this is a generic interface with instantiated type args
                         var isGenericInstantiation = iface.IsGenericType
-                            && !SymbolEqualityComparer.Default.Equals(iface, iface.OriginalDefinition);
+                                                     && !SymbolEqualityComparer.Default.Equals(iface, iface.OriginalDefinition);
 
                         if (isGenericInstantiation)
                         {
@@ -221,7 +231,13 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                                 ContainingType = interfaceMember.ContainingType?.ToDisplayString() ?? "",
                                 ContainingNamespace = interfaceMember.ContainingNamespace?.ToDisplayString() ?? "",
                                 ReturnType = interfaceMember.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-                                Parameters = interfaceMember.Parameters.Select(p => new MethodParameter { Type = p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat), Name = p.Name, RefKind = ToRefKindString(p.RefKind) }).ToList(),
+                                Parameters = interfaceMember.Parameters.Select(p => new MethodParameter
+                                {
+                                    Type = p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+                                    Name = p.Name,
+                                    RefKind = ToRefKindString(p.RefKind),
+                                    Keywords = p.IsParams ? "params" : p.IsThis ? "this" : null
+                                }).ToList(),
                                 FilePath = interfaceMember.Locations.FirstOrDefault()?.SourceTree?.FilePath ?? "external",
                                 StartLine = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Line + 1 ?? 0,
                                 EndLine = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Line + 1 ?? 0,
@@ -276,7 +292,13 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                             ContainingType = originalMember.ContainingType?.ToDisplayString() ?? "",
                             ContainingNamespace = originalMember.ContainingNamespace?.ToDisplayString() ?? "",
                             ReturnType = originalMember.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-                             Parameters = originalMember.Parameters.Select(p => new MethodParameter { Type = p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat), Name = p.Name, RefKind = ToRefKindString(p.RefKind) }).ToList(),
+                            Parameters = originalMember.Parameters.Select(p => new MethodParameter
+                            {
+                                Type = p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+                                Name = p.Name,
+                                RefKind = ToRefKindString(p.RefKind),
+                                Keywords = p.IsParams ? "params" : p.IsThis ? "this" : null
+                            }).ToList(),
                             FilePath = interfaceMember.Locations.FirstOrDefault()?.SourceTree?.FilePath ?? "external",
                             StartLine = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Line + 1 ?? 0,
                             EndLine = interfaceMember.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Line + 1 ?? 0,
@@ -293,6 +315,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
         if (methodSymbol.IsOverride)
         {
             var overridden = methodSymbol.OverriddenMethod;
+
             while (overridden != null)
             {
                 var baseMethodId = GetMethodId(overridden);
@@ -307,10 +330,10 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                 // Ensure the base method node exists (use OriginalDefinition for consistent generic type display)
                 var overriddenOriginal = overridden.OriginalDefinition;
                 isReturnTypeParam = overriddenOriginal.ReturnType is ITypeParameterSymbol tp
-                                        && overriddenOriginal.ContainingType is INamedTypeSymbol ci
-                                        && ci.IsGenericType
-                                        && ci.TypeParameters.Any(p =>
-                                            SymbolEqualityComparer.Default.Equals(p, tp) && p.Variance == VarianceKind.Out);
+                                    && overriddenOriginal.ContainingType is INamedTypeSymbol ci
+                                    && ci.IsGenericType
+                                    && ci.TypeParameters.Any(p =>
+                                        SymbolEqualityComparer.Default.Equals(p, tp) && p.Variance == VarianceKind.Out);
                 _methods.TryAdd(baseMethodId, new MethodNode
                 {
                     CallGraphId = _callGraphId,
@@ -319,7 +342,13 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                     ContainingType = overriddenOriginal.ContainingType?.ToDisplayString() ?? "",
                     ContainingNamespace = overriddenOriginal.ContainingNamespace?.ToDisplayString() ?? "",
                     ReturnType = overriddenOriginal.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-                     Parameters = overriddenOriginal.Parameters.Select(p => new MethodParameter { Type = p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat), Name = p.Name, RefKind = ToRefKindString(p.RefKind) }).ToList(),
+                    Parameters = overriddenOriginal.Parameters.Select(p => new MethodParameter
+                    {
+                        Type = p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+                        Name = p.Name,
+                        RefKind = ToRefKindString(p.RefKind),
+                        Keywords = p.IsParams ? "params" : p.IsThis ? "this" : null
+                    }).ToList(),
                     FilePath = overridden.Locations.FirstOrDefault()?.SourceTree?.FilePath ?? "external",
                     StartLine = overridden.Locations.FirstOrDefault()?.GetLineSpan().StartLinePosition.Line + 1 ?? 0,
                     EndLine = overridden.Locations.FirstOrDefault()?.GetLineSpan().EndLinePosition.Line + 1 ?? 0,
@@ -332,7 +361,6 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
             }
         }
 
-
         return new MethodNode
         {
             CallGraphId = _callGraphId,
@@ -341,7 +369,13 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
             ContainingType = methodSymbol.ContainingType?.ToDisplayString() ?? "",
             ContainingNamespace = methodSymbol.ContainingNamespace?.ToDisplayString() ?? "",
             ReturnType = methodSymbol.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-            Parameters = methodSymbol.Parameters.Select(p => new MethodParameter { Type = p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat), Name = p.Name, RefKind = ToRefKindString(p.RefKind) }).ToList(),
+            Parameters = methodSymbol.Parameters.Select(p => new MethodParameter
+            {
+                Type = p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+                Name = p.Name,
+                RefKind = ToRefKindString(p.RefKind),
+                Keywords = p.IsParams ? "params" : p.IsThis ? "this" : null
+            }).ToList(),
             FilePath = _filePath,
             StartLine = lineSpan.StartLinePosition.Line + 1,
             EndLine = lineSpan.EndLinePosition.Line + 1,
@@ -365,6 +399,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
             for (int i = 0; i < containingInterface.TypeParameters.Length; i++)
             {
                 var interfaceTypeParam = containingInterface.TypeParameters[i];
+
                 if (SymbolEqualityComparer.Default.Equals(interfaceTypeParam, typeParam))
                 {
                     if (interfaceTypeParam.Variance == VarianceKind.Out)
@@ -372,6 +407,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
                         isReturnTypeParameter = true;
                         returnTypeParameterIndex = i;
                     }
+
                     break;
                 }
             }
@@ -385,7 +421,13 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
             ContainingType = methodSymbol.ContainingType?.ToDisplayString() ?? "",
             ContainingNamespace = methodSymbol.ContainingNamespace?.ToDisplayString() ?? "",
             ReturnType = methodSymbol.ReturnType.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
-            Parameters = methodSymbol.Parameters.Select(p => new MethodParameter { Type = p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat), Name = p.Name, RefKind = ToRefKindString(p.RefKind) }).ToList(),
+            Parameters = methodSymbol.Parameters.Select(p => new MethodParameter
+            {
+                Type = p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat),
+                Name = p.Name,
+                RefKind = ToRefKindString(p.RefKind),
+                Keywords = p.IsParams ? "params" : p.IsThis ? "this" : null
+            }).ToList(),
             FilePath = _filePath,
             StartLine = lineSpan.StartLinePosition.Line + 1,
             EndLine = lineSpan.EndLinePosition.Line + 1,
@@ -413,6 +455,7 @@ public class MethodExtractor : AsyncCSharpSyntaxWalker, IMethodExtractor
     {
         var containingType = methodSymbol.ContainingType?.ToDisplayString() ?? "";
         var parameters = string.Join(", ", methodSymbol.Parameters.Select(p => p.Type.ToDisplayString(SymbolDisplayFormat.MinimallyQualifiedFormat)));
+
         return $"{containingType}.{methodSymbol.Name}({parameters})";
     }
 

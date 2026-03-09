@@ -159,6 +159,16 @@ public class UpgradeRepositoryInterfacesCommand : Command
                     anyChanged = true;
                 }
 
+                // Step C: add CancellationToken to class methods that implement
+                // any of the async interfaces.
+                var implRewriter = new ImplementationCancellationTokenRewriter(semanticModel, asyncSymbols);
+                var rootAfterImpl = implRewriter.Visit(root);
+                if (implRewriter.AnyRewritten)
+                {
+                    root = rootAfterImpl!;
+                    anyChanged = true;
+                }
+
                 if (!anyChanged)
                 {
                     continue;

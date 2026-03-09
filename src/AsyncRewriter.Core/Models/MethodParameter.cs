@@ -25,13 +25,19 @@ public record MethodParameter
     public string? RefKind { get; init; }
 
     /// <summary>
+    /// Keywords like "params" or "this" that may appear before the type.
+    /// </summary>
+    public string? Keywords { get; init; }
+
+    /// <summary>
     /// Returns the flat string representation: "[refkind ]type name".
     /// </summary>
     public override string ToString()
     {
+        var prefix = Keywords != null ? $"{Keywords} " : string.Empty;
         return RefKind is not null
-            ? $"{RefKind} {Type} {Name}"
-            : $"{Type} {Name}";
+            ? $"{prefix}{RefKind} {Type} {Name}"
+            : $"{prefix}{Type} {Name}";
     }
 
     /// <summary>

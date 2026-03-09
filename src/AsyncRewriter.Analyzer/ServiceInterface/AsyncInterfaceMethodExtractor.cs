@@ -25,7 +25,8 @@ public class AsyncInterfaceMethodExtractor : IAsyncInterfaceMethodExtractor
         {
             if ((method.ContainingType.EndsWith(ServiceSuffix, System.StringComparison.Ordinal) ||
                 method.ContainingType.EndsWith(RepositorySuffix, System.StringComparison.Ordinal)) &&
-                !IsSystemInterfaceImplementation(method, callGraph))
+                !IsSystemInterfaceImplementation(method, callGraph) &&
+                !IsLocalFunctionOrLambda(method))
             {
                 metadata[method.Id] = new ServiceInterfaceMethodMetadata
                 {
@@ -73,6 +74,11 @@ public class AsyncInterfaceMethodExtractor : IAsyncInterfaceMethodExtractor
             new Dictionary<string, EmptyGraphMetadata>(),
             new Dictionary<string, EmptyGraphMetadata>(),
             new Dictionary<string, EmptyGraphMetadata>());
+    }
+
+    private bool IsLocalFunctionOrLambda(IMethodNode method)
+    {
+        return method.Name.Contains(">b__") || method.Name.Contains(" ).");
     }
 
     private bool IsSystemInterfaceImplementation(IMethodNode method, ICallGraph callGraph)

@@ -221,7 +221,7 @@ public class WrapProjectCommand : Command
 
         foreach (var (symbol, declaration, compilationUnit, semanticModel, compilation, interfaceFilePath) in candidates)
         {
-            var (asyncInterfaceSource, adapterSource) = generator.Generate(
+            var asyncInterfaceSource = generator.Generate(
                 symbol,
                 declaration,
                 compilationUnit,
@@ -237,7 +237,7 @@ public class WrapProjectCommand : Command
             var interfaceDir = Path.GetDirectoryName(interfaceFilePath)!;
 
             // Async interface → next to source interface (or explicit override).
-            var asyncInterfaceName = symbol.Name + "Async";
+            var asyncInterfaceName = symbol.Name;
             var resolvedInterfaceDir = asyncInterfaceOutputDir ?? interfaceDir;
             var asyncInterfacePath = Path.Combine(resolvedInterfaceDir, asyncInterfaceName + ".cs");
             generated.Add((asyncInterfacePath, asyncInterfaceSource, $"{symbol.Name} → {asyncInterfaceName}"));
@@ -267,7 +267,8 @@ public class WrapProjectCommand : Command
             }
 
             var adapterPath = Path.Combine(resolvedAdapterDir, adapterName + ".cs");
-            generated.Add((adapterPath, adapterSource, $"{symbol.Name} → {adapterName}"));
+            File.Delete(adapterPath);
+            //generated.Add((adapterPath, adapterSource, $"{symbol.Name} → {adapterName}"));
         }
 
         if (generated.Count == 0)
