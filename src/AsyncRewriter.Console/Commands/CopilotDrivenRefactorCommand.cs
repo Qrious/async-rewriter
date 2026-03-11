@@ -166,6 +166,7 @@ public class CopilotDrivenRefactorCommand : Command
 
         // Process files sequentially (or with bounded parallelism across files).
         int fileCounter = 0;
+
         foreach (var fileGroup in fileGroups)
         {
             var filePath = fileGroup.Key;
@@ -181,7 +182,7 @@ public class CopilotDrivenRefactorCommand : Command
             var refactoredMap = new ConcurrentDictionary<string, string>(); // originalSource → refactoredSource
             var completedIds = new ConcurrentBag<string>();
 
-            var sourceCode =  await File.ReadAllLinesAsync(filePath);
+            var sourceCode = await File.ReadAllLinesAsync(filePath);
 
             _logger.LogInformation("[{DateTime}] - Refactoring ({Current}/{Total}) files, processing {FilePath} with {MethodCount} method(s)...",
                 DateTime.Now, fileCounter, fileGroups.Count, filePath, fileGroup.Value.Count);
@@ -197,6 +198,7 @@ public class CopilotDrivenRefactorCommand : Command
             {
                 fileCounter++;
                 totalRefactored += fileGroup.Value.Count;
+
                 continue;
             }
 
@@ -237,7 +239,6 @@ public class CopilotDrivenRefactorCommand : Command
                 }
 
                 _logger.LogInformation("Completed {Count} refactored method(s) to {FilePath}", replacedCount, filePath);
-
             }
             catch (Exception e)
             {
@@ -250,7 +251,11 @@ public class CopilotDrivenRefactorCommand : Command
             totalRefactored, floodedEntries.Count, fileCounter, modifiedFiles.Count);
     }
 
-    private Func<(string MethodId, FloodingMethodMetadata Metadata, IMethodNode? Method), CancellationToken, ValueTask> ProcessMethod(string model, CopilotRefactorSession? session, string[] sourceCode, ICallGraphWithMetadata<CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata, OutParameterMetadata>, EmptyGraphMetadata, EmptyGraphMetadata, EmptyGraphMetadata> callGraph, HashSet<string> floodedMethodIds, CopilotClient client, ConcurrentDictionary<string, string> refactoredMap, ConcurrentBag<string> completedIds)
+    private Func<(string MethodId, FloodingMethodMetadata Metadata, IMethodNode? Method), CancellationToken, ValueTask> ProcessMethod(string model, CopilotRefactorSession? session,
+        string[] sourceCode,
+        ICallGraphWithMetadata<CompositeMetadata<FloodingMethodMetadata, SyncWrapperMethodMetadata, EntityFrameworkMethodMetadata, OutParameterMetadata>, EmptyGraphMetadata,
+            EmptyGraphMetadata, EmptyGraphMetadata> callGraph, HashSet<string> floodedMethodIds, CopilotClient client, ConcurrentDictionary<string, string> refactoredMap,
+        ConcurrentBag<string> completedIds)
     {
         return async (entry, _) =>
         {
@@ -259,6 +264,7 @@ public class CopilotDrivenRefactorCommand : Command
             if (session != null && session.IsCompleted(methodId))
             {
                 _logger.LogTrace("Skipping already-completed method {MethodId}", methodId);
+
                 return;
             }
 
@@ -267,6 +273,7 @@ public class CopilotDrivenRefactorCommand : Command
             if (methodSource == null)
             {
                 _logger.LogWarning("Could not read source for {Method} in {File}", method!.Name, method.FilePath);
+
                 return;
             }
 
@@ -352,7 +359,7 @@ public class CopilotDrivenRefactorCommand : Command
         var match = Regex.Match(response, @"```(?:csharp|cs)?\s*\n(.*?)\n```",
             RegexOptions.Singleline | RegexOptions.IgnoreCase);
 
-        return match.Success ? match.Groups[1].Value.Trim() : null;
+        return match.Success ? match.Groups[1].Value : null;
     }
 
     // ── Source extraction ───────────────────────────────────────────────────
@@ -367,6 +374,21 @@ public class CopilotDrivenRefactorCommand : Command
             if (start > end)
             {
                 return null;
+            }
+
+            // The startcode is actually the method header, but it could be prepended by attributes or comments, so we try to include those as well by looking upwards until we find a non-empty line that doesn't start with [ or //.
+            while (start > 0)
+            {
+                var line = sourceCode[start - 1].Trim();
+
+                if (string.IsNullOrEmpty(line) || line.StartsWith("[") || line.StartsWith("//"))
+                {
+                    start--;
+                }
+                else
+                {
+                    break;
+                }
             }
 
             return string.Join(Environment.NewLine, sourceCode[(start - 1)..end]);
@@ -498,15 +520,17 @@ public class CopilotDrivenRefactorCommand : Command
                  - Wrap the output in a ```csharp code block.
                  - Preserve all existing logic and error handling exactly.
                  - Make sure outputted methods are always indented with 4 spaces per level and use consistent formatting.
+                 - Maintain the original indentation level of the method in the output (e.g. if the original method is indented by 8 spaces, the output should also be indented by 8 spaces).
                  - Add 'await' to every call listed under "Callee methods that became async".
                  - Pass 'cancellationToken' through to every async callee that accepts a CancellationToken.
                  - If a method call is already awaited, do not add an extra 'await' (e.g. 'return await ...' should not become 'return await await ...').
                  - 'Unwrap' all funcs wrapped in a of AsyncHelper.RunTaskSynchronously(Func<Task<T>>) or AsyncHelper.RunTaskSynchronously(Func<Task>), and instead directly execute the func.
+                 - If no calls in the method have to be awaited, don't mark the method as async — just return Task or Task<T> directly without using async/await, and use Task.FromResult or Task.CompletedTask when there are no async calls at all.
                  {{(isInterfaceMember
                      ? "- This is an interface member: output ONLY the new signature followed by a semicolon — no method body, no braces. Don't add 'async' to the signature since interfaces can't have implementation. \n Always add an optional cancellationToken to every method. In case the method has a params argument, add the cancellationToken before the params argument."
-                     : "- Return the Task directly (no async/await) when there is a single async expression and the result is not used further.\n                - Use Task.CompletedTask or Task.FromResult<T>() when the method has no async calls.")}}
+                     : "- Return the Task directly (no async/await) when there is a single async expression and the result is not used further.\n - Use Task.CompletedTask or Task.FromResult<T>() when the method has no async calls.")}}
                  {{(callsEntityFramework
-                         ? "- Since the method calls Entity Framework sync methods, use the EF async equivalents (e.g. ToListAsync instead of AsEnumerable) and pass the cancellationToken to them."
+                         ? "- The method calls Entity Framework sync methods, use the EF async equivalents (e.g. ToListAsync instead of AsEnumerable, AsReadonlyList or ToList) and pass the cancellationToken to them.\n"
                          : ""
                      )}}
 
